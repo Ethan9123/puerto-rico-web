@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>波多黎各 Puerto Rico</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <div id="setup-screen" class="screen">
+    <h1>波多黎各 Puerto Rico</h1>
+    <p class="subtitle">基于 Tony Mitton 的进化器规则 + Rio Grande 原版规则书</p>
+    <div class="setup-box">
+      <label>玩家数量：
+        <select id="player-count">
+          <option value="3">3 人局</option>
+          <option value="4" selected>4 人局</option>
+          <option value="5">5 人局</option>
+        </select>
+      </label>
+      <label>你的名字：<input id="player-name" value="玩家" maxlength="10"></label>
+      <div id="cpu-levels"></div>
+      <div class="quick-set">
+        <span>快速设定：</span>
+        <button type="button" class="qs-btn" data-set="all1">全部入门</button>
+        <button type="button" class="qs-btn" data-set="all3">全部普通</button>
+        <button type="button" class="qs-btn" data-set="all5">全部专家</button>
+        <button type="button" class="qs-btn" data-set="mixed">混合难度</button>
+      </div>
+      <label><input type="checkbox" id="all-ai"> 全部 AI 对战（看 AI 互打）</label>
+      <button id="btn-start">开始游戏</button>
+    </div>
+    <div class="rules-link">
+      <details>
+        <summary>查看游戏规则</summary>
+        <div id="rules-text"></div>
+      </details>
+    </div>
+  </div>
+
+  <div id="game-screen" class="screen hidden">
+    <header id="topbar">
+      <div id="game-info"></div>
+      <div id="action-bar"></div>
+      <div id="resources-info"></div>
+      <button id="btn-show-rules" class="small">规则</button>
+      <button id="btn-restart" class="small">重开</button>
+    </header>
+
+    <section id="roles-area">
+      <div id="roles"></div>
+    </section>
+
+    <section id="market-area">
+      <div id="plantations-row" class="board-row">
+        <h3>种植园池</h3>
+        <div id="plantations-pool"></div>
+      </div>
+      <div id="buildings-row" class="board-row">
+        <h3>建筑市场</h3>
+        <div id="buildings-pool"></div>
+      </div>
+      <div id="ships-row" class="board-row">
+        <h3>船只 / 贸易站</h3>
+        <div id="ships"></div>
+      </div>
+    </section>
+
+    <section id="players-area"></section>
+
+    <div id="log-panel">
+      <h4>事件日志</h4>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-bg"></div>
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div id="modal-buttons"></div>
+    </div>
+  </div>
+</div>
+
+<script src="ai_dna.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
