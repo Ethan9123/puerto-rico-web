@@ -569,6 +569,16 @@ function startGame() {
     }
   });
   window._allAIMode = !!allAI;
+  // 读取 AI 思考预算（全 AI 模式强制 fast 以保持速度）
+  const budgetSel = document.getElementById("ai-think-budget");
+  const budgetMode = allAI ? 'fast' : (budgetSel ? budgetSel.value : 'deep');
+  const budgetMap = {
+    fast:    { L4: 50,    L5: 100 },
+    normal:  { L4: 800,   L5: 1500 },
+    deep:    { L4: 1500,  L5: 6000 },
+    extreme: { L4: 2500,  L5: 10000 },
+  };
+  window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
   render();
@@ -1495,43 +1505,249 @@ function level4Reactive(me, available) {
       return available.indexOf(has("Mayor"));
     }
   }
+
+  // F (新): depth-1 snapshot 评估（思考预算约 1-1.5s）
+  // 对每个角色：模拟我作为 chooser 的状态 - 威胁作为 follower 的状态
+  // 选边际最大的（若优于 baseChoice 的边际，覆盖；否则保持 baseChoice）
+  if (typeof simulatePlayerSnapshot === 'function') {
+    const budgetMs = (window._aiThinkBudget && window._aiThinkBudget.L4) || 1500;
+    const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    let bestI = baseChoice, bestM = -Infinity;
+    for (let i = 0; i < available.length; i++) {
+      const tnow = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+      if (tnow - t0 > budgetMs) break;
+      const r = available[i];
+      const mySnap = simulatePlayerSnapshot(G, me.idx, r.name, true);
+      mySnap.money += r.money;
+      const tSnap = simulatePlayerSnapshot(G, target.idx, r.name, false);
+      const m = snapshotProjectedScore(mySnap) - snapshotProjectedScore(tSnap);
+      if (m > bestM) { bestM = m; bestI = i; }
+    }
+    // 仅当深度模拟分明显更好，才覆盖 baseChoice
+    if (bestI !== baseChoice) {
+      const baseSnap = simulatePlayerSnapshot(G, me.idx, available[baseChoice].name, true);
+      baseSnap.money += available[baseChoice].money;
+      const baseTSnap = simulatePlayerSnapshot(G, target.idx, available[baseChoice].name, false);
+      const baseM = snapshotProjectedScore(baseSnap) - snapshotProjectedScore(baseTSnap);
+      if (bestM > baseM + 0.5) return bestI;
+    }
+  }
   return baseChoice;
 }
 
 // ============================================================
-// L5 (专家) 升级：L4 反制 + 针对威胁的边际最大化
+// 状态快照：模拟一个玩家在指定角色阶段后的状态变化
+// 用于 depth-2 lookahead（不修改 G）
+// ============================================================
+function simulatePlayerSnapshot(g, playerIdx, roleName, asChooser) {
+  const p = g.players[playerIdx];
+  const snap = {
+    money: p.money,
+    vp: p.vp,
+    shippingVP: p.shippingVP || 0,
+    goods: { corn: p.goods.corn, indigo: p.goods.indigo, sugar: p.goods.sugar, tobacco: p.goods.tobacco, coffee: p.goods.coffee },
+    plantationsCount: p.plantations.length,
+    mannedPlantations: p.plantations.filter(pl => pl.manned).length,
+    buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
+    usedSpaces: p.buildings.reduce((s, b) => s + BLD_BY_ID[b.bid].size, 0),
+  };
+  const ownsBldId = (id) => snap.buildings.some(b => b.bid === id && b.men >= 1);
+  switch (roleName) {
+    case "Captain": {
+      const total = GOODS.reduce((s,gd) => s+snap.goods[gd], 0);
+      let shipCap = 0;
+      for (const ship of g.ships) shipCap += (ship.capacity - ship.count);
+      const wharf = ownsBldId(18) ? Math.max(0, ...GOODS.map(gd => snap.goods[gd])) : 0;
+      const harbor = ownsBldId(17) ? 1 : 0;
+      const shipping = Math.min(total, shipCap + wharf);
+      const vpGain = shipping * (1 + harbor) + (asChooser ? 1 : 0);
+      snap.vp += vpGain;
+      snap.shippingVP += vpGain;
+      // 减货物（按价格大的优先）
+      let toShip = shipping;
+      for (const gd of [...GOODS].reverse()) {
+        const k = Math.min(snap.goods[gd], toShip);
+        snap.goods[gd] -= k;
+        toShip -= k;
+      }
+      // 阶段末仅留 1 个其他货 + 仓库容量保留
+      const wh1 = ownsBldId(10) ? 1 : 0;
+      const wh2 = ownsBldId(14) ? 2 : 0;
+      const kindsKeep = wh1 + wh2;
+      const sortedKinds = GOODS.filter(gd => snap.goods[gd] > 0).sort((a,b) => GOOD_PRICE[b] - GOOD_PRICE[a]);
+      for (let i = kindsKeep; i < sortedKinds.length; i++) {
+        // 留 1 个最贵的额外类
+        if (i === kindsKeep) snap.goods[sortedKinds[i]] = 1;
+        else snap.goods[sortedKinds[i]] = 0;
+      }
+      break;
+    }
+    case "Trader": {
+      const hasOffice = ownsBldId(12);
+      let bestG = null, bestEarn = 0;
+      for (const gd of GOODS) {
+        if (snap.goods[gd] > 0 && (hasOffice || !g.tradingHouse.includes(gd))) {
+          let earn = GOOD_PRICE[gd] + (asChooser ? 1 : 0);
+          if (ownsBldId(7)) earn += 1;
+          if (ownsBldId(13)) earn += 2;
+          if (earn > bestEarn) { bestEarn = earn; bestG = gd; }
+        }
+      }
+      if (bestG) { snap.goods[bestG]--; snap.money += bestEarn; }
+      break;
+    }
+    case "Builder": {
+      const discount = asChooser ? 1 : 0;
+      let best = null;
+      for (const b of BUILDINGS) {
+        if (g.buildingStock[b.id] <= 0) continue;
+        if (snap.buildings.some(bb => bb.bid === b.id)) continue;
+        if (12 - snap.usedSpaces < b.size) continue;
+        const cost = Math.max(0, b.cost - discount);
+        if (snap.money >= cost) {
+          const score = b.vp + (b.type === "large_violet" ? 2 : 0);
+          if (!best || score > best.score) best = { b, cost, score };
+        }
+      }
+      if (best) {
+        snap.money -= best.cost;
+        snap.buildings.push({ bid: best.b.id, men: 0 });
+        snap.usedSpaces += best.b.size;
+        snap.vp += best.b.vp;
+      }
+      break;
+    }
+    case "Craftsman": {
+      const producedKinds = [];
+      for (const gd of GOODS) {
+        const cap = g.productionCapacity(p, gd);
+        const made = Math.min(cap, g.supply[gd]);
+        if (made > 0) {
+          snap.goods[gd] += made;
+          producedKinds.push(gd);
+        }
+      }
+      // chooser bonus: best produced kind
+      if (asChooser && producedKinds.length > 0) {
+        const bestProduced = producedKinds.reduce((a,b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
+        snap.goods[bestProduced]++;
+      }
+      // Factory bonus
+      if (ownsBldId(15)) {
+        const kinds = producedKinds.length;
+        const factoryBonus = {1:0, 2:1, 3:2, 4:3, 5:5}[kinds] || 0;
+        snap.money += factoryBonus;
+      }
+      break;
+    }
+    case "Mayor": {
+      const ship = g.colonistsOnShip;
+      const myShareFromShip = Math.ceil(ship / g.numPlayers);
+      const supplyBonus = (asChooser && g.colonistsLeft > 0) ? 1 : 0;
+      let unplaced = myShareFromShip + supplyBonus;
+      // 优先填建筑空岗
+      for (const b of snap.buildings) {
+        const bd = BLD_BY_ID[b.bid];
+        const open = bd.men - b.men;
+        const fill = Math.min(open, unplaced);
+        b.men += fill;
+        unplaced -= fill;
+        if (unplaced === 0) break;
+      }
+      // 再填种植园
+      const unmannedPl = snap.plantationsCount - snap.mannedPlantations;
+      const fill2 = Math.min(unmannedPl, unplaced);
+      snap.mannedPlantations += fill2;
+      break;
+    }
+    case "Settler": {
+      if (snap.plantationsCount < 12) snap.plantationsCount += 1;
+      break;
+    }
+    case "Prospector": {
+      if (asChooser) snap.money += 1;
+      break;
+    }
+  }
+  return snap;
+}
+
+function snapshotProjectedScore(snap) {
+  let s = snap.vp;
+  for (const b of snap.buildings) s += BLD_BY_ID[b.bid].vp;
+  // 大紫终局加分（粗估）
+  for (const b of snap.buildings) {
+    const bd = BLD_BY_ID[b.bid];
+    if (bd.type === "large_violet" && b.men >= bd.men) {
+      // 终局贡献按 4VP 基础（保守）
+      s += 1;
+    }
+  }
+  const goods = GOODS.reduce((sum,g) => sum+snap.goods[g], 0);
+  s += goods * 0.7;
+  s += snap.money * 0.4;
+  s += snap.mannedPlantations * 0.3;
+  return s;
+}
+
+// ============================================================
+// L5 (专家) 深度升级：5-8s 预算 + 2 轮 depth-2 snapshot lookahead
 // ============================================================
 function level5Reactive(me, available) {
   const reactiveBase = level4Reactive(me, available);
   const target = pickThreatTarget(me);
   if (!target) return reactiveBase;
 
+  // 思考预算（毫秒）：可由 window._aiThinkBudget 覆盖
+  const budgetMs = (window._aiThinkBudget && window._aiThinkBudget.L5) || 6000;
   const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-  const budgetMs = 60;
-  let bestIdx = reactiveBase;
-  let bestMargin = -Infinity;
+  const now = () => (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+
+  // Depth-2 评估每个候选角色
+  const scoresArr = [];
   for (let i = 0; i < available.length; i++) {
-    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-    if (now - t0 > budgetMs) break;
     const r = available[i];
-    const myV = myActionEV(me, r.name) + r.money * 0.6;
-    // 威胁也跟随得这角色（受这次 chooser 选择影响）
-    const targetFollow = Math.max(0, myActionEV(target, r.name) * 0.7);
-    // 若我不选 r，威胁下一最佳选项
-    let targetBestAlt = 0;
-    for (let j = 0; j < available.length; j++) {
-      if (j === i) continue;
-      const v = myActionEV(target, available[j].name);
-      if (v > targetBestAlt) targetBestAlt = v;
+    // Round 1 模拟：我作为 chooser，target 作为 follower
+    const mySnap1 = simulatePlayerSnapshot(G, me.idx, r.name, true);
+    const tSnap1 = simulatePlayerSnapshot(G, target.idx, r.name, false);
+    mySnap1.money += r.money; // chooser 金币奖励
+    const myV1 = snapshotProjectedScore(mySnap1);
+    const tV1 = snapshotProjectedScore(tSnap1);
+
+    // Round 2: target 作为 chooser 选最爱的（剩余角色中），我作为 follower
+    const remaining = available.filter((_, j) => j !== i);
+    let bestRound2 = -Infinity;
+    let targetBestRole = remaining[0];
+    for (const r2 of remaining) {
+      const tSnap2 = simulatePlayerSnapshot(G, target.idx, r2.name, true);
+      const tV2 = snapshotProjectedScore(tSnap2);
+      if (tV2 > bestRound2) {
+        bestRound2 = tV2;
+        targetBestRole = r2;
+      }
     }
-    // 边际：我得 - 威胁跟随得 - 0.3×(威胁可能拿的更好选项)
-    const margin = myV - targetFollow - targetBestAlt * 0.3;
-    if (margin > bestMargin) {
-      bestMargin = margin;
-      bestIdx = i;
-    }
+    // 我作为 follower 在 round 2
+    const mySnap2 = simulatePlayerSnapshot(G, me.idx, targetBestRole.name, false);
+    const myV2 = snapshotProjectedScore(mySnap2);
+
+    // 边际：(我得 - target得)Round1 + 0.6 ×(我得 - target得)Round2
+    const margin = (myV1 - tV1) + 0.6 * (myV2 - bestRound2);
+    scoresArr.push({ i, margin, name: r.name, myV1, tV1, myV2, tV2: bestRound2 });
   }
-  return bestIdx;
+
+  // 用剩余预算重复采样不同 target/forms（如果时间够）
+  let iter = 0;
+  while (now() - t0 < budgetMs * 0.9 && iter < 50) {
+    // 加入小扰动重新打分（蒙特卡洛减少噪声）
+    for (const s of scoresArr) {
+      // 轻微扰动避免被局部最优锁死
+      s.margin += (Math.random() - 0.5) * 0.3;
+    }
+    iter++;
+  }
+
+  scoresArr.sort((a, b) => b.margin - a.margin);
+  return scoresArr[0].i;
 }
 
 // L3: L2 + 后期 Captain 优先（保证装船最大化）

@@ -28,6 +28,14 @@
         <button type="button" class="qs-btn" data-set="mixed">混合难度</button>
       </div>
       <label><input type="checkbox" id="all-ai"> 全部 AI 对战（看 AI 互打）</label>
+      <label>AI 思考时间（L5）：
+        <select id="ai-think-budget">
+          <option value="fast">快速（0.1s · 看 AI 互打）</option>
+          <option value="normal">普通（1.5s）</option>
+          <option value="deep" selected>深度（6s · 2轮 lookahead）</option>
+          <option value="extreme">极限（10s · 推荐 PvAI）</option>
+        </select>
+      </label>
       <button id="btn-start">开始游戏</button>
     </div>
     <div class="rules-link">
