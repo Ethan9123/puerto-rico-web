@@ -116,12 +116,51 @@ function buildBuildingTooltip(b) {
     <div class="tt-effect">${BUILDING_EFFECT_TEXT[b.id]}</div>
   `;
 }
+// 计算"如果现在选 Mayor，每人能拿多少"
+function getMayorPreview() {
+  if (typeof G === 'undefined' || !G || !G.players) return null;
+  const n = G.numPlayers;
+  const shipK = G.colonistsOnShip || 0;
+  const supply = G.colonistsLeft || 0;
+  // 顺时针从 chooser(=pos0) 逐个分发；chooser 拿到 ⌈shipK/n⌉ 个
+  const base = n > 0 ? Math.floor(shipK / n) : 0;
+  const extra = n > 0 ? (shipK % n) : 0;
+  const chooserFromShip = base + (extra > 0 ? 1 : 0);
+  const chooserBonus = supply > 0 ? 1 : 0;
+  return { shipTotal: shipK, supply, base, extra, chooserFromShip, chooserBonus, chooserTotal: chooserFromShip + chooserBonus };
+}
+function getCaptainPreview() {
+  if (typeof G === 'undefined' || !G || !G.ships) return null;
+  const ships = G.ships.map((s, i) => `船${i+1} ${s.count}/${s.capacity}${s.good ? ` (${GOOD_NAMES[s.good]})` : ' 空'}`);
+  return { ships };
+}
+function getTraderPreview() {
+  if (typeof G === 'undefined' || !G || !G.tradingHouse) return null;
+  return { used: G.tradingHouse.length, cap: 4, full: G.tradingHouse.length === 4 };
+}
+
 function buildRoleTooltip(roleName) {
   const d = ROLE_TOOLTIP_DATA[roleName];
+  let extra = '';
+  if (roleName === 'Mayor') {
+    const m = getMayorPreview();
+    if (m) {
+      extra = `<div class="tt-effect" style="border-top:1px solid #555;margin-top:6px;padding-top:6px;">
+        <b>当前状态：</b>船上 ${m.shipTotal} 殖民者，供应 ${m.supply} 殖民者<br>
+        若你选 [市长]：船 +${m.chooserFromShip}，特权 +${m.chooserBonus}，<b>共 ${m.chooserTotal} 人</b>
+      </div>`;
+    }
+  } else if (roleName === 'Captain') {
+    const c = getCaptainPreview();
+    if (c) extra = `<div class="tt-effect" style="border-top:1px solid #555;margin-top:6px;padding-top:6px;"><b>当前船况：</b><br>${c.ships.join('<br>')}</div>`;
+  } else if (roleName === 'Trader') {
+    const t = getTraderPreview();
+    if (t) extra = `<div class="tt-effect" style="border-top:1px solid #555;margin-top:6px;padding-top:6px;"><b>贸易站：</b>${t.used}/${t.cap}${t.full ? '（满，阶段末清空）' : ''}</div>`;
+  }
   return `<div class="tt-title">${ROLE_NAME_CN[roleName]} · ${roleName}</div>
     <div class="tt-meta"><b>行动：</b>${d.action}</div>
     <div class="tt-meta"><b>特权：</b>${d.privilege}</div>
-    <div class="tt-effect"><b>时机提示：</b>${d.tip}</div>`;
+    <div class="tt-effect"><b>时机提示：</b>${d.tip}</div>${extra}`;
 }
 
 function rankCaptainCandidates(candidates, ships) {
@@ -2357,9 +2396,26 @@ function render() {
       const idx = roleClickMap.get(r);
       div.onclick = () => resolveBoardSelect(idx);
     }
+    // 部分角色显示即时状态，方便人类玩家决策
+    let statLine = "";
+    if (r.name === "Mayor") {
+      const m = getMayorPreview();
+      if (m) statLine = `<div class="role-stat">选你 +${m.chooserTotal}👷 (船${m.chooserFromShip}+特权${m.chooserBonus})</div>`;
+    } else if (r.name === "Captain") {
+      const c = getCaptainPreview();
+      if (c) {
+        const full = G.ships.filter(s => s.count >= s.capacity).length;
+        const empty = G.ships.filter(s => !s.good).length;
+        statLine = `<div class="role-stat">船 ${full}满 / ${empty}空</div>`;
+      }
+    } else if (r.name === "Trader") {
+      const t = getTraderPreview();
+      if (t) statLine = `<div class="role-stat">贸易站 ${t.used}/${t.cap}${t.full ? "·满" : ""}</div>`;
+    }
     div.innerHTML = `
       <div class="role-name">${ROLE_NAME_CN[r.name]}</div>
       <div class="role-bonus">${ROLE_BONUS[r.name]}</div>
+      ${statLine}
       ${r.money ? `<div class="role-coin">${r.money}</div>` : ""}
     `;
     div.dataset.tooltipHtml = buildRoleTooltip(r.name);
