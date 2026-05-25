@@ -2784,6 +2784,8 @@ function humanPickFromList(title, labels, allowCancel) {
 }
 
 function showModal(title, body, buttons) {
+  // 模态弹出时强制隐藏 tooltip（鼠标可能停在建筑上时弹出，tooltip 会挡）
+  hideHoverTooltip();
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").innerHTML = body;
   const bb = document.getElementById("modal-buttons");
@@ -2809,6 +2811,9 @@ function plantEmoji(g) {
 }
 
 function render() {
+  // 隐藏当前 tooltip：render() 会替换大量 DOM，旧的 mouseleave 可能永远不触发
+  // 导致 tooltip 卡在屏幕上挡住选择 UI（如选种植园 / 选卖货种类）
+  hideHoverTooltip();
   // Topbar
   const endLabel = G.endTriggered ? ' · ⚠ 末轮' : '';
   document.getElementById("game-info").textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}${endLabel}`;
@@ -3034,6 +3039,12 @@ function render() {
   setupBuildingTooltips();
 }
 
+// 全局可调用：强制隐藏当前 tooltip（render / showModal / 点击 / Esc 都会调）
+function hideHoverTooltip() {
+  const tip = document.getElementById("building-tooltip");
+  if (tip) tip.classList.add("hidden");
+}
+
 function setupBuildingTooltips() {
   let tip = document.getElementById("building-tooltip");
   if (!tip) {
@@ -3041,6 +3052,15 @@ function setupBuildingTooltips() {
     tip.id = "building-tooltip";
     tip.className = "building-tooltip hidden";
     document.body.appendChild(tip);
+    // 一次性全局监听：任何 click / mousedown / Esc / 跨大块移动都隐藏
+    // （避免 render 替换 DOM 后 mouseleave 不触发导致挂屏）
+    document.addEventListener("click", () => hideHoverTooltip(), true);
+    document.addEventListener("mousedown", () => hideHoverTooltip(), true);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") hideHoverTooltip();
+    });
+    // 视口外（鼠标移出窗口）也隐藏
+    document.addEventListener("mouseleave", () => hideHoverTooltip());
   }
   document.querySelectorAll("[data-tooltip-html]").forEach(el => {
     el.onmouseenter = (e) => {
