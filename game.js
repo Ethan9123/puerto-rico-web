@@ -1325,9 +1325,213 @@ function aiPickRole(p, available) {
     return level1PickRole(p, available);
   }
   if (lvl === 3) return level2PickRoleNew(p, available);
-  if (lvl === 4) return level3Final(p, available);
-  if (lvl === 5) return level4Final(p, available);
+  if (lvl === 4) return level4Reactive(p, available);
+  if (lvl === 5) return level5Reactive(p, available);
   return level2PickRoleNew(p, available);
+}
+
+// ============================================================
+// 威胁分析（L4/L5 共用）：评估某对手当前可拿到的关键 EV
+// ============================================================
+function opponentThreat(opp) {
+  if (!opp) return null;
+  const goods = GOODS.reduce((s, g) => s + opp.goods[g], 0);
+  const kinds = GOODS.filter(g => opp.goods[g] > 0).length;
+  let shipCap = 0;
+  for (const ship of G.ships) shipCap += (ship.capacity - ship.count);
+  const wharf = G.isManned(opp, 18) ? Math.max(0, ...GOODS.map(g => opp.goods[g])) : 0;
+  const harbor = G.isManned(opp, 17) ? 1 : 0;
+  const shipping = Math.min(goods, shipCap + wharf);
+  const shipVP = shipping * (1 + harbor) + 1;
+  const hasOffice = G.isManned(opp, 12);
+  let bestSale = 0;
+  for (const g of GOODS) {
+    if (opp.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) {
+      let earn = GOOD_PRICE[g] + 1;
+      if (G.isManned(opp, 7)) earn += 1;
+      if (G.isManned(opp, 13)) earn += 2;
+      bestSale = Math.max(bestSale, earn);
+    }
+  }
+  let largeVioletAffordable = 0, bestBuildVP = 0;
+  for (const b of BUILDINGS) {
+    if (G.buildingStock[b.id] <= 0) continue;
+    if (G.ownsBuilding(opp, b.id)) continue;
+    if (12 - G.buildingUsedSpaces(opp) < b.size) continue;
+    const cost = G.effectiveCostWithRoleBonus(opp, b, true);
+    if (opp.money >= cost) {
+      bestBuildVP = Math.max(bestBuildVP, b.vp);
+      if (b.type === "large_violet") largeVioletAffordable++;
+    }
+  }
+  let openSlots = 0;
+  for (const b of opp.buildings) openSlots += (BLD_BY_ID[b.bid].men - b.men);
+  for (const pl of opp.plantations) if (!pl.manned) openSlots++;
+  let prod = 0;
+  for (const g of GOODS) prod += Math.min(G.productionCapacity(opp, g), G.supply[g]);
+  return {
+    name: opp.name, isHuman: opp.isHuman, goods, kinds, money: opp.money,
+    shipping, shipVP, bestSale, bestBuildVP, largeVioletAffordable,
+    openSlots, prod, totalScore: projectedScore(opp),
+  };
+}
+
+// 选反制目标：人类优先（PvAI 体验），否则得分最高的对手
+function pickThreatTarget(me) {
+  const others = G.players.filter(p => p !== me);
+  if (others.length === 0) return null;
+  const human = others.find(p => p.isHuman);
+  if (human) return human;
+  let best = others[0], bestScore = projectedScore(others[0]);
+  for (let i = 1; i < others.length; i++) {
+    const s = projectedScore(others[i]);
+    if (s > bestScore) { bestScore = s; best = others[i]; }
+  }
+  return best;
+}
+
+// 估算"我"当作 chooser 选某角色当下能拿多少（VP 单位，简化）
+function myActionEV(me, roleName) {
+  switch (roleName) {
+    case "Captain": {
+      const goods = GOODS.reduce((s,g) => s+me.goods[g], 0);
+      let shipCap = 0;
+      for (const ship of G.ships) shipCap += (ship.capacity - ship.count);
+      const wharf = G.isManned(me, 18) ? Math.max(0, ...GOODS.map(g => me.goods[g])) : 0;
+      const harbor = G.isManned(me, 17) ? 1 : 0;
+      const shipping = Math.min(goods, shipCap + wharf);
+      return shipping * (1 + harbor) + 1;
+    }
+    case "Trader": {
+      const hasOffice = G.isManned(me, 12);
+      let best = 0;
+      for (const g of GOODS) {
+        if (me.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) {
+          let earn = GOOD_PRICE[g] + 1;
+          if (G.isManned(me, 7)) earn += 1;
+          if (G.isManned(me, 13)) earn += 2;
+          best = Math.max(best, earn);
+        }
+      }
+      return best;
+    }
+    case "Builder": {
+      for (const b of BUILDINGS) {
+        if (G.buildingStock[b.id] <= 0) continue;
+        if (G.ownsBuilding(me, b.id)) continue;
+        if (12 - G.buildingUsedSpaces(me) < b.size) continue;
+        const cost = G.effectiveCostWithRoleBonus(me, b, true);
+        if (me.money >= cost) {
+          return b.vp + (b.type === "large_violet" ? 2 : 0.5);
+        }
+      }
+      return 0;
+    }
+    case "Craftsman": {
+      let prod = 0;
+      for (const g of GOODS) prod += Math.min(G.productionCapacity(me, g), G.supply[g]);
+      return prod * 0.6 + 0.5;
+    }
+    case "Mayor": {
+      let open = 0;
+      for (const b of me.buildings) open += (BLD_BY_ID[b.bid].men - b.men);
+      for (const pl of me.plantations) if (!pl.manned) open++;
+      const fromShip = G.numPlayers > 0 ? Math.ceil(G.colonistsOnShip / G.numPlayers) : 0;
+      return Math.min(open, fromShip + 1) * 1.2;
+    }
+    case "Settler": return me.plantations.length < 8 ? 1.5 : 0.5;
+    case "Prospector": return 1;
+    default: return 0;
+  }
+}
+
+// ============================================================
+// L4 (困难) 升级：level3Final 基础 + 5 条针对性反制
+// ============================================================
+function level4Reactive(me, available) {
+  const phase = gamePhase();
+  const has = name => available.find(r => r.name === name);
+  const baseChoice = level3Final(me, available);
+  const target = pickThreatTarget(me);
+  if (!target) return baseChoice;
+  const t = opponentThreat(target);
+  if (!t) return baseChoice;
+
+  // A: 抢 Captain — 对手能装 ≥4 货 且 我也能装 ≥2 货
+  if (has("Captain") && t.shipping >= 4) {
+    const myShip = myActionEV(me, "Captain");
+    if (myShip >= 3) return available.indexOf(has("Captain"));
+  }
+  // B: 抢 Builder（大紫）— 对手能买大紫 且 我钱够
+  if (has("Builder") && phase !== "early" && t.largeVioletAffordable > 0 && me.money >= 10) {
+    for (const b of BUILDINGS) {
+      if (b.type !== "large_violet") continue;
+      if (G.buildingStock[b.id] <= 0) continue;
+      if (G.ownsBuilding(me, b.id)) continue;
+      if (12 - G.buildingUsedSpaces(me) < b.size) continue;
+      const cost = G.effectiveCostWithRoleBonus(me, b, true);
+      if (me.money >= cost) return available.indexOf(has("Builder"));
+    }
+  }
+  // C: 抢 Trader — 对手最佳卖 ≥3 金 且 贸易站有位 且 我也能卖 ≥2 金
+  if (has("Trader") && t.bestSale >= 3 && G.tradingHouse.length < 4) {
+    const myTrade = myActionEV(me, "Trader");
+    if (myTrade >= 2) return available.indexOf(has("Trader"));
+  }
+  // D: 抢 Craftsman — 对手产能 ≥3 且 我产能 ≥ 对手 70%
+  if (has("Craftsman") && t.prod >= 3) {
+    let myProd = 0;
+    for (const g of GOODS) myProd += Math.min(G.productionCapacity(me, g), G.supply[g]);
+    if (myProd >= Math.ceil(t.prod * 0.7) && myProd >= 2) {
+      return available.indexOf(has("Craftsman"));
+    }
+  }
+  // E: 抢 Mayor — 我空岗 ≥3 且 不少于对手
+  if (has("Mayor")) {
+    let myOpen = 0;
+    for (const b of me.buildings) myOpen += (BLD_BY_ID[b.bid].men - b.men);
+    for (const pl of me.plantations) if (!pl.manned) myOpen++;
+    if (myOpen >= 3 && myOpen >= t.openSlots) {
+      return available.indexOf(has("Mayor"));
+    }
+  }
+  return baseChoice;
+}
+
+// ============================================================
+// L5 (专家) 升级：L4 反制 + 针对威胁的边际最大化
+// ============================================================
+function level5Reactive(me, available) {
+  const reactiveBase = level4Reactive(me, available);
+  const target = pickThreatTarget(me);
+  if (!target) return reactiveBase;
+
+  const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  const budgetMs = 60;
+  let bestIdx = reactiveBase;
+  let bestMargin = -Infinity;
+  for (let i = 0; i < available.length; i++) {
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    if (now - t0 > budgetMs) break;
+    const r = available[i];
+    const myV = myActionEV(me, r.name) + r.money * 0.6;
+    // 威胁也跟随得这角色（受这次 chooser 选择影响）
+    const targetFollow = Math.max(0, myActionEV(target, r.name) * 0.7);
+    // 若我不选 r，威胁下一最佳选项
+    let targetBestAlt = 0;
+    for (let j = 0; j < available.length; j++) {
+      if (j === i) continue;
+      const v = myActionEV(target, available[j].name);
+      if (v > targetBestAlt) targetBestAlt = v;
+    }
+    // 边际：我得 - 威胁跟随得 - 0.3×(威胁可能拿的更好选项)
+    const margin = myV - targetFollow - targetBestAlt * 0.3;
+    if (margin > bestMargin) {
+      bestMargin = margin;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }
 
 // L3: L2 + 后期 Captain 优先（保证装船最大化）
