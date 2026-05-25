@@ -90,15 +90,34 @@ puerto_rico_game/
 - **Universal Head** — 玩家辅助 PDF
 - **Anniversary Edition** — 建筑插画来源
 
-## 📄 License
+## 📄 License & Attribution
 
-本项目仅供学习交流，所有原版游戏知识产权属于 Rio Grande Games / Andreas Seyfarth。
+- 代码采用 **MIT License**，见 `LICENSE`。
+- 本项目是粉丝非商业重制，**Puerto Rico** 相关游戏 IP（名称、机制、规则表达等）归 **Andreas Seyfarth / Rio Grande Games** 所有。
+- `assets/buildings/` 建筑图片来源于 Anniversary Edition，版权归 Rio Grande Games；仅用于教育/个人游玩演示，不随 MIT 一并授权。
+- 项目与 Andreas Seyfarth、Rio Grande Games **无官方关联或背书**。
+- 详见 `NOTICE.md`。
 
 
-## 🧪 规则一致性测试
+## 🧪 测试
 
-- 打开 `tests/rules.html` 可运行 20 局全 AI（G 类）规则守恒检查。
-- 覆盖检查：
-  - 殖民者总量守恒（3/4/5 人分别为 55/75/95）
-  - 货物总量守恒（corn 10, indigo 11, sugar 11, tobacco 9, coffee 9）
-  - 初始建筑库存总数为 23
+- 轻量规则检查：打开 `tests/rules.html`
+- 全量端到端检查：打开 `tests/full.html`
+  - 3/4/5 人各 20 局全 AI（L5）完整对局
+  - 每局输出 `result ...` 行
+  - 断言游戏正确结束（殖民者耗尽 / VP 耗尽 / 12 城市格触发之一）
+  - 殖民者与货物总量守恒
+  - 每位玩家最终 VP > 0
+  - 30 局混合等级（L1~L5 同桌）平均分顺序：L5 > L4 > L3 > L2 > L1
+  - 23 栋建筑至少被建造一次
+  - 7 个角色至少被选择一次
+  - 无 JS console error
+
+### 船长阶段默认选船优先级（实现说明）
+
+当同一种货可装入多个候选船位时，默认优先级为：
+1. **已装同种货的船**（继续叠装，避免分散）
+2. **空船里剩余容量最大的船**
+3. 其余候选按**剩余容量降序**
+
+因此在人类玩家点击确认前，候选列表会把最佳选项放在第一位；AI 也使用同样优先级。

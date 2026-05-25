@@ -392,6 +392,23 @@ body {
   font-size: 9px;
   text-align: center;
 }
+.building-tooltip {
+  position: fixed;
+  z-index: 10000;
+  width: min(380px, calc(100vw - 24px));
+  background: rgba(16, 20, 27, 0.97);
+  border: 1px solid #f3c969;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.45);
+  padding: 10px 12px;
+  pointer-events: none;
+  color: #eef3f6;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.building-tooltip .tt-title { font-weight: 700; color: #f3c969; margin-bottom: 4px; }
+.building-tooltip .tt-meta { color: #c6d2db; font-size: 12px; }
+.building-tooltip .tt-effect { margin-top: 6px; color: #ffffff; }
 .goods-display {
   display: flex;
   gap: 8px;
