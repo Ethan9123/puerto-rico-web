@@ -41,6 +41,25 @@
   }
 
   {
+    // 起始种植园应按"总督顺位"分发：1st/2nd=indigo, 后面=corn（4 人局）
+    // 即 governor 拿 indigo，governor+1 拿 indigo，governor+2/3 拿 corn
+    let pass = 0, fail = 0;
+    for (let i = 0; i < 30; i++) {
+      const g = new Game(4, 'AI');
+      const gov = g.governor;
+      const expected = ['indigo', 'indigo', 'corn', 'corn'];
+      let ok = true;
+      for (let step = 0; step < 4; step++) {
+        const idx = (gov + step) % 4;
+        if (g.players[idx].plantations[0].good !== expected[step]) { ok = false; break; }
+      }
+      if (ok) pass++; else fail++;
+    }
+    assert(fail === 0, `starting plantation order wrong in ${fail}/30 games`);
+    log('result unit=starting_plant_order pass=' + pass + '/30');
+  }
+
+  {
     document.body.insertAdjacentHTML('beforeend', '<div id="toast-stack"></div>');
     window._allAIMode = false;
     showToast('<div class="t-title">test</div>');
