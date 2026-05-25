@@ -183,7 +183,6 @@ class Game {
       this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
     }
     this.governor = Math.floor(Math.random() * numPlayers);
-    this.logEvent('抽选首任总督：' + this.players[this.governor].name, 'role');
     this.currentRoleIdx = -1;
     this.turnNumber = 1;
     this.gameOver = false;
@@ -245,6 +244,7 @@ class Game {
 
     this.log = [];
     this.logEvent(`游戏开始：${numPlayers} 玩家`);
+    this.logEvent(`抽选首任总督：${this.players[this.governor].name}`, 'role');
   }
 
   newPlayer(idx, name, isHuman) {
