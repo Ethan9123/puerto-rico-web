@@ -24,7 +24,7 @@ const ROLE_TOOLTIP_DATA = {
   Settler: { action: "按顺序拿 1 个种植园；选择者可改拿采石场。", privilege: "选角者优先且可拿采石场。", tip: "适合：你缺关键种植园/要抢采石场；不适合：明牌没有你要的田，且会明显喂肥后手玩家。" },
   Mayor: { action: "补殖民者船并依次分配，选择者额外 +1 殖民者。", privilege: "额外拿 1 名殖民者。", tip: "适合：你有空岗要立刻启动建筑/种植园；不适合：你空岗少、却会让对手关键建筑全部上线。" },
   Builder: { action: "每位玩家可建 1 栋建筑。", privilege: "建造费用 -1 金币。", tip: "适合：你能靠 -1 提前达成强力建筑曲线；不适合：你没钱或只会帮对手先手拿走核心建筑。" },
-  Craftsman: { action: "所有可生产位产货，选择者额外拿 1 货。", privilege: "额外拿 1 个任意可得货物。", tip: "适合：你能转化为卖货/装船分；不适合：你产不出货，反而给对手大量产能兑现。" },
+  Craftsman: { action: "所有可生产位产货（需 manned 种植园 + 加工建筑容量；玉米只要 manned 种植园）。", privilege: "额外拿 1 个本回合已产出过的种类（场上无人产出则无可拿）。", tip: "适合：你能转化为卖货/装船分；不适合：你产不出货，反而给对手大量产能兑现。" },
   Trader: { action: "每位玩家可卖 1 种货到贸易站。", privilege: "卖货时额外 +1 金币。", tip: "适合：你有高价值货且贸易站位子对你有利；不适合：你无货或会先帮对手卖掉高价货。" },
   Captain: { action: "轮流装船得 VP，阶段末弃货（可仓库保留）。", privilege: "本阶段你首次装船额外 +1VP。", tip: "适合：你货多且能抢装船位；不适合：你货少且会让对手先清空大量高价货。" },
   Prospector: { action: "仅选择者执行。", privilege: "立即 +1 金币。", tip: "适合：你需要补 1 金完成关键建造阈值；不适合：场上有更高价值角色窗口可直接转分或卡位。" },
@@ -1057,25 +1057,37 @@ async function doCraftsman(chooserIdx, order) {
       }
     }
   }
-  // chooser 额外取1个 — FIX: 仅限本回合刚生产出的种类
+  // 工匠特权：只能选 1 种本回合"被生产"的货物。
+  // 例如：场上没人在玉米田上岗 → producedKinds 不含 corn → 选择者不能拿 corn。
   const chooser = G.players[chooserIdx];
   const available = GOODS.filter(g => G.supply[g] > 0 && producedKinds.has(g));
   if (available.length > 0) {
     let g;
     if (chooser.isHuman) {
-      const idx = await humanPickFromList("工匠奖励：选 1 种货物", available.map(g => GOOD_NAMES[g]), true);
+      const producedList = [...producedKinds].map(k => GOOD_NAMES[k]).join("/");
+      const labels = available.map(k => `${GOOD_NAMES[k]} (本回合已产出)`);
+      const idx = await humanPickFromList(
+        `工匠特权：仅可选本回合产出过的种类 [${producedList}]，额外 +1`,
+        labels, true
+      );
       if (idx === null) { /* skip */ }
       else g = available[idx];
     } else {
-      // AI 选最贵的
+      // AI 选最贵的（仍只能从 available 选）
       g = available.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
     }
-    if (g) {
+    // 防御性双重检查：g 必须在 producedKinds 且供应 > 0
+    if (g && producedKinds.has(g) && G.supply[g] > 0) {
       chooser.goods[g]++;
       G.supply[g]--;
       G.logEvent(`${chooser.name} 工匠奖励：+1 ${GOOD_NAMES[g]}`, "action");
       if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
+    } else if (g) {
+      console.warn(`Craftsman bonus blocked: '${g}' not in producedKinds or supply empty`, [...producedKinds], G.supply[g]);
     }
+  } else {
+    // 本回合无人生产 → 选择者亦无特权
+    G.logEvent(`${chooser.name} 工匠特权：本回合无人生产，无可选种类`, "action");
   }
   G.logEvent(`生产阶段结束`, "action");
   if (humanForCraftToast && !window._allAIMode) {
