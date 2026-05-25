@@ -227,16 +227,18 @@ class Game {
     this.flipPlantations();
 
     // 起始种植园：
-    // 3p: P1=Indigo, P2=Indigo, P3=Corn
-    // 4p: P1=I, P2=I, P3=Corn, P4=Corn
-    // 5p: P1=I, P2=I, P3=I, P4=C, P5=C
+    // 3p: 1st=Indigo, 2nd=Indigo, 3rd=Corn
+    // 4p: 1st=I, 2nd=I, 3rd=Corn, 4th=Corn
+    // 5p: 1st=I, 2nd=I, 3rd=I, 4th=C, 5th=C
+    // 第 1 顺位 = 总督，按顺时针展开发牌
     const startingPlant = {
       3: ["indigo", "indigo", "corn"],
       4: ["indigo", "indigo", "corn", "corn"],
       5: ["indigo", "indigo", "indigo", "corn", "corn"],
     }[numPlayers];
-    for (let i = 0; i < numPlayers; i++) {
-      this.players[i].plantations.push({ good: startingPlant[i], manned: false });
+    for (let step = 0; step < numPlayers; step++) {
+      const idx = (this.governor + step) % numPlayers;
+      this.players[idx].plantations.push({ good: startingPlant[step], manned: false });
     }
 
     // 起始金币：玩家数-1
@@ -245,6 +247,13 @@ class Game {
     this.log = [];
     this.logEvent(`游戏开始：${numPlayers} 玩家`);
     this.logEvent(`抽选首任总督：${this.players[this.governor].name}`, 'role');
+    // 给人类玩家提示他们的顺位与起始田
+    const humanPlayer = this.players.find(p => p.isHuman);
+    if (humanPlayer) {
+      const seat = ((humanPlayer.idx - this.governor) + numPlayers) % numPlayers + 1;
+      const startGood = humanPlayer.plantations[0].good;
+      this.logEvent(`你是第 ${seat} 顺位（起始 ${GOOD_NAMES[startGood] || startGood} 田）`, 'role');
+    }
   }
 
   newPlayer(idx, name, isHuman) {
