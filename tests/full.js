@@ -103,6 +103,23 @@
     log('result unit=craftsman_bonus_only_produced corn=' + G.players[0].goods.corn + ' sugar=' + G.players[0].goods.sugar);
   }
 
+  // 末轮触发后所有玩家应仍能选完角色才结束
+  // 模拟：手动设 G.vpLeft = 1，跑 1 局，验证 endTriggered 被设过 && 每个 roleCards.takenBy 不全 null（说明本回合所有人都选了）
+  {
+    G = new Game(4, 'AI');
+    window._allAIMode = true;
+    G.players.forEach(p => { p.isHuman = false; p._aiLevel = 3; });
+    // 直接把 vpLeft 设极低强制末轮快速触发
+    G.vpLeft = 5;
+    await runMainLoop();
+    assert(G.endTriggered === true, 'endTriggered must be true when vpLeft drained');
+    assert(G.gameOver === true, 'gameOver must be true after endTriggered round finishes');
+    // 最后一回合的 4 张角色卡应全部 taken（说明所有玩家都选过角色）
+    const lastRoundTakenCount = G.roleCards.filter(r => r.takenBy !== null).length;
+    assert(lastRoundTakenCount === G.numPlayers, `last round should have all ${G.numPlayers} players pick a role; got ${lastRoundTakenCount}`);
+    log('result unit=end_trigger_full_round vpLeft_start=5 last_round_picks=' + lastRoundTakenCount);
+  }
+
   async function runOneGame(n, levels) {
     G = new Game(n, 'AI');
     G.players.forEach((p, i) => { p.isHuman = false; p._aiLevel = levels[i % levels.length]; });

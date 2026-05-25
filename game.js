@@ -645,8 +645,11 @@ async function runMainLoop() {
     for (const r of G.roleCards) { r.taken = false; r.takenBy = null; }
 
     // 角色轮转：从 governor 开始
+    // 注意：endTriggered 在 checkEndCondition 设置，但 gameOver 只在本 for-loop 结束后设。
+    // 因此 endTriggered 触发后剩余玩家仍然完整地选角色 + 执行角色阶段 → 符合规则
+    // "the game ends at the end of the round when..."
     for (let step = 0; step < G.numPlayers; step++) {
-      if (G.gameOver) break;
+      if (G.gameOver) break; // 安全网，正常流程下不会触发
       const playerIdx = (G.governor + step) % G.numPlayers;
       const player = G.players[playerIdx];
 
@@ -705,10 +708,30 @@ async function runMainLoop() {
 }
 
 function checkEndCondition() {
-  if (G.colonistsLeft <= 0 && G.colonistsOnShip <= 0) G.endTriggered = true;
-  if (G.vpLeft <= 0) G.endTriggered = true;
+  // 官方三条结束条件（任一触发；游戏继续到本回合所有玩家选完才结束）
+  const wasTriggered = G.endTriggered;
+  let triggerReason = null;
+  if (G.colonistsLeft <= 0 && G.colonistsOnShip <= 0) {
+    G.endTriggered = true;
+    triggerReason = triggerReason || "殖民者耗尽";
+  }
+  if (G.vpLeft <= 0) {
+    G.endTriggered = true;
+    triggerReason = triggerReason || "VP 池用尽";
+  }
   for (const p of G.players) {
-    if (G.buildingUsedSpaces(p) >= 12) G.endTriggered = true;
+    if (G.buildingUsedSpaces(p) >= 12) {
+      G.endTriggered = true;
+      triggerReason = triggerReason || `${p.name} 建满 12 格`;
+      break;
+    }
+  }
+  // 首次触发时打 log + toast（避免每个阶段都重复报）
+  if (!wasTriggered && G.endTriggered && triggerReason) {
+    G.logEvent(`⚠ 末轮触发：${triggerReason}。本回合所有玩家选完角色后游戏结束。`, "role");
+    if (typeof showToast === 'function' && !window._allAIMode) {
+      showToast(`<div class="t-title">⚠ 末轮触发</div><div class="t-sub">${triggerReason}<br>本回合所有玩家选完后结束</div>`, { kind: "warn", duration: 4500 });
+    }
   }
 }
 
@@ -2787,7 +2810,8 @@ function plantEmoji(g) {
 
 function render() {
   // Topbar
-  document.getElementById("game-info").textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}`;
+  const endLabel = G.endTriggered ? ' · ⚠ 末轮' : '';
+  document.getElementById("game-info").textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}${endLabel}`;
   // BGA风格顶部 prompt: 当前角色 + 当前玩家 + 跳过按钮
   const actionBar = document.getElementById("action-bar");
   let html = "";
