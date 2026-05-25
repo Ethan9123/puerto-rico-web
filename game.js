@@ -1236,7 +1236,13 @@ function level4Final(me, available) {
     for (const opp of G.players) {
       if (opp === me) continue;
       const oppAvail = available.filter((_, idx) => idx !== i);
-      const oppPick = oppAvail.length ? aiPickRole(opp, oppAvail) : -1;
+      let oppPick = -1;
+      if (oppAvail.length) {
+        const prevLvl = opp._aiLevel;
+        if (prevLvl === 5) opp._aiLevel = 4; // 防止 L5 前瞻递归
+        oppPick = aiPickRole(opp, oppAvail);
+        opp._aiLevel = prevLvl;
+      }
       const oppRole = oppPick >= 0 ? oppAvail[oppPick] : role;
       const oppProjected = estimateRoleRoundVP(opp, oppRole, true) + estimateRoleRoundVP(opp, role, false) - projectedRoundVP(opp);
       if (oppProjected > oppBest) oppBest = oppProjected;

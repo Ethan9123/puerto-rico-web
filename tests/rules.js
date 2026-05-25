@@ -44,5 +44,14 @@
     assert(bTotal === 23, `buildings stock mismatch g${i+1}: ${bTotal}`);
     log(`Game ${i + 1}: ok (${n} players)`);
   }
+
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  G = new Game(4, 'AI');
+  G.players.forEach(p => { p.isHuman = false; p._aiLevel = 5; });
+  await runMainLoop();
+  const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const elapsedMs = t1 - t0;
+  assert(elapsedMs < 30000, `4p all-L5 game too slow: ${Math.round(elapsedMs)}ms`);
+  log(`4p all-L5 full game runtime: ${Math.round(elapsedMs)}ms`);
   log('All checks passed.');
 })();
