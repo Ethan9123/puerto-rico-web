@@ -783,6 +783,9 @@ async function doMayor(chooserIdx, order) {
       G.colonistsOnShip--;
     }
   }
+  // 在分配前快照人类玩家本轮收到的殖民者数（含 chooser 特权 +1 / 船上分配）
+  const humanForToast = G.players.find(pp => pp.isHuman);
+  const humanReceivedMen = humanForToast ? (humanForToast._unplacedMen || 0) : 0;
   // FIX #30 & #31: 先让玩家分配（强制满岗），再补船
   for (const i of order) {
     const p = G.players[i];
@@ -809,10 +812,8 @@ async function doMayor(chooserIdx, order) {
   G.colonistsOnShip = actualRefill;
   G.colonistsLeft -= actualRefill;
   G.logEvent(`市长阶段结束，已分配并补船 ${actualRefill} 人`, "action");
-  const human = G.players.find(pp => pp.isHuman);
-  if (human && !window._allAIMode) {
-    const gain = human._unplacedMen || 0;
-    if (gain > 0) showToast(`<div class="t-title">市长：你 +${gain} 殖民者</div>`, { kind: "gain" });
+  if (humanForToast && !window._allAIMode && humanReceivedMen > 0) {
+    showToast(`<div class="t-title">市长：你 +${humanReceivedMen} 殖民者</div>`, { kind: "gain" });
   }
 }
 
@@ -972,6 +973,10 @@ async function doBuilder(playerIdx, isChooser) {
 
 async function doCraftsman(chooserIdx, order) {
   // 生产阶段：每人按生产能力生产货物（受供应限制）
+  // 快照：人类玩家本阶段开始前的货物计数，便于阶段末计算"本轮生产"差量
+  const humanForCraftToast = G.players.find(pp => pp.isHuman);
+  const humanGoodsBefore = {};
+  if (humanForCraftToast) for (const g of GOODS) humanGoodsBefore[g] = humanForCraftToast.goods[g];
   const producedKinds = new Set(); // 全场实际生产了哪些货物
   const perPlayerProducedKinds = G.players.map(() => new Set()); // 每位玩家本回合生产的种类（工厂奖励用）
   for (const g of GOODS) {
@@ -1025,9 +1030,12 @@ async function doCraftsman(chooserIdx, order) {
     }
   }
   G.logEvent(`生产阶段结束`, "action");
-  const hp = G.players.find(pp => pp.isHuman);
-  if (hp && !window._allAIMode) {
-    const line = GOODS.filter(g => hp.goods[g] > 0).map(g => `+${hp.goods[g]}${plantEmoji(g)}`).join(" ");
+  if (humanForCraftToast && !window._allAIMode) {
+    // 只展示本回合 *新增* 的货物（包括 chooser 奖励的 +1）
+    const line = GOODS
+      .filter(g => (humanForCraftToast.goods[g] - (humanGoodsBefore[g] || 0)) > 0)
+      .map(g => `+${humanForCraftToast.goods[g] - humanGoodsBefore[g]}${plantEmoji(g)}`)
+      .join(" ");
     if (line) showToast(`<div class="t-title">工匠：你 ${line}</div>`, { kind: "gain" });
   }
 }
