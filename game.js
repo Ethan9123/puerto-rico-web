@@ -182,7 +182,8 @@ class Game {
     for (let i = 0; i < numPlayers; i++) {
       this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
     }
-    this.governor = 0;
+    this.governor = Math.floor(Math.random() * numPlayers);
+    this.logEvent('抽选首任总督：' + this.players[this.governor].name, 'role');
     this.currentRoleIdx = -1;
     this.turnNumber = 1;
     this.gameOver = false;
@@ -393,6 +394,19 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function showToast(html, opts = {}) {
+  if (window._allAIMode) return;
+  const stack = document.getElementById('toast-stack');
+  if (!stack) return;
+  const t = document.createElement('div');
+  t.className = 'toast' + (opts.kind ? ' ' + opts.kind : '');
+  t.innerHTML = html;
+  stack.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  const dur = opts.duration ?? 1800;
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, dur);
+}
+
 // 装载 DNA 到玩家
 function loadDNA(p, idx) {
   const pool = AI_POOL && AI_POOL["P" + Math.min(idx + 1, 5)];
@@ -588,7 +602,7 @@ async function runMainLoop() {
         chosenIdx = await humanPickRole(available);
       } else {
         // 仅在有人类玩家时延时（给人类看清节奏）；全 AI 测试模式立即执行
-        if (!window._allAIMode) await sleep(450);
+        if (!window._allAIMode) await sleep(700);
         chosenIdx = aiPickRole(player, available);
       }
       const chosen = available[chosenIdx];
@@ -598,6 +612,9 @@ async function runMainLoop() {
       chosen.money = 0;
       player.money += bonusMoney;
       G.logEvent(`${player.name} 选择 [${ROLE_NAME_CN[chosen.name]}]${bonusMoney ? ` +${bonusMoney}金` : ""}`, "role");
+      if (!player.isHuman && !window._allAIMode) {
+        showToast(`<div class="t-title">${player.name} 选了 ${ROLE_NAME_CN[chosen.name]}</div>${bonusMoney ? `<div class="t-sub">+${bonusMoney}金 奖励</div>` : ""}`, { kind: "role" });
+      }
       G._currentPrompt = `阶段：${ROLE_NAME_CN[chosen.name]}（由 ${player.name} 选择${bonusMoney ? `，+${bonusMoney}金` : ""}）`;
       G._currentPlayer = playerIdx;
       render();
@@ -669,6 +686,7 @@ async function runRolePhase(roleName, chooserIdx) {
     case "Prospector":
       G.players[chooserIdx].money += 1;
       G.logEvent(`${G.players[chooserIdx].name} 拿 1 金币`, "action");
+      if (!G.players[chooserIdx].isHuman && !window._allAIMode) showToast(`<div class="t-title">${G.players[chooserIdx].name} 金矿主：+1金</div>`, { kind: "role" });
       break;
   }
 }
@@ -724,7 +742,7 @@ async function doSettler(playerIdx, isChooser) {
     document.querySelector(`.player-board[data-player="${playerIdx}"] .plantation-grid .plantation:nth-child(${newIdx + 1})`)
   );
   // 等动画播放（全 AI 模式短一些）
-  if (!window._allAIMode) await sleep(480);
+  if (!window._allAIMode) await sleep(350);
   // 庄园 Hacienda 效果：拿种植园同时从牌堆拿一张额外
   if (G.isManned(p, 8) && p.plantations.length < 12 && G.plantationDeck.length > 0) {
     const extra = G.plantationDeck.pop();
@@ -744,6 +762,7 @@ async function doSettler(playerIdx, isChooser) {
     }
   }
   G.logEvent(`${p.name} 拓殖：${choice.kind === "quarry" ? "🪨采石场" : plantEmoji(choice.good) + GOOD_NAMES[choice.good]}`, "action");
+  if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了 ${choice.kind === "quarry" ? "采石场" : GOOD_NAMES[choice.good]} 田</div>`, { kind: "role" });
 }
 
 async function doMayor(chooserIdx, order) {
@@ -790,6 +809,11 @@ async function doMayor(chooserIdx, order) {
   G.colonistsOnShip = actualRefill;
   G.colonistsLeft -= actualRefill;
   G.logEvent(`市长阶段结束，已分配并补船 ${actualRefill} 人`, "action");
+  const human = G.players.find(pp => pp.isHuman);
+  if (human && !window._allAIMode) {
+    const gain = human._unplacedMen || 0;
+    if (gain > 0) showToast(`<div class="t-title">市长：你 +${gain} 殖民者</div>`, { kind: "gain" });
+  }
 }
 
 async function humanReallocate(p) {
@@ -929,7 +953,7 @@ async function doBuilder(playerIdx, isChooser) {
   flyToDest(sourceEl, () =>
     document.querySelector(`.player-board[data-player="${playerIdx}"] .building-grid .mini-building:nth-child(${newBldIdx + 1})`)
   , 500);
-  if (!window._allAIMode) await sleep(520);
+  if (!window._allAIMode) await sleep(350);
   // 大学：建造后+1殖民者直接上岗。优先从供应区取，没有则从船上取。
   if (G.isManned(p, 16)) {
     if (G.colonistsLeft > 0) {
@@ -943,6 +967,7 @@ async function doBuilder(playerIdx, isChooser) {
     }
   }
   G.logEvent(`${p.name} 建造 ${b.cn} (花费${cost}金)`, "action");
+  if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 建造 ${b.cn} (花费 ${cost}金)</div>`, { kind: "role" });
 }
 
 async function doCraftsman(chooserIdx, order) {
@@ -996,9 +1021,15 @@ async function doCraftsman(chooserIdx, order) {
       chooser.goods[g]++;
       G.supply[g]--;
       G.logEvent(`${chooser.name} 工匠奖励：+1 ${GOOD_NAMES[g]}`, "action");
+      if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
     }
   }
   G.logEvent(`生产阶段结束`, "action");
+  const hp = G.players.find(pp => pp.isHuman);
+  if (hp && !window._allAIMode) {
+    const line = GOODS.filter(g => hp.goods[g] > 0).map(g => `+${hp.goods[g]}${plantEmoji(g)}`).join(" ");
+    if (line) showToast(`<div class="t-title">工匠：你 ${line}</div>`, { kind: "gain" });
+  }
 }
 
 async function doTrader(playerIdx, isChooser) {
@@ -1024,6 +1055,10 @@ async function doTrader(playerIdx, isChooser) {
   if (G.isManned(p, 13)) earn += 2;  // 大市场
   p.money += earn;
   G.logEvent(`${p.name} 卖 ${GOOD_NAMES[g]} +${earn}金`, "action");
+  if (!window._allAIMode) {
+    if (p.isHuman) showToast(`<div class="t-title">你卖 ${GOOD_NAMES[g]} +${earn}金</div>`, { kind: "gain" });
+    else showToast(`<div class="t-title">${p.name} 卖 ${GOOD_NAMES[g]} +${earn}金</div>`, { kind: "role" });
+  }
   // 贸易站满则清空
   if (G.tradingHouse.length === 4) {
     // 实际：贸易站需要在商人阶段开始检测，但简化处理
@@ -1109,6 +1144,8 @@ async function doCaptain(order, chooserIdx) {
       p.shippingVP += vpGain;
       G.vpLeft -= vpGain;
       G.logEvent(`${p.name} ${isWharf ? "用码头装" : `装船${pick.ship + 1}:`} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain}VP)`, "action");
+      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 装船#${isWharf ? "W" : (pick.ship + 1)} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain} VP)</div>`, { kind: "role" });
+      if (!window._allAIMode) await sleep(450);
       progress = true;
     }
   }
@@ -1157,6 +1194,12 @@ async function doCaptain(order, chooserIdx) {
     p._wharfUsedThisRound = false;
   }
   G.logEvent(`船长阶段结束`, "action");
+  const humanCaptain = G.players.find(pp => pp.isHuman);
+  if (humanCaptain && !window._allAIMode) {
+    const roundShipVP = humanCaptain.shippingVP - (humanCaptain._shipVpToastBase || 0);
+    humanCaptain._shipVpToastBase = humanCaptain.shippingVP;
+    if (roundShipVP > 0) showToast(`<div class="t-title">你本轮船运 +${roundShipVP} VP</div>`, { kind: "gain" });
+  }
 }
 
 async function humanKeepGoods(p, kinds) {

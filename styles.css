@@ -494,3 +494,13 @@ body {
 }
 .choice-list .choice:hover { border-color: #f3c969; }
 .choice-list .choice.disabled { opacity: 0.4; cursor: not-allowed; }
+
+
+#toast-stack { position: fixed; top: 70px; right: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; max-width: 360px; }
+.toast { background: rgba(20,24,32,0.95); border: 1px solid #f3c969; border-left: 4px solid #f3c969; border-radius: 6px; padding: 8px 12px; color: #fff; font-size: 13px; line-height: 1.4; box-shadow: 0 6px 18px rgba(0,0,0,0.4); opacity: 0; transform: translateX(20px); transition: opacity 0.25s, transform 0.25s; }
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.role { border-left-color: #6fb1ff; }
+.toast.gain { border-left-color: #6fd49b; }
+.toast.warn { border-left-color: #ffa84a; }
+.toast .t-title { font-weight: 700; margin-bottom: 2px; }
+.toast .t-sub { font-size: 12px; color: #c6d2db; }

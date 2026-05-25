@@ -30,6 +30,30 @@
     log('result unit=captain_default_ship expected=2 actual=' + ranked[0].ship);
   }
 
+  {
+    const seats = new Set();
+    for (let i = 0; i < 40; i++) {
+      const g = new Game(4, 'AI');
+      seats.add(g.governor);
+    }
+    assert(seats.size >= 3, 'random governor distinct seats too small: ' + seats.size);
+    log('result unit=random_governor distinctSeats=' + seats.size);
+  }
+
+  {
+    document.body.insertAdjacentHTML('beforeend', '<div id="toast-stack"></div>');
+    window._allAIMode = false;
+    showToast('<div class="t-title">test</div>');
+    showToast('<div class="t-title">test2</div>', { duration: 50 });
+    const before = document.querySelectorAll('#toast-stack .toast').length;
+    assert(before === 2, 'toasts stack: ' + before);
+    await new Promise(r => setTimeout(r, 600));
+    const after = document.querySelectorAll('#toast-stack .toast').length;
+    assert(after <= 1, 'short toast auto-remove: ' + after);
+    log('result unit=toast stacks=2 after-short=' + after);
+    window._allAIMode = true;
+  }
+
   async function runOneGame(n, levels) {
     G = new Game(n, 'AI');
     G.players.forEach((p, i) => { p.isHuman = false; p._aiLevel = levels[i % levels.length]; });
