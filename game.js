@@ -1218,7 +1218,85 @@ function level4Final(me, available) {
     }
   }
   // 其他用 L3 决策
-  return level3Final(me, available);
+  const fallback = level3Final(me, available);
+
+  // L5 前瞻：一轮角色相位估算（50ms预算）
+  const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  const budgetMs = 50;
+  let bestIdx = fallback;
+  let bestMargin = -Infinity;
+
+  for (let i = 0; i < available.length; i++) {
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    if (now - t0 > budgetMs) break;
+    const role = available[i];
+
+    const myProjected = estimateRoleRoundVP(me, role, true);
+    let oppBest = -Infinity;
+    for (const opp of G.players) {
+      if (opp === me) continue;
+      const oppAvail = available.filter((_, idx) => idx !== i);
+      let oppPick = -1;
+      if (oppAvail.length) {
+        const prevLvl = opp._aiLevel;
+        if (prevLvl === 5) opp._aiLevel = 4; // 防止 L5 前瞻递归
+        oppPick = aiPickRole(opp, oppAvail);
+        opp._aiLevel = prevLvl;
+      }
+      const oppRole = oppPick >= 0 ? oppAvail[oppPick] : role;
+      const oppProjected = estimateRoleRoundVP(opp, oppRole, true) + estimateRoleRoundVP(opp, role, false) - projectedRoundVP(opp);
+      if (oppProjected > oppBest) oppBest = oppProjected;
+    }
+
+    const margin = myProjected - oppBest;
+    if (margin > bestMargin) {
+      bestMargin = margin;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function projectedRoundVP(p) {
+  return p.vp + p.buildings.reduce((s, b) => s + BLD_BY_ID[b.bid].vp, 0) + G.getSpecialVPs(p);
+}
+
+function estimateRoleRoundVP(p, roleCard, isChooser) {
+  let s = projectedRoundVP(p) + (isChooser ? roleCard.money * 0.15 : 0);
+  if (roleCard.name === "Prospector" && isChooser) s += 0.4;
+  if (roleCard.name === "Captain") {
+    const goods = GOODS.reduce((sum, g) => sum + p.goods[g], 0);
+    s += Math.min(goods, 4) + (isChooser ? 1 : 0);
+  }
+  if (roleCard.name === "Trader") {
+    let bestSale = 0;
+    for (const g of GOODS) {
+      if (p.goods[g] > 0 && (G.ownsBuilding(p, 12) || !G.tradingHouse.includes(g))) {
+        bestSale = Math.max(bestSale, GOOD_PRICE[g] + (isChooser ? 1 : 0));
+      }
+    }
+    s += bestSale * 0.7;
+  }
+  if (roleCard.name === "Builder") {
+    for (const b of BUILDINGS) {
+      if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(p, b.id)) continue;
+      if (12 - G.buildingUsedSpaces(p) < b.size) continue;
+      const cost = G.effectiveCostWithRoleBonus(p, b, isChooser);
+      if (p.money >= cost) { s += b.vp + (b.type === "large_violet" ? 1.5 : 0.5); break; }
+    }
+  }
+  if (roleCard.name === "Craftsman") {
+    let prod = 0;
+    for (const g of GOODS) prod += Math.max(0, Math.min(G.productionCapacity(p, g), G.supply[g]));
+    s += prod * 0.55 + (isChooser ? 0.2 : 0);
+  }
+  if (roleCard.name === "Mayor") {
+    let openJobs = 0;
+    for (const b of p.buildings) openJobs += (BLD_BY_ID[b.bid].men - b.men);
+    s += Math.min(openJobs + p.plantations.filter(pl => !pl.manned).length, G.colonistsOnShip + (isChooser ? 1 : 0)) * 0.3;
+  }
+  if (roleCard.name === "Settler") s += 0.4;
+  return s;
 }
 
 // L3：L2 + 看全场（不仅下家）的 Captain/Trader 抢卡
