@@ -20,6 +20,15 @@ const ROLE_BONUS = {
   Captain: "运货物，每运1货=1胜利点",
   Prospector: "拿1金币",
 };
+const ROLE_TOOLTIP_DATA = {
+  Settler: { action: "按顺序拿 1 个种植园；选择者可改拿采石场。", privilege: "选角者优先且可拿采石场。", tip: "适合：你缺关键种植园/要抢采石场；不适合：明牌没有你要的田，且会明显喂肥后手玩家。" },
+  Mayor: { action: "补殖民者船并依次分配，选择者额外 +1 殖民者。", privilege: "额外拿 1 名殖民者。", tip: "适合：你有空岗要立刻启动建筑/种植园；不适合：你空岗少、却会让对手关键建筑全部上线。" },
+  Builder: { action: "每位玩家可建 1 栋建筑。", privilege: "建造费用 -1 金币。", tip: "适合：你能靠 -1 提前达成强力建筑曲线；不适合：你没钱或只会帮对手先手拿走核心建筑。" },
+  Craftsman: { action: "所有可生产位产货，选择者额外拿 1 货。", privilege: "额外拿 1 个任意可得货物。", tip: "适合：你能转化为卖货/装船分；不适合：你产不出货，反而给对手大量产能兑现。" },
+  Trader: { action: "每位玩家可卖 1 种货到贸易站。", privilege: "卖货时额外 +1 金币。", tip: "适合：你有高价值货且贸易站位子对你有利；不适合：你无货或会先帮对手卖掉高价货。" },
+  Captain: { action: "轮流装船得 VP，阶段末弃货（可仓库保留）。", privilege: "本阶段你首次装船额外 +1VP。", tip: "适合：你货多且能抢装船位；不适合：你货少且会让对手先清空大量高价货。" },
+  Prospector: { action: "仅选择者执行。", privilege: "立即 +1 金币。", tip: "适合：你需要补 1 金完成关键建造阈值；不适合：场上有更高价值角色窗口可直接转分或卡位。" },
+};
 const ROLE_NAME_CN = {
   Settler: "拓殖者", Mayor: "市长", Builder: "建造师",
   Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主"
@@ -66,6 +75,66 @@ const BUILDINGS = [
   { id: 23, name: "市政厅",      cn: "市政厅",      img: "23_city_hall.png",       type: "large_violet", cost: 10, men: 1, vp: 4, size: 2, qty: 1, effect: "city_hall" },
 ];
 const BLD_BY_ID = Object.fromEntries(BUILDINGS.map(b => [b.id, b]));
+const BUILDING_EN = {
+  1: "Small Indigo Plant", 2: "Small Sugar Mill", 3: "Large Indigo Plant", 4: "Large Sugar Mill", 5: "Tobacco Storage", 6: "Coffee Roaster",
+  7: "Small Market", 8: "Hacienda", 9: "Construction Hut", 10: "Small Warehouse", 11: "Hospice", 12: "Office", 13: "Large Market",
+  14: "Large Warehouse", 15: "Factory", 16: "University", 17: "Harbor", 18: "Wharf", 19: "Guild Hall", 20: "Residence", 21: "Fortress", 22: "Customs House", 23: "City Hall"
+};
+const BUILDING_EFFECT_TEXT = {
+  1: "工匠阶段：有靛蓝种植园且有人镇守时生产靛蓝。小型生产建筑 1 工人槽。",
+  2: "工匠阶段：有蔗糖种植园且有人镇守时生产蔗糖。小型生产建筑 1 工人槽。",
+  3: "工匠阶段：有靛蓝种植园且有人镇守时生产靛蓝。大型生产建筑通常 3 工人槽。",
+  4: "工匠阶段：有蔗糖种植园且有人镇守时生产蔗糖。大型生产建筑通常 3 工人槽。",
+  5: "工匠阶段：有烟草种植园且有人镇守时生产烟草。大型生产建筑 3 工人槽。",
+  6: "工匠阶段：有咖啡种植园且有人镇守时生产咖啡。咖啡烘焙厂为例外：2 工人槽。",
+  7: "商人阶段：每次卖货 +1 金币。",
+  8: "拓殖者阶段：拿明牌种植园前，从牌堆顶额外拿一张（不能是采石场）。",
+  9: "拓殖者阶段：可改为拿一个采石场。",
+  10: "船长阶段末可保留 +1 种全量货物。",
+  11: "拓殖者阶段：新拿的种植园直接 +1 工人。",
+  12: "商人阶段：可卖与贸易站现有相同种类的货物。",
+  13: "商人阶段：每次卖货 +2 金币。",
+  14: "船长阶段末可保留 +2 种全量货物。",
+  15: "工匠阶段：按产货种类得 2种=1金 3种=2金 4种=3金 5种=5金。",
+  16: "建造师阶段：建好建筑立即放 1 名殖民者上去。",
+  17: "船长阶段：每次装船 +1 VP。",
+  18: "船长阶段：可一次性把一种货物全部丢入供应区抵 VP（每阶段一次）。",
+  19: "终局：每小型生产建筑+1VP，每大型生产建筑+2VP（需有人镇守）。大型紫色：占2格，需1工人激活。",
+  20: "终局：占用 ≤9 格=4VP, 10=5, 11=6, 12=7（需有人镇守）。大型紫色：占2格，需1工人激活。",
+  21: "终局：每 3 名殖民者 +1VP（含岸边，需有人镇守）。大型紫色：占2格，需1工人激活。",
+  22: "终局：每 4 个船运 VP +1 VP（需有人镇守）。大型紫色：占2格，需1工人激活。",
+  23: "终局：每紫色建筑 +1VP（需有人镇守，含自己）。大型紫色：占2格，需1工人激活。"
+};
+const TYPE_CN = { production: "生产", violet: "紫色", large_violet: "大型紫色" };
+const TIER_BY_BID = {1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4};
+
+function buildBuildingTooltip(b) {
+  return `
+    <div class="tt-title">${b.cn} · ${BUILDING_EN[b.id]}</div>
+    <div class="tt-meta">成本 ${b.cost}💰 · ${b.vp}⭐ · ${b.men}工人槽 · ${TYPE_CN[b.type]}</div>
+    <div class="tt-meta">采石场折扣上限：${TIER_BY_BID[b.id]} 金币</div>
+    <div class="tt-effect">${BUILDING_EFFECT_TEXT[b.id]}</div>
+  `;
+}
+function buildRoleTooltip(roleName) {
+  const d = ROLE_TOOLTIP_DATA[roleName];
+  return `<div class="tt-title">${ROLE_NAME_CN[roleName]} · ${roleName}</div>
+    <div class="tt-meta"><b>行动：</b>${d.action}</div>
+    <div class="tt-meta"><b>特权：</b>${d.privilege}</div>
+    <div class="tt-effect"><b>时机提示：</b>${d.tip}</div>`;
+}
+
+function rankCaptainCandidates(candidates, ships) {
+  const score = (c) => {
+    if (c.ship === "wharf") return -1;
+    const ship = ships[c.ship];
+    const rem = ship.capacity - ship.count;
+    const sameKind = ship.good === c.good ? 1 : 0;
+    return sameKind * 1000 + rem * 10 + (c.amount || 0);
+  };
+  return candidates.slice().sort((a, b) => score(b) - score(a));
+}
+window.rankCaptainCandidates = rankCaptainCandidates;
 
 const RULES_TEXT = `
 <h3>游戏目标</h3>
@@ -1001,37 +1070,15 @@ async function doCaptain(order, chooserIdx) {
         }
       }
       if (candidates.length === 0) continue;
+      const sortedCandidates = rankCaptainCandidates(candidates, G.ships);
       // 玩家选择
       let pick;
       if (p.isHuman) {
-        const labels = candidates.map(c => c.ship === "wharf" ? `🚢码头 装全部 ${c.amount}个${GOOD_NAMES[c.good]}` : `船${c.ship + 1} 装${c.amount}个${GOOD_NAMES[c.good]}`);
+        const labels = sortedCandidates.map(c => c.ship === "wharf" ? `🚢码头 装全部 ${c.amount}个${GOOD_NAMES[c.good]}` : `船${c.ship + 1} 装${c.amount}个${GOOD_NAMES[c.good]}`);
         const idx = await humanPickFromList("船长：装船", labels, false);
-        pick = candidates[idx];
+        pick = sortedCandidates[idx];
       } else {
-        // AI 装船：
-        // 1) 优先用 Wharf（如果有且要卸多）→ 单种一次性清完
-        // 2) 否则选可装最多量的方案
-        // 3) 若量相同，优先填满船的（让船下回合归零，给自己多一次装船机会）
-        // 4) 否则装最贵的货物
-        pick = candidates.reduce((best, c) => {
-          if (!best) return c;
-          // Wharf > 货船（如果 amount 接近）
-          const wA = best.ship === "wharf" ? 1 : 0;
-          const wB = c.ship === "wharf" ? 1 : 0;
-          // 估每个选项的"效率"分数
-          const scoreOf = (ch) => {
-            let s = ch.amount * 10;
-            // 装满船 +5
-            if (ch.ship !== "wharf") {
-              const ship = G.ships[ch.ship];
-              if (ship.count + ch.amount >= ship.capacity) s += 8;
-            }
-            // 高价货物略加分
-            s += GOOD_PRICE[ch.good] * 0.5;
-            return s;
-          };
-          return scoreOf(c) > scoreOf(best) ? c : best;
-        }, null);
+        pick = sortedCandidates[0];
       }
       // 执行装船
       const isWharf = pick.ship === "wharf";
@@ -2255,6 +2302,7 @@ function render() {
       <div class="role-bonus">${ROLE_BONUS[r.name]}</div>
       ${r.money ? `<div class="role-coin">${r.money}</div>` : ""}
     `;
+    div.dataset.tooltipHtml = buildRoleTooltip(r.name);
     rolesDiv.appendChild(div);
   }
 
@@ -2302,10 +2350,9 @@ function render() {
     : null;
   // 按 max quarry discount 分组
   const tierBuildings = [[], [], [], []];
-  const tierByBid = {1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4};
   for (const b of BUILDINGS) {
     if (G.buildingStock[b.id] <= 0) continue;
-    tierBuildings[tierByBid[b.id] - 1].push(b);
+    tierBuildings[TIER_BY_BID[b.id] - 1].push(b);
   }
   for (let tier = 0; tier < 4; tier++) {
     const row = document.createElement("div");
@@ -2336,6 +2383,7 @@ function render() {
       <div class="badge">×${left}</div>
       <div class="info"><span>${b.cn}</span><span>${b.cost}💰 ${b.vp}⭐${costNote}</span></div>
     `;
+    div.dataset.tooltipHtml = buildBuildingTooltip(b);
     row.appendChild(div);
     }
     bldDiv.appendChild(row);
@@ -2391,7 +2439,7 @@ function render() {
         <div class="building-grid">
           ${p.buildings.map(b => {
             const bd = BLD_BY_ID[b.bid];
-            return `<div class="mini-building" title="${bd.cn}">
+            return `<div class="mini-building" data-tooltip-html="${buildBuildingTooltip(bd).replace(/"/g, "&quot;")}">
               <img src="assets/buildings/${bd.img}">
               <div class="men">${"👷".repeat(b.men)}${"⚪".repeat(bd.men - b.men)}</div>
             </div>`;
@@ -2411,6 +2459,35 @@ function render() {
   // Log
   const logDiv = document.getElementById("log");
   logDiv.innerHTML = G.log.slice(0, 30).map(e => `<div class="entry ${e.cls}">${e.msg}</div>`).join("");
+  setupBuildingTooltips();
+}
+
+function setupBuildingTooltips() {
+  let tip = document.getElementById("building-tooltip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "building-tooltip";
+    tip.className = "building-tooltip hidden";
+    document.body.appendChild(tip);
+  }
+  document.querySelectorAll("[data-tooltip-html]").forEach(el => {
+    el.onmouseenter = (e) => {
+      tip.innerHTML = e.currentTarget.dataset.tooltipHtml;
+      tip.classList.remove("hidden");
+    };
+    el.onmousemove = (e) => {
+      const margin = 12;
+      const tw = tip.offsetWidth || 320;
+      const th = tip.offsetHeight || 140;
+      let x = e.clientX + 16;
+      let y = e.clientY + 16;
+      if (x + tw + margin > window.innerWidth) x = e.clientX - tw - 16;
+      if (y + th + margin > window.innerHeight) y = e.clientY - th - 16;
+      tip.style.left = `${Math.max(margin, x)}px`;
+      tip.style.top = `${Math.max(margin, y)}px`;
+    };
+    el.onmouseleave = () => tip.classList.add("hidden");
+  });
 }
 
 // 显示玩家潜在 VP（含建筑+特殊）
