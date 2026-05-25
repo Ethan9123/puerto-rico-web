@@ -9,7 +9,7 @@
   - L2 进化 (DNA) — Excel 700+ 代进化的纯 DNA AI
   - L3 普通 (Normal) — 看邻座 + 流派
   - L4 困难 (Hard) — 看全场 + 智能覆盖
-  - L5 专家 (Expert) — 针对领先者 + 前瞻
+  - L5 专家 (Expert) — 针对领先者 + 1 轮角色前瞻（50ms 预算）
 - **每个 CPU 可独立选难度**
 - **支持 3 / 4 / 5 玩家**
 - **完整 23 建筑** + 6 种货物 + 7 角色（Settler / Mayor / Builder / Craftsman / Trader / Captain / Prospector）
@@ -61,7 +61,7 @@ python -m http.server 8765
 | L2 进化 | 36 | Tony Mitton 进化器跑 700+ 代后的 top 玩家 DNA |
 | L3 普通 | 42 | + 角色卡奖金意识 + 下家货物卡位 |
 | L4 困难 | 43 | + 后期 Captain/Mayor 智能覆盖 |
-| L5 专家 | 50 | + 后期大紫 Builder + Trader 经济作物保护 |
+| L5 专家 | 50 | + 保留紧急覆盖 + 单轮角色相位前瞻（最大化“我方投影 - 对手最佳投影”） |
 
 ## 📁 项目结构
 
@@ -93,3 +93,12 @@ puerto_rico_game/
 ## 📄 License
 
 本项目仅供学习交流，所有原版游戏知识产权属于 Rio Grande Games / Andreas Seyfarth。
+
+
+## 🧪 规则一致性测试
+
+- 打开 `tests/rules.html` 可运行 20 局全 AI（G 类）规则守恒检查。
+- 覆盖检查：
+  - 殖民者总量守恒（3/4/5 人分别为 55/75/95）
+  - 货物总量守恒（corn 10, indigo 11, sugar 11, tobacco 9, coffee 9）
+  - 初始建筑库存总数为 23
