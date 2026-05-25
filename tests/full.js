@@ -73,6 +73,36 @@
     window._allAIMode = true;
   }
 
+  // 工匠特权过滤断言：
+  //  - 场景1：全部 plantation unmanned，无人生产 → chooser 拿不到任何 bonus
+  //  - 场景2：只有 sugar 被产出 → chooser bonus 只能选 sugar (即使供应里有 corn)
+  {
+    G = new Game(4, 'AI');
+    window._allAIMode = true;
+    G.players.forEach(p => { p.isHuman = false; p._aiLevel = 5; });
+    const goodsBefore = G.players[0].goods.corn;
+    await doCraftsman(0, [0,1,2,3]);
+    const totalGoods = G.players.reduce((s, p) => s + GOODS.reduce((sg, g) => sg + p.goods[g], 0), 0);
+    assert(totalGoods === 0, `craftsman with all unmanned should give 0 goods, got ${totalGoods}`);
+    log('result unit=craftsman_no_production goods=' + totalGoods);
+  }
+
+  {
+    G = new Game(4, 'AI');
+    window._allAIMode = true;
+    G.players.forEach(p => { p.isHuman = false; p._aiLevel = 5; });
+    // 只让 p[0] 有 manned sugar，确保 chooser bonus 只能是 sugar
+    G.players.forEach(p => { p.plantations = []; });
+    G.players[0].plantations.push({ good: 'sugar', manned: true });
+    G.players[0].buildings.push({ bid: 2, men: 1 }); // Small Sugar Mill manned
+    const cornBefore = G.players[0].goods.corn;
+    await doCraftsman(0, [0,1,2,3]);
+    // chooser 应得到 1 sugar 产出 + 1 sugar bonus = 2 sugar；corn 必须仍是 cornBefore
+    assert(G.players[0].goods.corn === cornBefore, `chooser should not get corn when no one produced corn (got ${G.players[0].goods.corn} - expected ${cornBefore})`);
+    assert(G.players[0].goods.sugar >= 1, `chooser should produce sugar`);
+    log('result unit=craftsman_bonus_only_produced corn=' + G.players[0].goods.corn + ' sugar=' + G.players[0].goods.sugar);
+  }
+
   async function runOneGame(n, levels) {
     G = new Game(n, 'AI');
     G.players.forEach((p, i) => { p.isHuman = false; p._aiLevel = levels[i % levels.length]; });
