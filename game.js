@@ -1439,10 +1439,10 @@ function aiPickRole(p, available) {
   const lvl = p._aiLevel || 3;
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
-    // 纯 DNA AI
+    // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
     if (p._dna) {
       const idx = dnaPickRole(p, available);
-      if (idx !== null && idx >= 0 && idx < available.length) return idx;
+      if (idx !== null && idx >= 0 && idx < available.length) return dnaLookaheadRefine(p, available, idx);
     }
     return level1PickRole(p, available);
   }
@@ -1500,6 +1500,38 @@ function ismctsPickRole(p, available, tier) {
   } catch (e) {
     console.warn("ISMCTS failed, fallback", e);
     return level5Reactive(p, available);
+  }
+}
+
+// 进化(L2)浅层前瞻：在 DNA 首选基础上，往后推演几轮(纯启发式续局)、只看"自己"的投影分来微调。
+// 不做对手建模/卡位(那是困难/专家的层级)，且强锚定基因首选——只在明显更优时改选 → 仅"稍微"变强。
+function dnaLookaheadRefine(me, available, dnaIdx) {
+  if (available.length <= 1) return dnaIdx;
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.clone) return dnaIdx;
+  try {
+    const st0 = buildSimState(G);
+    if (PRSim.currentChooser(st0) !== me.idx) return dnaIdx;
+    const ROUNDS = 2; // 往后多看几轮
+    let bestI = dnaIdx, bestS = -Infinity;
+    for (let i = 0; i < available.length; i++) {
+      const st = PRSim.clone(st0);
+      const ri = st.roleCards.findIndex(r => r.name === available[i].name && !r.taken);
+      if (ri < 0) continue;
+      PRSim.applyRole(st, ri);
+      const startTurn = st.turnNumber;
+      let guard = 0;
+      while (!PRSim.isTerminal(st) && st.turnNumber < startTurn + ROUNDS && guard++ < 60) {
+        const ch = PRSim.currentChooser(st); if (ch < 0) break;
+        const legal = PRSim.legalRoleIdxs(st); if (!legal.length) break;
+        PRSim.applyRole(st, PRSim.heuristicPickRole(st, ch, legal));
+      }
+      let s = PRSim.finalScore(st.players[me.idx]);
+      if (i === dnaIdx) s += 5.5; // 强锚定基因首选：看几轮但只在明显更优(>5.5分)时才改 → 仅"稍微"变强、不盖过普通
+      if (s > bestS) { bestS = s; bestI = i; }
+    }
+    return bestI;
+  } catch (e) {
+    return dnaIdx;
   }
 }
 
