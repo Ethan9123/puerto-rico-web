@@ -140,36 +140,37 @@ const src = `(async () => {
     check('采石场优先上人(建筑流)', quarryManned === 2, '采石场上岗=' + quarryManned);
   }
 
-  // ---- 规则①：玉米地多 → 倾向运船 ----
+  // ---- 软性倾向（测 strategicRoleBias 的方向：正=更倾向 / 负=更回避）----
   {
     G = new Game(4, 'P');
-    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
-    me.plantations = [{good:'corn',manned:true},{good:'corn',manned:true}];
-    me.goods.corn = 3;
-    const avail = G.roleCards.filter(r => !r.taken);
-    const idx = level4Reactive(me, avail);
-    check('规则①玉米多→运船', avail[idx].name === 'Captain', '选了 ' + avail[idx].name);
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4;
+    me.plantations = [{good:'corn',manned:true},{good:'corn',manned:true}]; me.goods.corn = 3;
+    check('倾向①玉米多→偏好运船', strategicRoleBias(me, 'Captain', 'early') > 0, 'bias=' + strategicRoleBias(me, 'Captain', 'early'));
   }
-
-  // ---- 规则②：高价作物且下家也有 → 抢商人卖掉卡位 ----
   {
     G = new Game(4, 'P');
-    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4;
     me.goods.coffee = 1; G.players[2].goods.coffee = 1; // 下家也有咖啡
-    const avail = G.roleCards.filter(r => !r.taken);
-    const idx = level4Reactive(me, avail);
-    check('规则②卡下家咖啡→商人', avail[idx].name === 'Trader', '选了 ' + avail[idx].name);
+    check('倾向②卡下家咖啡→偏好商人', strategicRoleBias(me, 'Trader', 'mid') > 0, 'bias=' + strategicRoleBias(me, 'Trader', 'mid'));
   }
-
-  // ---- 规则③：落后于领先者 → 抢建造大紫/塞满格子加速结束 ----
   {
     G = new Game(4, 'P');
-    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
-    me.money = 10; G.players[0].vp = 20; // 领先者
-    G.vpLeft = 30;                       // 逼近后期
-    const avail = G.roleCards.filter(r => !r.taken);
-    const idx = level4Reactive(me, avail);
-    check('规则③落后→抢建造大紫', avail[idx].name === 'Builder', '选了 ' + avail[idx].name);
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4;
+    me.money = 10; G.players[0].vp = 20; // 我落后于领先者
+    check('倾向③落后→偏好建造大紫', strategicRoleBias(me, 'Builder', 'mid') > 0, 'bias=' + strategicRoleBias(me, 'Builder', 'mid'));
+  }
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4;
+    check('终盘禁区:晚期回避开拓', strategicRoleBias(me, 'Settler', 'late') < 0, 'bias=' + strategicRoleBias(me, 'Settler', 'late'));
+    check('终盘禁区:晚期无货回避商人', strategicRoleBias(me, 'Trader', 'late') < 0, 'bias=' + strategicRoleBias(me, 'Trader', 'late'));
+  }
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4;
+    me.plantations = [{good:'corn',manned:true}]; G.colonistsOnShip = 0; // 我没空岗、船上没人
+    G.players[2].plantations = [{good:'corn',manned:false},{good:'corn',manned:false},{good:'corn',manned:false},{good:'corn',manned:false}]; // 对手一堆空岗
+    check('Mayor少选:对手空岗多→回避', strategicRoleBias(me, 'Mayor', 'mid') < 0, 'bias=' + strategicRoleBias(me, 'Mayor', 'mid'));
   }
 
   // ---- 船长装船：早/中期弃廉价货(玉米)、留咖啡给商人 ----
