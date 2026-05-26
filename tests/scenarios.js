@@ -172,6 +172,14 @@ const src = `(async () => {
     check('规则③落后→抢建造大紫', avail[idx].name === 'Builder', '选了 ' + avail[idx].name);
   }
 
+  // ---- 船长装船：早/中期弃廉价货(玉米)、留咖啡给商人 ----
+  {
+    G = new Game(4, 'P');
+    const cands = [{ ship: 0, good: 'corn', amount: 1 }, { ship: 0, good: 'coffee', amount: 1 }];
+    const early = rankCaptainForAI(cands, G.ships, 'early')[0];
+    check('船长早期运玉米留咖啡', early.good === 'corn', '早期优先装了 ' + early.good);
+  }
+
   return results;
 })()`;
 

@@ -379,11 +379,18 @@
     if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; }
   }
 
-  function rankCaptain(cands, ships) {
-    const score = (c) => { if (c.ship === "wharf") return -1; const s = ships[c.ship]; const rem = s.capacity - s.count; return (s.good === c.good ? 1000 : 0) + rem * 10 + (c.amount || 0); };
+  function rankCaptain(cands, ships, phase) {
+    const score = (c) => {
+      if (c.ship === "wharf") return -1;
+      const s = ships[c.ship]; const rem = s.capacity - s.count;
+      let v = (s.good === c.good ? 1000 : 0) + rem * 10 + (c.amount || 0);
+      if (phase && phase !== "late") v += (4 - PRICE[c.good]) * 60; // 早/中期弃廉价货、留咖啡/烟草
+      return v;
+    };
     return cands.slice().sort((a, b) => score(b) - score(a));
   }
   function doCaptain(st, chooser) {
+    const phase = phaseOf(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
     let progress = true;
@@ -400,7 +407,7 @@
         }
         if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "wharf", good: g, amount: p.goods[g] });
         if (cands.length === 0) continue;
-        const pick = rankCaptain(cands, st.ships)[0];
+        const pick = rankCaptain(cands, st.ships, phase)[0];
         let loaded;
         if (pick.ship === "wharf") { p.goods[pick.good] -= pick.amount; loaded = pick.amount; p.wharfUsed = true; st.supply[pick.good] += pick.amount; }
         else { const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good; loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded; }

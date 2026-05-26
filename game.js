@@ -185,6 +185,21 @@ function rankCaptainCandidates(candidates, ships) {
 }
 window.rankCaptainCandidates = rankCaptainCandidates;
 
+// AI 装船：装船效率为主；早/中期额外倾向运便宜货(玉米/靛蓝/糖)，
+// 把咖啡/烟草留给商人换钱(早期金>分)；后期不再保留、全力运分。
+function rankCaptainForAI(candidates, ships, phase) {
+  const score = (c) => {
+    if (c.ship === "wharf") return -1; // 码头留作最后手段
+    const ship = ships[c.ship];
+    const rem = ship.capacity - ship.count;
+    const sameKind = ship.good === c.good ? 1 : 0;
+    let s = sameKind * 1000 + rem * 10 + (c.amount || 0);
+    if (phase !== "late") s += (4 - GOOD_PRICE[c.good]) * 60; // 便宜货优先(corn+240…coffee+0)
+    return s;
+  };
+  return candidates.slice().sort((a, b) => score(b) - score(a));
+}
+
 const RULES_TEXT = `
 <h3>游戏目标</h3>
 <p>积累最多胜利点 (VP) 获胜。VP 来自：装船运货、建筑基础分、特殊大建筑结算。</p>
@@ -1279,7 +1294,8 @@ async function doCaptain(order, chooserIdx) {
         const idx = await humanPickFromList("船长：装船", labels, false);
         pick = sortedCandidates[idx];
       } else {
-        pick = sortedCandidates[0];
+        // AI：早/中期弃廉价货、留咖啡/烟草给商人；后期全力运分
+        pick = rankCaptainForAI(candidates, G.ships, gamePhase())[0];
       }
       // 执行装船
       const isWharf = pick.ship === "wharf";
