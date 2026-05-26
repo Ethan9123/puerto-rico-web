@@ -34,23 +34,25 @@ const ROLE_NAME_CN = {
   Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主"
 };
 
-// 5 级 AI 难度（从弱到强；顶档为 MCTS 实时深搜，逐步深想每一手）
+// 6 级 AI 难度（从弱到强；顶档为 AlphaZero 神经网络制导的 MCTS）
 const AI_LEVEL_NAMES = {
-  1: { cn: "入门", en: "Beginner", desc: "只看自己面板" },
-  2: { cn: "进化", en: "DNA",      desc: "700代进化AI" },
-  3: { cn: "普通", en: "Normal",   desc: "看邻座+流派" },
-  4: { cn: "困难", en: "Hard",     desc: "全场卡位+前瞻+策略" },
-  5: { cn: "专家", en: "Expert",   desc: "MCTS 深搜·逐步深想" },
+  1: { cn: "入门", en: "Beginner",  desc: "只看自己面板" },
+  2: { cn: "进化", en: "DNA",       desc: "700代进化AI" },
+  3: { cn: "普通", en: "Normal",    desc: "看邻座+流派" },
+  4: { cn: "困难", en: "Hard",      desc: "全场卡位+前瞻+策略" },
+  5: { cn: "专家", en: "Expert",    desc: "MCTS 深搜·逐步深想" },
+  6: { cn: "宗师", en: "AlphaZero", desc: "神经网络制导 MCTS（自训练）" },
 };
 
 // 设置界面可选难度阶梯（内部 _aiLevel 与显示序号一致）：
-// 1=简单启发式, 2=DNA, 3=邻座启发式, 4=全场卡位强启发式, 5=ISMCTS 深搜。
+// 1=简单启发式, 2=DNA, 3=邻座启发式, 4=全场卡位强启发式, 5=ISMCTS 深搜, 6=AlphaZero NN+MCTS。
 const SELECTABLE_LEVELS = [
   { internal: 1, label: "L1" },
   { internal: 2, label: "L2" },
   { internal: 3, label: "L3" },
   { internal: 4, label: "L4" },
   { internal: 5, label: "L5" },
+  { internal: 6, label: "L6" },
 ];
 
 // 23 建筑（来自 VBA Initial_Setup）
@@ -589,6 +591,7 @@ function startGame() {
   const name = document.getElementById("player-name").value || "玩家";
   const allAI = document.getElementById("all-ai")?.checked;
   G = new Game(n, name);
+  let needsNN = false;
   // 读取每个 CPU 的独立难度
   G.players.forEach((p, i) => {
     // 装备 DNA（不论用不用，都给一个）
@@ -599,6 +602,7 @@ function startGame() {
       const sel = document.getElementById(`cpu-level-${i}`);
       const lvl = sel ? parseInt(sel.value) : 4;
       p._aiLevel = lvl;
+      if (lvl === 6) needsNN = true;
       const nameMeta = AI_LEVEL_NAMES[lvl] || AI_LEVEL_NAMES[3];
       p.name = `CPU${i + 1}·${nameMeta.cn}`;
     }
@@ -607,18 +611,34 @@ function startGame() {
   // 读取 AI 思考预算（全 AI 模式强制 fast 以保持速度）
   const budgetSel = document.getElementById("ai-think-budget");
   const budgetMode = allAI ? 'fast' : (budgetSel ? budgetSel.value : 'deep');
-  // 困难/专家(MCTS)用搜索迭代数(iters)+墙钟上限(ms)；L4/L5 键供内部启发式深度用
+  // 困难/专家(MCTS)用搜索迭代数(iters)+墙钟上限(ms)；L4/L5/L6 键供内部启发式深度用
+  // L6(AlphaZero) 用 NN 制导 PUCT，每次 sim 跑一次 NN forward (~1ms)，所以 iters/ms 都比 L5 略低
   const budgetMap = {
-    fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800 },
-    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000 },
-    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000 },
-    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000 },
+    fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800,  alphaIters: 100,  alphaMs: 600 },
+    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000, alphaIters: 400,  alphaMs: 2500 },
+    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000, alphaIters: 800,  alphaMs: 5000 },
+    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000, alphaIters: 1600, alphaMs: 10000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
   render();
+  // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
+  if (needsNN) loadAlphaZeroNN();
   runMainLoop();
+}
+
+// 懒加载 AlphaZero NN（mcts_value_nn.json），首次需要时调用一次。
+// 失败时静默忽略，L6 自动回退到 L5。
+let _nnLoadPromise = null;
+function loadAlphaZeroNN() {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
+  if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
+  if (_nnLoadPromise) return _nnLoadPromise;
+  _nnLoadPromise = PRSim.loadNetwork("mcts_value_nn.json")
+    .then(() => { console.log("[L6] AlphaZero NN loaded"); return true; })
+    .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
+  return _nnLoadPromise;
 }
 
 // 动态渲染每个 CPU 的难度下拉
@@ -654,9 +674,10 @@ document.querySelectorAll(".qs-btn").forEach(btn => {
       if (set === "all1") sel.value = "1";
       else if (set === "all3") sel.value = "3";
       else if (set === "all5") sel.value = "5"; // 专家(MCTS深搜)
+      else if (set === "all6") sel.value = "6"; // 宗师(AlphaZero)
       else if (set === "mixed") {
-        // 混合：1,2,3,4,5 循环 = 入门/进化/普通/困难/专家
-        sel.value = String((idx % 5) + 1);
+        // 混合：1,2,3,4,5,6 循环 = 入门/进化/普通/困难/专家/宗师
+        sel.value = String((idx % 6) + 1);
       }
     });
   });
@@ -1449,6 +1470,7 @@ function aiPickRole(p, available) {
   if (lvl === 3) return level2PickRoleNew(p, available);        // 普通=邻座感知启发式
   if (lvl === 4) return level5Reactive(p, available);           // 困难=全场卡位+2轮前瞻(即时)
   if (lvl === 5) return ismctsPickRole(p, available, "expert"); // 专家=MCTS 深搜·逐步深想
+  if (lvl === 6) return alphazeroPickRole(p, available);        // 宗师=AlphaZero NN+MCTS
   return level2PickRoleNew(p, available);
 }
 
@@ -1500,6 +1522,55 @@ function ismctsPickRole(p, available, tier) {
   } catch (e) {
     console.warn("ISMCTS failed, fallback", e);
     return level5Reactive(p, available);
+  }
+}
+
+// ---- L6: AlphaZero（神经网络制导的 ISMCTS）----
+// 用 PRSim.networkEval(state, seat) 提供 policy 先验 + value 叶评估，跑 PUCT。
+// 网络未加载时回退到 L5(expert) 行为。
+function alphazeroPickRole(p, available) {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.ismctsPickRoleIdx) return level5Reactive(p, available);
+  // 网络未加载 → 回退到 L5
+  if (!PRSim.isLoaded || !PRSim.isLoaded()) return ismctsPickRole(p, available, "expert");
+  try {
+    const st = buildSimState(G);
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    const b = window._aiThinkBudget || {};
+    // L6 用更少的 iters：NN 已"看远"，每次模拟更便宜的 NN eval 取代 rollout
+    const iters = b.alphaIters || 800;
+    const ms = b.alphaMs || 6000;
+    const ROLE_NAMES = ["Settler", "Mayor", "Builder", "Craftsman", "Trader", "Captain", "Prospector"];
+    const ri = PRSim.ismctsPickRoleIdx(st, {
+      maxIters: iters,
+      budgetMs: ms,
+      C: 1.5, // PUCT 常数；NN policy 比较自信，稍微鼓励探索
+      evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
+      priorPolicyFn: (state, seat) => {
+        const out = PRSim.networkEval(state, seat);
+        if (!out) return null;
+        // 把 policy[7] 映射回当前 legal 的角色名 → 概率
+        const legal = PRSim.legalRoleIdxs(state);
+        const legalNames = new Set(legal.map(i => state.roleCards[i].name));
+        const dist = {};
+        let s = 0;
+        for (let k = 0; k < ROLE_NAMES.length; k++) {
+          if (legalNames.has(ROLE_NAMES[k])) {
+            dist[ROLE_NAMES[k]] = out.policy[k];
+            s += out.policy[k];
+          }
+        }
+        if (s > 0) for (const k of Object.keys(dist)) dist[k] /= s;
+        else { for (const k of Object.keys(dist)) dist[k] = 1 / Math.max(1, Object.keys(dist).length); }
+        return dist;
+      },
+    });
+    if (ri == null || ri < 0) return ismctsPickRole(p, available, "expert");
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : ismctsPickRole(p, available, "expert");
+  } catch (e) {
+    console.warn("AlphaZero ISMCTS failed, fallback to L5", e);
+    return ismctsPickRole(p, available, "expert");
   }
 }
 

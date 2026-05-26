@@ -1,0 +1,142 @@
+// ============================================================
+// tools/selfplay_dump.js — AlphaZero 训练数据生成
+// ============================================================
+// 用 sim.js ISMCTS 自对弈，每个"选角色"决策点记录 (features, role_idx, final_score)
+// 输出 JSONL（每行一个样本），便于 Python 后续读取训练。
+//
+// 使用：
+//   node tools/selfplay_dump.js [GAMES] [MCTS_ITERS] [OUT_PATH] [NUM_PLAYERS]
+// 示例：
+//   node tools/selfplay_dump.js 100 80 data/selfplay-test.jsonl 4
+//   node tools/selfplay_dump.js 10000 150 data/selfplay-v1.jsonl 4
+//
+// 性能：~80 iters/decision，4 玩家 ~15 回合 → 每局约 1-3 秒 CPU。
+
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+// ---- 加载 sim.js + sim_features.js（Node 桩）----
+function makeEl() {
+  const el = { _c:[], innerHTML:'', textContent:'', style:{}, className:'', dataset:{},
+    classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false,
+    appendChild(c){this._c.push(c);return c;}, removeChild(){}, remove(){}, addEventListener(){}, removeEventListener(){},
+    setAttribute(){}, getAttribute(){return null;}, insertAdjacentHTML(){}, querySelector(){return null;},
+    querySelectorAll(){return [];}, getBoundingClientRect(){return{left:0,top:0,width:0,height:0};}, cloneNode(){return makeEl();}, closest(){return null;}, focus(){}, click(){}, onclick:null };
+  return el;
+}
+const _els = {};
+const sandbox = {
+  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
+  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
+  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
+  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
+};
+sandbox.window = sandbox; sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
+load('ai_dna.js');
+load('game.js');
+load('sim.js');
+load('sim_features.js');
+
+const PRSim = sandbox.PRSim;
+const { extractRich, roleNameToPolicyIdx, FEATURE_DIM_RICH, N_ROLES } = PRSim;
+const ROLE_LIST = sandbox.ROLE_LIST;
+
+// ---- 参数 ----
+const GAMES = parseInt(process.argv[2] || '100');
+const MCTS_ITERS = parseInt(process.argv[3] || '80');
+const OUT_PATH = process.argv[4] || path.join(__dirname, '..', 'data', `selfplay-${Date.now()}.jsonl`);
+const NUM_PLAYERS = parseInt(process.argv[5] || '4');
+
+// 确保 data/ 目录存在
+fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
+const fd = fs.openSync(OUT_PATH, 'w');
+
+console.log(`SelfPlay dump:`);
+console.log(`  games        : ${GAMES}`);
+console.log(`  mcts iters   : ${MCTS_ITERS} per decision`);
+console.log(`  num players  : ${NUM_PLAYERS}`);
+console.log(`  output       : ${OUT_PATH}`);
+console.log(`  feature dim  : ${FEATURE_DIM_RICH}`);
+console.log(`  policy dim   : ${N_ROLES}`);
+console.log('---');
+
+// 用 sim 内部的 ISMCTS 来选角色。所有玩家用同一档强度（5 = ISMCTS）。
+function ismcts(state, chooserIdx, iters) {
+  // sim.js: ismctsPickRoleIdx(rootState, opts) → returns role card index
+  if (typeof PRSim.ismctsPickRoleIdx === 'function') {
+    return PRSim.ismctsPickRoleIdx(state, { maxIters: iters, budgetMs: 30000 });
+  }
+  // 兼容回退：找不到时用合法角色第一个
+  const legal = PRSim.legalRoleIdxs(state);
+  return legal[0];
+}
+
+function finalScores(state) {
+  // sim.js: finalScore(player) — pure function on player object
+  return state.players.map(p => PRSim.finalScore(p));
+}
+
+let totalSamples = 0;
+let totalGames = 0;
+let startMs = Date.now();
+let bufferSamples = []; // 当前 game 的样本，最后回填 final_score
+let progressTick = 0;
+
+for (let g = 0; g < GAMES; g++) {
+  const levels = [];
+  for (let i = 0; i < NUM_PLAYERS; i++) levels.push(5); // 全部 ISMCTS 自对弈
+  const st = PRSim.newState(NUM_PLAYERS, levels);
+  const gameSamples = []; // [{features, role_idx, seat}]
+  let step = 0;
+  while (!PRSim.isTerminal(st) && step < 500) {
+    const ch = PRSim.currentChooser(st);
+    if (ch < 0) break;
+    const legal = PRSim.legalRoleIdxs(st);
+    if (!legal.length) break;
+    // 记录决策前的特征
+    const features = extractRich(st, ch);
+    // ISMCTS 选角色
+    const pickedCardIdx = ismcts(st, ch, MCTS_ITERS);
+    const roleName = st.roleCards[pickedCardIdx].name;
+    const policyIdx = roleNameToPolicyIdx(roleName);
+    gameSamples.push({ features, role_idx: policyIdx, seat: ch });
+    PRSim.applyRole(st, pickedCardIdx);
+    step++;
+  }
+  // 终局分数（vp + 建筑 + 大紫终局 + ...）→ sim 已经在 finalScore 里算了
+  const scores = finalScores(st);
+  // 写出每个样本：特征 + 行动（policy target）+ 终局结果（value target）
+  // value target 设计：从该玩家视角的「(我得 - 对手平均) / 50」压到 [-1, 1]
+  for (const s of gameSamples) {
+    const my = scores[s.seat];
+    let oppSum = 0; for (let i = 0; i < scores.length; i++) if (i !== s.seat) oppSum += scores[i];
+    const oppAvg = oppSum / (scores.length - 1);
+    const value = Math.max(-1, Math.min(1, (my - oppAvg) / 50));
+    // 把 Float32Array 转成普通数字数组写 JSON（精度足够）
+    const featuresArr = new Array(s.features.length);
+    for (let i = 0; i < s.features.length; i++) featuresArr[i] = Math.round(s.features[i] * 10000) / 10000;
+    const line = JSON.stringify({ f: featuresArr, a: s.role_idx, v: Math.round(value * 10000) / 10000, n: NUM_PLAYERS });
+    fs.writeSync(fd, line + '\n');
+    totalSamples++;
+  }
+  totalGames++;
+  // 进度
+  const elapsed = (Date.now() - startMs) / 1000;
+  if (g >= progressTick) {
+    const eta = elapsed / (g + 1) * (GAMES - g - 1);
+    console.log(`  game ${g + 1}/${GAMES}  samples=${totalSamples}  elapsed=${elapsed.toFixed(1)}s  eta=${eta.toFixed(0)}s  samples/sec=${(totalSamples / Math.max(1, elapsed)).toFixed(1)}`);
+    progressTick = Math.max(g + 1, Math.floor(g + GAMES / 20)); // 每 5% 报一次
+  }
+}
+
+fs.closeSync(fd);
+const total = (Date.now() - startMs) / 1000;
+console.log('---');
+console.log(`Done: ${totalGames} games, ${totalSamples} samples in ${total.toFixed(1)}s`);
+console.log(`Avg ${(totalSamples / totalGames).toFixed(1)} samples/game, ${(totalSamples / total).toFixed(1)} samples/sec`);
+console.log(`Output: ${OUT_PATH}`);
+const sizeMB = (fs.statSync(OUT_PATH).size / 1e6).toFixed(2);
+console.log(`Size  : ${sizeMB} MB`);
