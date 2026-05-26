@@ -468,6 +468,30 @@
     // 高奖金角色卡优先
     let bestMoney = -1, bestMoneyVal = 2; for (const i of legal) if (st.roleCards[i].money > bestMoneyVal) { bestMoneyVal = st.roleCards[i].money; bestMoney = i; }
     let cap = 0; for (const s of st.ships) cap += (s.capacity - s.count);
+    const downstream = st.players[(chooser + 1) % st.numPlayers];
+    const mannedCorn = p.plantations.filter(pl => pl.good === "corn" && pl.manned).length;
+    // 规则①：玉米地多+有货+船有空 → 运船
+    if (mannedCorn >= 2 && goods >= 3 && cap > 0 && has("Captain") >= 0) return has("Captain");
+    // 规则②：高价作物(咖啡/烟草)且下家也有 → 卖掉卡下家
+    if (st.tradingHouse.length < 4 && has("Trader") >= 0) {
+      const office = isManned(p, 12);
+      for (const g of ["coffee", "tobacco"]) {
+        if (p.goods[g] > 0 && downstream.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) return has("Trader");
+      }
+    }
+    // 规则③：落后/对手引擎成熟 → 买大紫或塞满12格加速结束
+    if (p.money >= 10 && has("Builder") >= 0) {
+      const myScore = finalScore(p);
+      let lead = 0, oppMature = false;
+      for (const o of st.players) { if (o === p) continue; const s = finalScore(o); if (s > lead) lead = s; let pr = 0; for (const g of GOODS_) pr += productionCapacity(o, g); if (pr >= 5 && o.buildings.length >= 5) oppMature = true; }
+      if (myScore < lead - 3 || oppMature) {
+        const spaceLeft = 12 - buildingUsedSpaces(p);
+        for (const b of BUILDINGS_) {
+          if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+          if (p.money >= Math.max(0, b.cost - 1) && (b.type === "large_violet" || spaceLeft <= 4)) return has("Builder");
+        }
+      }
+    }
     if (goods >= 4 && cap > 0 && has("Captain") >= 0) return has("Captain");
     if (open >= 1 && st.colonistsOnShip >= 1 && has("Mayor") >= 0) return has("Mayor");
     if (p.money >= 5) { const b = has("Builder"); if (b >= 0) return b; }

@@ -1606,6 +1606,48 @@ function level4Reactive(me, available) {
   const t = opponentThreat(target);
   if (!t) return baseChoice;
 
+  // ---- 自身引擎状态驱动的策略规则 ----
+  const myGoods = GOODS.reduce((s, g) => s + me.goods[g], 0);
+  const myMannedCorn = me.plantations.filter(pl => pl.good === "corn" && pl.manned).length;
+  let shipSpace = 0; for (const sh of G.ships) shipSpace += (sh.capacity - sh.count);
+  const downstream = G.players[(me.idx + 1) % G.numPlayers];
+
+  // 规则①：有人玉米地多(≥2)+手上有货+船有空 → 倾向运船（玉米只能运不能卖）
+  if (has("Captain") && myMannedCorn >= 2 && myGoods >= 3 && shipSpace > 0) {
+    return available.indexOf(has("Captain"));
+  }
+  // 规则②：我有高价作物(咖啡/烟草)且下家也有同种且能卖 → 抢商人卖掉+卡下家贸易位
+  if (has("Trader") && G.tradingHouse.length < 4) {
+    const office = G.isManned(me, 12);
+    for (const g of ["coffee", "tobacco"]) {
+      if (me.goods[g] > 0 && downstream.goods[g] > 0 && (office || !G.tradingHouse.includes(g))) {
+        return available.indexOf(has("Trader"));
+      }
+    }
+  }
+  // 规则③：运船拼不过领先者 或 对手引擎已成熟 → 抢建造买大紫/塞满12格，加速游戏结束
+  if (has("Builder") && phase !== "early") {
+    const leaderP = findLeader().leader;
+    const iAmBehind = leaderP && leaderP !== me && projectedScore(me) < projectedScore(leaderP) - 3;
+    let oppEngineMature = false;
+    for (const opp of G.players) {
+      if (opp === me) continue;
+      let prod = 0; for (const g of GOODS) prod += G.productionCapacity(opp, g);
+      if (prod >= 5 && opp.buildings.length >= 5) { oppEngineMature = true; break; }
+    }
+    if (iAmBehind || oppEngineMature) {
+      const spaceLeft = 12 - G.buildingUsedSpaces(me);
+      for (const b of BUILDINGS) {
+        if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(me, b.id) || spaceLeft < b.size) continue;
+        const cost = G.effectiveCostWithRoleBonus(me, b, true);
+        // 优先大紫(10块/4VP)，或接近塞满时任何能占格的建筑（逼近 12 格触发结束）
+        if (me.money >= cost && (b.type === "large_violet" || spaceLeft <= 4)) {
+          return available.indexOf(has("Builder"));
+        }
+      }
+    }
+  }
+
   // A: 抢 Captain — 对手能装 ≥4 货 且 我也能装 ≥2 货
   if (has("Captain") && t.shipping >= 4) {
     const myShip = myActionEV(me, "Captain");

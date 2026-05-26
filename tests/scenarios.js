@@ -140,6 +140,38 @@ const src = `(async () => {
     check('采石场优先上人(建筑流)', quarryManned === 2, '采石场上岗=' + quarryManned);
   }
 
+  // ---- 规则①：玉米地多 → 倾向运船 ----
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
+    me.plantations = [{good:'corn',manned:true},{good:'corn',manned:true}];
+    me.goods.corn = 3;
+    const avail = G.roleCards.filter(r => !r.taken);
+    const idx = level4Reactive(me, avail);
+    check('规则①玉米多→运船', avail[idx].name === 'Captain', '选了 ' + avail[idx].name);
+  }
+
+  // ---- 规则②：高价作物且下家也有 → 抢商人卖掉卡位 ----
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
+    me.goods.coffee = 1; G.players[2].goods.coffee = 1; // 下家也有咖啡
+    const avail = G.roleCards.filter(r => !r.taken);
+    const idx = level4Reactive(me, avail);
+    check('规则②卡下家咖啡→商人', avail[idx].name === 'Trader', '选了 ' + avail[idx].name);
+  }
+
+  // ---- 规则③：落后于领先者 → 抢建造大紫/塞满格子加速结束 ----
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; me.isHuman = false; delete me._dna; me._aiLevel = 4;
+    me.money = 10; G.players[0].vp = 20; // 领先者
+    G.vpLeft = 30;                       // 逼近后期
+    const avail = G.roleCards.filter(r => !r.taken);
+    const idx = level4Reactive(me, avail);
+    check('规则③落后→抢建造大紫', avail[idx].name === 'Builder', '选了 ' + avail[idx].name);
+  }
+
   return results;
 })()`;
 
