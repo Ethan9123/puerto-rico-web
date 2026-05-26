@@ -977,6 +977,9 @@ function aiReallocate(p) {
   let remaining = p._unplacedMen || 0;
   if (remaining <= 0) { p._unplacedMen = 0; return; }
   const prodUnit = g => 4 + GOOD_PRICE[g] * 2; // corn4 indigo6 sugar8 tobacco10 coffee12
+  // 采石场上岗价值：建筑流（已有紫色建筑越多）越高 —— 每个有人采石场减少未来建造花费
+  const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+  const quarryGain = Math.min(11, 4 + violetOwned * 2);
 
   const violetManValue = (b) => {
     const bd = BLD_BY_ID[b.bid];
@@ -1019,7 +1022,7 @@ function aiReallocate(p) {
     for (const pl of p.plantations) {
       if (pl.manned) continue;
       let gain;
-      if (pl.good === "quarry") gain = 3;                  // 采石场：建造折扣
+      if (pl.good === "quarry") gain = quarryGain;          // 采石场：建造折扣（建筑流更值）
       else if (pl.good === "corn") gain = prodUnit("corn"); // 玉米直接产出
       // 经济作物田：仅当（现有或可上岗的）加工槽还吃得下才有产出
       else gain = (fields[pl.good] < facCapTotal[pl.good]) ? prodUnit(pl.good) : 0;
@@ -1729,6 +1732,11 @@ function simulatePlayerSnapshot(g, playerIdx, roleName, asChooser) {
     }
     case "Settler": {
       if (snap.plantationsCount < 12) snap.plantationsCount += 1;
+      // chooser 可拿采石场：折算成"省下的未来建造钱"，建筑流（紫色建筑多）更值
+      if (asChooser && g.quarriesLeft > 0) {
+        const violetOwned = snap.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+        snap.money += 1 + violetOwned * 0.8;
+      }
       break;
     }
     case "Prospector": {
@@ -2746,14 +2754,19 @@ function evalBuildingValue(p, b, phase) {
 }
 
 function aiPickPlantation(p, options, isChooser) {
-  if (p._dna) {
+  // L1/L2/L3 用基因选田（弱/普通档）；仅 L4/L5(强档) 用带采石场意识的启发式。
+  // 这样强 AI 会拿矿/囤矿（修"全场没人拿矿"），同时保留 L3<L4<L5 的强度梯度。
+  if (p._dna && p._aiLevel <= 3) {
     const idx = dnaPickPlantation(p, options, isChooser);
     if (idx !== null && idx >= 0 && idx < options.length) return idx;
   }
-  // chooser 优先采石场（除非已经很多）
+  // chooser 拿采石场：建筑流（已有紫色建筑 / 钱多准备建造）权重更高，多囤矿减少未来建造花费
   let qCount = 0;
   for (const pl of p.plantations) if (pl.good === "quarry") qCount++;
-  if (isChooser && qCount < 3) {
+  const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+  const buildingLean = violetOwned >= 1 || p.money >= 7;
+  const quarryCap = buildingLean ? 4 : (gamePhase() === "early" ? 2 : 1);
+  if (isChooser && qCount < quarryCap && G.quarriesLeft > 0) {
     const qOpt = options.findIndex(o => o.kind === "quarry");
     if (qOpt >= 0) return qOpt;
   }

@@ -111,6 +111,35 @@ const src = `(async () => {
     check('首轮L5基本不选船长/商人', captainOrTrader === 0, captainOrTrader + '/12 次选了船长或商人');
   }
 
+  // ---- 场景4：建筑流 AI 作开拓者 chooser 应拿采石场 ----
+  {
+    G = new Game(4, 'P');
+    const p = G.players[1]; p.isHuman = false; p._aiLevel = 4; delete p._dna;
+    p.buildings = [{bid:7, men:1},{bid:13, men:0}]; // 已有两个紫色建筑 = 建筑流
+    p.money = 8;
+    p.plantations = [{good:'corn',manned:true}];
+    G.plantationPool = ['corn','indigo','sugar'];
+    G.quarriesLeft = 8;
+    const options = [];
+    for (let i = 0; i < G.plantationPool.length; i++) options.push({ kind:'plant', good:G.plantationPool[i], idx:i });
+    options.push({ kind:'quarry' });
+    const idx = aiPickPlantation(p, options, true);
+    check('建筑流开拓者拿采石场', options[idx].kind === 'quarry', '实际拿了 ' + (options[idx].good || options[idx].kind));
+  }
+
+  // ---- 场景5：有采石场就该上人（建筑流） ----
+  {
+    G = new Game(4, 'P');
+    const p = G.players[1];
+    p.buildings = [{bid:13, men:1}]; // 一个已上岗紫色建筑(大市场)→建筑流，但不占空槽
+    // 1 玉米 + 2 采石场：建筑流应优先把人放采石场(gain>玉米)而非全去玉米
+    p.plantations = [{good:'corn',manned:false},{good:'quarry',manned:false},{good:'quarry',manned:false}];
+    p._unplacedMen = 2;
+    aiReallocate(p);
+    const quarryManned = p.plantations.filter(pl => pl.good==='quarry' && pl.manned).length;
+    check('采石场优先上人(建筑流)', quarryManned === 2, '采石场上岗=' + quarryManned);
+  }
+
   return results;
 })()`;
 
