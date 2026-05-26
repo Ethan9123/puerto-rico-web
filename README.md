@@ -6,15 +6,16 @@
 
 ## 🌐 在线游玩
 
+### 🇨🇳 国内访问（Vercel · 推荐国内朋友）
+**👉 [https://puerto-rico-web.vercel.app/](https://puerto-rico-web.vercel.app/) 👈**
+
+无需下载、无需安装、无需 VPN。Vercel 的 `*.vercel.app` 域名在国内电信 / 联通 / 移动通常都能直连。
+
 ### 🌍 全球访问
-**👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** （GitHub Pages）
+- [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) （GitHub Pages，墙外更快）
 
-### 🇨🇳 国内访问（Cloudflare Workers · 推荐国内朋友）
-**👉 [https://puerto-rico-web.kids1995eva.workers.dev/](https://puerto-rico-web.kids1995eva.workers.dev/) 👈**
-
-无需下载、无需安装、无需 VPN。这个域名国内电信/联通/移动通常都能直连（Cloudflare 在 HK / SG / JP 有 edge 节点）。
-
-如果上面两个都打不开，离线方案：双击 `pack.bat` 打包 zip → 通过微信 / 百度网盘发给朋友 → 朋友双击 `run.bat` 本地玩。
+### 💾 完全离线
+打不开网络？双击仓库根的 `pack.bat` 打包 zip → 通过微信 / 百度网盘发给朋友 → 朋友双击 `run.bat` 本地玩。
 
 👉 国内访问完整方案见 **[CN-ACCESS.md](CN-ACCESS.md)**
 
