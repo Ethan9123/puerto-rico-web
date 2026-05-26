@@ -34,24 +34,23 @@ const ROLE_NAME_CN = {
   Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主"
 };
 
-// 6 级 AI 难度（基于实测胜率从弱到强）
+// 5 级 AI 难度（从弱到强；顶档为 MCTS 实时深搜，逐步深想每一手）
 const AI_LEVEL_NAMES = {
   1: { cn: "入门", en: "Beginner", desc: "只看自己面板" },
   2: { cn: "进化", en: "DNA",      desc: "700代进化AI" },
   3: { cn: "普通", en: "Normal",   desc: "看邻座+流派" },
-  4: { cn: "困难", en: "Hard",     desc: "看全场+智能覆盖" },
-  5: { cn: "专家", en: "Expert",   desc: "全场卡位+2轮前瞻" },
-  6: { cn: "蒙特卡洛", en: "MCTS", desc: "ISMCTS实时搜索" },
+  4: { cn: "困难", en: "Hard",     desc: "全场卡位+2轮前瞻" },
+  5: { cn: "专家", en: "Expert",   desc: "MCTS 深搜·逐步深想" },
 };
 
-// 设置界面可选难度阶梯（仅影响显示；内部 _aiLevel 保持不变）：
-// 原"困难"(内部4)不再可选；"专家"(内部5)显示为 L4，"蒙特卡洛/MCTS"(内部6)显示为 L5。
+// 设置界面可选难度阶梯（内部 _aiLevel 与显示序号一致）：
+// 1=简单启发式, 2=DNA, 3=邻座启发式, 4=全场卡位强启发式, 5=ISMCTS 深搜。
 const SELECTABLE_LEVELS = [
   { internal: 1, label: "L1" },
   { internal: 2, label: "L2" },
   { internal: 3, label: "L3" },
-  { internal: 5, label: "L4" },
-  { internal: 6, label: "L5" },
+  { internal: 4, label: "L4" },
+  { internal: 5, label: "L5" },
 ];
 
 // 23 建筑（来自 VBA Initial_Setup）
@@ -583,12 +582,12 @@ function startGame() {
   // 读取 AI 思考预算（全 AI 模式强制 fast 以保持速度）
   const budgetSel = document.getElementById("ai-think-budget");
   const budgetMode = allAI ? 'fast' : (budgetSel ? budgetSel.value : 'deep');
-  // L6(MCTS) 预算用搜索迭代数(iters) + 墙钟上限(ms)
+  // 困难/专家(MCTS)用搜索迭代数(iters)+墙钟上限(ms)；L4/L5 键供内部启发式深度用
   const budgetMap = {
-    fast:    { L4: 50,    L5: 100,   L6iters: 200,  L6ms: 600 },
-    normal:  { L4: 800,   L5: 1500,  L6iters: 800,  L6ms: 2500 },
-    deep:    { L4: 1500,  L5: 6000,  L6iters: 2000, L6ms: 6000 },
-    extreme: { L4: 2500,  L5: 10000, L6iters: 4000, L6ms: 10000 },
+    fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800 },
+    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 700,  expertMs: 3000 },
+    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000 },
+    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
@@ -608,8 +607,8 @@ function renderCpuLevels() {
   for (let i = startIdx; i < np; i++) {
     const wrap = document.createElement("label");
     wrap.className = "cpu-row";
-    // 默认值（内部 _aiLevel）：后面 CPU 默认更强 — 最后一个=MCTS(6)，次后=专家(5)
-    const defaultInternal = (i === np - 1) ? 6 : (i === np - 2) ? 5 : (i === 1) ? 2 : 3;
+    // 默认值（内部 _aiLevel）：后面 CPU 默认更强 — 最后=专家(5)，次后=困难(4)
+    const defaultInternal = (i === np - 1) ? 5 : (i === np - 2) ? 4 : (i === 1) ? 2 : 3;
     wrap.innerHTML = `
       <span>CPU ${i + 1}：</span>
       <select id="cpu-level-${i}" class="cpu-level-sel">
@@ -629,11 +628,10 @@ document.querySelectorAll(".qs-btn").forEach(btn => {
     document.querySelectorAll(".cpu-level-sel").forEach((sel, idx) => {
       if (set === "all1") sel.value = "1";
       else if (set === "all3") sel.value = "3";
-      else if (set === "all5") sel.value = "5"; // 专家(内部5，显示 L4)
+      else if (set === "all5") sel.value = "5"; // 专家(MCTS深搜)
       else if (set === "mixed") {
-        // 混合：在可选档位间循环（内部 1,2,3,5,6 = 入门/进化/普通/专家/MCTS）
-        const opts = [1, 2, 3, 5, 6];
-        sel.value = String(opts[idx % opts.length]);
+        // 混合：1,2,3,4,5 循环 = 入门/进化/普通/困难/专家
+        sel.value = String((idx % 5) + 1);
       }
     });
   });
@@ -1424,10 +1422,9 @@ function aiPickRole(p, available) {
     }
     return level1PickRole(p, available);
   }
-  if (lvl === 3) return level2PickRoleNew(p, available);
-  if (lvl === 4) return level4Reactive(p, available);
-  if (lvl === 5) return level5Reactive(p, available);
-  if (lvl === 6) return ismctsPickRole(p, available);
+  if (lvl === 3) return level2PickRoleNew(p, available);        // 普通=邻座感知启发式
+  if (lvl === 4) return level5Reactive(p, available);           // 困难=全场卡位+2轮前瞻(即时)
+  if (lvl === 5) return ismctsPickRole(p, available, "expert"); // 专家=MCTS 深搜·逐步深想
   return level2PickRoleNew(p, available);
 }
 
@@ -1459,21 +1456,25 @@ function buildSimState(G) {
   return st;
 }
 
-function ismctsPickRole(p, available) {
-  // sim.js 未加载时回退到 L5
+function ismctsPickRole(p, available, tier) {
+  // sim.js 未加载时回退到强启发式
   if (typeof PRSim === "undefined" || !PRSim || !PRSim.ismctsPickRoleIdx) return level5Reactive(p, available);
   try {
     const st = buildSimState(G);
     // 健壮性：sim 当前决策者应等于 p；否则回退
     if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
-    const budget = window._aiThinkBudget || {};
-    const ri = PRSim.ismctsPickRoleIdx(st, { maxIters: budget.L6iters || 1500, budgetMs: budget.L6ms || 4000 });
+    const b = window._aiThinkBudget || {};
+    const iters = tier === "hard" ? (b.hardIters || 120) : (b.expertIters || 1500);
+    const ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
+    // 专家档若已加载训练好的价值函数则启用价值制导（否则纯 rollout）
+    const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
+    const ri = PRSim.ismctsPickRoleIdx(st, { maxIters: iters, budgetMs: ms, valueW, truncate: 8 });
     if (ri == null || ri < 0) return level5Reactive(p, available);
     const name = st.roleCards[ri].name;
     const idx = available.findIndex(r => r.name === name);
     return idx >= 0 ? idx : level5Reactive(p, available);
   } catch (e) {
-    console.warn("ISMCTS failed, fallback to L5", e);
+    console.warn("ISMCTS failed, fallback", e);
     return level5Reactive(p, available);
   }
 }
@@ -2815,8 +2816,7 @@ function evalBuildingValue(p, b, phase) {
 }
 
 function aiPickPlantation(p, options, isChooser) {
-  // L1/L2/L3 用基因选田（弱/普通档）；仅 L4/L5(强档) 用带采石场意识的启发式。
-  // 这样强 AI 会拿矿/囤矿（修"全场没人拿矿"），同时保留 L3<L4<L5 的强度梯度。
+  // L1/L2/L3 用基因选田；困难/专家(4/5)用带采石场意识的启发式（拿矿/囤矿）。
   if (p._dna && p._aiLevel <= 3) {
     const idx = dnaPickPlantation(p, options, isChooser);
     if (idx !== null && idx >= 0 && idx < options.length) return idx;

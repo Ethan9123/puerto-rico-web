@@ -47,9 +47,11 @@ function load(file) {
 }
 load('ai_dna.js');
 load('game.js');
+load('sim.js'); // L5(专家)=ISMCTS 需要 sim
 
 const perConfig = parseInt(process.argv[2] || '8');
 const mixedGames = parseInt(process.argv[3] || '20');
+const expertIters = parseInt(process.argv[4] || '150'); // 测试用较小迭代提速
 
 const testSrc = `(async () => {
   // 关掉渲染/动画/toast 提速
@@ -57,6 +59,7 @@ const testSrc = `(async () => {
   flyToDest = function () {};
   showToast = function () {};
   window._allAIMode = true;
+  window._aiThinkBudget = { L4: 50, L5: 100, hardIters: 60, hardMs: 1e9, expertIters: ${expertIters}, expertMs: 1e9 };
 
   await loadAIDNA();
 
@@ -87,9 +90,10 @@ const testSrc = `(async () => {
     return totals;
   }
 
+  // 守恒/终局用全 L4(强启发式，快)跑 3/4/5 人，避免全 MCTS 太慢
   for (const n of [3,4,5]) {
     for (let i = 0; i < ${perConfig}; i++) {
-      await runOneGame(n, [5,5,5,5,5]);
+      await runOneGame(n, [4,4,4,4,4]);
     }
   }
   for (let g = 0; g < ${mixedGames}; g++) {
