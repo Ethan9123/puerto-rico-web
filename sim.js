@@ -476,49 +476,86 @@
   const MAX_TURNS = 60;
   function isTerminal(st) { return st.gameOver || st.turnNumber > MAX_TURNS; }
 
-  // ---------- rollout 用的快速启发式选角色 ----------
+  // ---------- rollout 选角色：打分模型(基础价值 + 软性策略倾向；倾向是偏好非命令) ----------
+  // 与 game.js 的 strategicRoleBias 同口径，让专家的 MCTS rollout 更贴近强手。
   function heuristicPickRole(st, chooser, legal) {
     const p = st.players[chooser];
-    const has = name => { for (const i of legal) if (st.roleCards[i].name === name) return i; return -1; };
-    const goods = GOODS_.reduce((s, g) => s + p.goods[g], 0);
-    let open = 0; for (const pl of p.plantations) if (!pl.manned) open++; for (const b of p.buildings) open += (BLD[b.bid].men - b.men);
-    // 高奖金角色卡优先
-    let bestMoney = -1, bestMoneyVal = 2; for (const i of legal) if (st.roleCards[i].money > bestMoneyVal) { bestMoneyVal = st.roleCards[i].money; bestMoney = i; }
+    const phase = phaseOf(st);
+    const goods = GOODS_.reduce((a, g) => a + p.goods[g], 0);
     let cap = 0; for (const s of st.ships) cap += (s.capacity - s.count);
-    const downstream = st.players[(chooser + 1) % st.numPlayers];
+    let myOpen = 0; for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
+    let myProd = 0; for (const g of GOODS_) myProd += productionCapacity(p, g);
     const mannedCorn = p.plantations.filter(pl => pl.good === "corn" && pl.manned).length;
-    // 规则①：玉米地多+有货+船有空 → 运船
-    if (mannedCorn >= 2 && goods >= 3 && cap > 0 && has("Captain") >= 0) return has("Captain");
-    // 规则②：高价作物(咖啡/烟草)且下家也有 → 卖掉卡下家
-    if (st.tradingHouse.length < 4 && has("Trader") >= 0) {
-      const office = isManned(p, 12);
-      for (const g of ["coffee", "tobacco"]) {
-        if (p.goods[g] > 0 && downstream.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) return has("Trader");
-      }
+    const downstream = st.players[(chooser + 1) % st.numPlayers];
+    const office = isManned(p, 12);
+    // 对手聚合量(每次调用算一次)
+    const myScore = finalScore(p);
+    let oppMaxProd = 0, oppOpenMax = 0, oppGoodsMax = 0, lead = 0, oppMature = false;
+    for (const o of st.players) {
+      if (o === p) continue;
+      let pr = 0; for (const g of GOODS_) pr += productionCapacity(o, g);
+      if (pr > oppMaxProd) oppMaxProd = pr;
+      let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
+      if (op > oppOpenMax) oppOpenMax = op;
+      const og = GOODS_.reduce((a, g) => a + o.goods[g], 0); if (og > oppGoodsMax) oppGoodsMax = og;
+      const sc = finalScore(o); if (sc > lead) lead = sc;
+      if (pr >= 5 && o.buildings.length >= 5) oppMature = true;
     }
-    // 规则③：落后/对手引擎成熟 → 买大紫或塞满12格加速结束
-    if (p.money >= 10 && has("Builder") >= 0) {
-      const myScore = finalScore(p);
-      let lead = 0, oppMature = false;
-      for (const o of st.players) { if (o === p) continue; const s = finalScore(o); if (s > lead) lead = s; let pr = 0; for (const g of GOODS_) pr += productionCapacity(o, g); if (pr >= 5 && o.buildings.length >= 5) oppMature = true; }
-      if (myScore < lead - 3 || oppMature) {
-        const spaceLeft = 12 - buildingUsedSpaces(p);
-        for (const b of BUILDINGS_) {
-          if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
-          if (p.money >= Math.max(0, b.cost - 1) && (b.type === "large_violet" || spaceLeft <= 4)) return has("Builder");
-        }
+    const behind = myScore < lead - 3;
+    const canRushBuild = () => {
+      const spaceLeft = 12 - buildingUsedSpaces(p);
+      for (const b of BUILDINGS_) {
+        if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+        if (p.money >= Math.max(0, b.cost - 1) && (b.type === "large_violet" || (phase === "late" && spaceLeft <= 4))) return true;
       }
+      return false;
+    };
+
+    let bestI = legal[0], bestS = -Infinity;
+    for (const i of legal) {
+      const card = st.roleCards[i];
+      let s = card.money * (phase === "early" ? 1.0 : 0.5); // 卡上奖金(早期更重)
+      switch (card.name) {
+        case "Captain":
+          s += Math.min(goods, cap) * 1.3;                  // 基础:能运多少
+          if (mannedCorn >= 2 && goods >= 3 && cap > 0) s += 6;
+          if (oppGoodsMax >= 4 && goods >= 2) s += 4;
+          break;
+        case "Mayor":
+          s += Math.min(myOpen, Math.ceil(st.colonistsOnShip / st.numPlayers) + 1) * 2.2; // 基础:能填岗
+          if (oppOpenMax >= 3 && oppOpenMax > myOpen) s -= 6;
+          if (myOpen >= 3 && st.colonistsOnShip >= 1) s += 4;
+          if (phase !== "early") for (const b of p.buildings) if (BLD[b.bid].type === "large_violet" && b.men < BLD[b.bid].men) { s += 8; break; }
+          break;
+        case "Builder":
+          if (p.money >= 5) s += 4.5;                       // 基础:有钱可建
+          if ((behind || oppMature || phase === "late") && canRushBuild()) s += 8;
+          break;
+        case "Craftsman":
+          s += myProd * 1.6;                                // 基础:产能
+          if (myProd < oppMaxProd) s -= 6;
+          if (phase === "late" && myProd < 3) s -= 6;
+          break;
+        case "Trader":
+          if (st.tradingHouse.length < 4) {
+            let bestSell = 0;
+            for (const g of GOODS_) if (p.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) bestSell = Math.max(bestSell, PRICE[g] + 1 + (isManned(p, 7) ? 1 : 0) + (isManned(p, 13) ? 2 : 0));
+            s += bestSell * 1.2;                            // 基础:能卖多少
+            for (const g of ["coffee", "tobacco"]) if (p.goods[g] > 0 && downstream.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) { s += 5; break; }
+            if (phase === "late" && !(p.money < 10 && p.money + bestSell >= 10)) s -= 9; // 终盘禁区
+          } else s -= 5;
+          break;
+        case "Settler":
+          s += p.plantations.length < 4 ? 3 : 1;            // 基础:缺田
+          if (phase === "late") s -= 9;                     // 终盘禁区
+          break;
+        case "Prospector":
+          s += 1.5;
+          break;
+      }
+      if (s > bestS) { bestS = s; bestI = i; }
     }
-    if (goods >= 4 && cap > 0 && has("Captain") >= 0) return has("Captain");
-    if (open >= 1 && st.colonistsOnShip >= 1 && has("Mayor") >= 0) return has("Mayor");
-    if (p.money >= 5) { const b = has("Builder"); if (b >= 0) return b; }
-    let prod = 0; for (const g of GOODS_) prod += productionCapacity(p, g);
-    if (prod >= 2 && has("Craftsman") >= 0) return has("Craftsman");
-    if (goods >= 2 && st.tradingHouse.length < 4 && has("Trader") >= 0) return has("Trader");
-    if (bestMoney >= 0) return bestMoney;
-    if (p.plantations.length < 4 && has("Settler") >= 0) return has("Settler");
-    if (has("Prospector") >= 0) return has("Prospector");
-    return legal[0];
+    return bestI;
   }
 
   function rolloutToEnd(st, rnd) {
