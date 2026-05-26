@@ -71,7 +71,7 @@ const testSrc = `(async () => {
 
   async function runOneGame(n, levels) {
     G = new Game(n, 'AI');
-    G.players.forEach((p, i) => { p.isHuman = false; p._aiLevel = levels[i % levels.length]; });
+    G.players.forEach((p, i) => { p.isHuman = false; loadDNA(p, i); p._aiLevel = levels[i % levels.length]; });
     window._allAIMode = true;
     await runMainLoop();
     for (const r of G.roleCards) if (r.takenBy !== null) rolesSeen.add(r.name);

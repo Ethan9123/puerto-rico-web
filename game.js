@@ -1007,11 +1007,16 @@ function estLargeVioletSpecial(p, id) {
 }
 
 function aiReallocate(p) {
-  // 贪心：每次把 1 个工人放到"边际收益最高"的空位。
-  // 核心修正：非玉米生产 = min(同类已上岗田, 同类已上岗加工槽)，
-  //   给一个喂不起的加工厂派人（没有对应田）或给没加工厂的经济作物田派人 → 0 收益，不浪费工人。
   let remaining = p._unplacedMen || 0;
   if (remaining <= 0) { p._unplacedMen = 0; return; }
+  // 入门(L1) 朴素派工：按顺序先填建筑槽再填田，不看产业链瓶颈（会浪费工人）→ 最弱档
+  if ((p._aiLevel || 3) <= 1) {
+    for (const b of p.buildings) { const bd = BLD_BY_ID[b.bid]; while (remaining > 0 && b.men < bd.men) { b.men++; remaining--; } }
+    for (const pl of p.plantations) { if (remaining <= 0) break; if (!pl.manned) { pl.manned = true; remaining--; } }
+    p._unplacedMen = remaining;
+    return;
+  }
+  // 进化+(L2+) 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费）。
   const prodUnit = g => 4 + GOOD_PRICE[g] * 2; // corn4 indigo6 sugar8 tobacco10 coffee12
   // 采石场上岗价值：建筑流（已有紫色建筑越多）越高 —— 每个有人采石场减少未来建造花费
   const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
@@ -2227,15 +2232,7 @@ function level2PickRoleNew(me, available) {
       bestMoneyIdx = i;
     }
   }
-  // 邻座感知：若下家货物多 + Captain 在 → 抢 Captain 卡他
-  const myIdx = G.players.indexOf(me);
-  const downstream = G.players[(myIdx + 1) % G.numPlayers];
-  const downGoods = GOODS.reduce((s,g) => s + downstream.goods[g], 0);
-  const captainIdx = available.findIndex(r => r.name === "Captain");
-  if (captainIdx >= 0 && downGoods >= 3 && GOODS.reduce((s,g)=>s+me.goods[g], 0) >= 1) {
-    return captainIdx;
-  }
-  // 否则采用 L1 选择或高金币卡
+  // 普通档：L1 决策 + 抢高金币角色卡（不含"卡下家"等高级战术——那是困难档的范畴）
   if (bestMoneyVal >= 3 && available[bestMoneyIdx].money > 2) return bestMoneyIdx;
   return l1Choice;
 }
@@ -2839,8 +2836,17 @@ function evalBuildingValue(p, b, phase) {
 }
 
 function aiPickPlantation(p, options, isChooser) {
-  // L1/L2/L3 用基因选田；困难/专家(4/5)用带采石场意识的启发式（拿矿/囤矿）。
-  if (p._dna && p._aiLevel <= 3) {
+  const lvl = p._aiLevel || 3;
+  // 入门(L1)：朴素优先级选田，不看采石场/产业链/垄断 → 作为最弱档
+  if (lvl <= 1) {
+    for (const g of ["corn", "indigo", "sugar", "tobacco", "coffee"]) {
+      const i = options.findIndex(o => o.kind === "plant" && o.good === g);
+      if (i >= 0) return i;
+    }
+    return 0;
+  }
+  // 进化/普通(L2,L3) 用基因选田；困难/专家(L4,L5)用带采石场/垄断意识的启发式。
+  if (p._dna && lvl <= 3) {
     const idx = dnaPickPlantation(p, options, isChooser);
     if (idx !== null && idx >= 0 && idx < options.length) return idx;
   }
@@ -2881,17 +2887,18 @@ function aiPickPlantation(p, options, isChooser) {
 }
 
 function aiPickBuilding(p, options, isChooser) {
-  if (p._dna && p._useDNA) {
-    const idx = dnaPickBuilding(p, options, isChooser);
-    if (idx !== null && idx >= 0 && idx < options.length) return idx;
+  const lvl = p._aiLevel || 3;
+  // 入门(L1) 朴素选建筑：买买得起里最便宜的 → 最弱档
+  if (lvl <= 1) {
+    let best = -1, bestCost = Infinity;
+    for (let i = 0; i < options.length; i++) if (options[i].cost < bestCost) { bestCost = options[i].cost; best = i; }
+    return best >= 0 ? best : 0;
   }
   const phase = gamePhase();
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
-    // 价格高减分（机会成本）
-    score -= o.cost * 3;
-    // chooser 折扣略加分
-    if (isChooser) score += 5;
+    score -= o.cost * 3;            // 价格高减分（机会成本）
+    if (isChooser) score += 5;      // chooser 折扣略加分
     return { i, score };
   });
   scored.sort((a, b) => b.score - a.score);
