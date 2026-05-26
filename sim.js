@@ -57,6 +57,16 @@
     return Math.min(plantsManned, fac);
   }
   function storageKinds(p) { let k = 0; if (isManned(p, 10)) k += 1; if (isManned(p, 14)) k += 2; return k; }
+  // 某玩家是否在做某货（用于垄断/撞货判断）
+  function simProduces(pl, g) {
+    if (pl.plantations.some(x => x.good === g)) return true;
+    const ref = REFINE[g];
+    return !!(ref && ref.some(bid => ownsBuilding(pl, bid)));
+  }
+  function anyOppProduces(st, me, g) {
+    for (const o of st.players) { if (o === me) continue; if (simProduces(o, g)) return true; }
+    return false;
+  }
   function effectiveCost(p, bld) {
     const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4 }[bld.id];
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
@@ -175,16 +185,25 @@
     const lean = violet >= 1 || p.money >= 7;
     const cap = lean ? 4 : 2;
     if (isChooser && qCount < cap && st.quarriesLeft > 0) { const qi = options.findIndex(o => o.kind === "quarry"); if (qi >= 0) return qi; }
-    // 补全产业链
+    // 在 plant 选项里打分：补产业链 > 垄断 > 避免撞右手高价货 > 多样化
+    const upstream = st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers];
+    const ph = phaseOf(st);
+    let bestI = -1, bestS = -Infinity;
     for (let i = 0; i < options.length; i++) {
       const o = options[i]; if (o.kind !== "plant") continue;
-      const ref = REFINE[o.good]; if (!ref) continue;
-      let have = p.plantations.filter(pp => pp.good === o.good).length, fac = 0;
-      for (const bid of ref) { const bb = ownsBuilding(p, bid); if (bb) fac += BLD[bid].men; }
-      if (have < fac) return i;
+      const g = o.good;
+      let s = PRICE[g] * 1.5;
+      if (g === "corn") s += (ph === "early" ? 6 : 3);
+      const ref = REFINE[g];
+      let fac = 0; if (ref) for (const bid of ref) { const bb = ownsBuilding(p, bid); if (bb) fac += BLD[bid].men; }
+      const myCount = p.plantations.filter(pp => pp.good === g).length;
+      if (ref && myCount < fac) s += 14;
+      if (myCount === 0 && g !== "corn") s += 2;
+      if (!anyOppProduces(st, p, g)) s += 3 + PRICE[g];
+      if ((g === "coffee" || g === "tobacco") && simProduces(upstream, g)) s -= 5;
+      if (s > bestS) { bestS = s; bestI = i; }
     }
-    for (const g of ["corn", "indigo", "sugar", "tobacco", "coffee"]) { const i = options.findIndex(o => o.kind === "plant" && o.good === g); if (i >= 0) return i; }
-    return 0;
+    return bestI >= 0 ? bestI : 0;
   }
 
   function reallocate(p) {
@@ -256,6 +275,10 @@
       v += now * 12 + (soon - now) * 4;
       const income = (good === "coffee" || good === "tobacco");
       if (phase === "early") v += income ? 22 : 10; else if (phase === "mid") v += income ? 10 : 4; else v -= 12;
+      if (income) { // 垄断/不撞右手
+        if (!anyOppProduces(st, p, good)) v += 8;
+        else if (simProduces(st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers], good)) v -= 6;
+      }
       return v;
     }
     switch (id) {

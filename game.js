@@ -389,6 +389,16 @@ class Game {
   ownsBuilding(p, bid) {
     return p.buildings.find(b => b.bid === bid);
   }
+  // 某玩家是否在做某货（有该货种植园，或非玉米时拥有对应加工厂）——用于垄断/撞货判断
+  playerProduces(p, g) {
+    if (p.plantations.some(pl => pl.good === g)) return true;
+    const ref = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] }[g];
+    return !!(ref && ref.some(bid => this.ownsBuilding(p, bid)));
+  }
+  anyOpponentProduces(me, g) {
+    for (const p of this.players) { if (p === me) continue; if (this.playerProduces(p, g)) return true; }
+    return false;
+  }
   isManned(p, bid) {
     const b = this.ownsBuilding(p, bid);
     return b && b.men >= BLD_BY_ID[bid].men;
@@ -2794,6 +2804,12 @@ function evalBuildingValue(p, b, phase) {
     if (phase === "early") v += income ? 22 : 10;  // 收入引擎早期最值（三重红利）
     else if (phase === "mid") v += income ? 10 : 4;
     else v -= 12;                                   // 后期生产建筑来不及发挥
+    // 垄断/不撞右手（仅高价货）
+    if (income) {
+      const n = G.numPlayers;
+      if (!G.anyOpponentProduces(p, good)) v += 8;                              // 独家高价货 → 稳定卖钱+卡船
+      else if (G.playerProduces(G.players[(p.idx - 1 + n) % n], good)) v -= 6;  // 右手(先卖/先运)已做 → 别撞
+    }
     return v;
   }
   // ② 紫色建筑：按文章的"位"与时机
@@ -2838,30 +2854,30 @@ function aiPickPlantation(p, options, isChooser) {
     const qOpt = options.findIndex(o => o.kind === "quarry");
     if (qOpt >= 0) return qOpt;
   }
-  // 否则：拿能补全产业链的（有加工建筑没种植园）
+  // 否则在各 plant 选项里打分（软性偏好：补产业链 > 垄断 > 避免与右手撞高价货 > 多样化）
+  const n = G.numPlayers;
+  const upstream = G.players[(p.idx - 1 + n) % n]; // 顺时针里先于我行动者(右手，先卖/先运)
+  const refMap = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+  const phase = gamePhase();
+  let bestI = -1, bestS = -Infinity;
   for (let i = 0; i < options.length; i++) {
     const o = options[i];
     if (o.kind !== "plant") continue;
     const g = o.good;
-    // 有该种加工建筑且种植园不够
-    let plantCount = p.plantations.filter(pp => pp.good === g).length;
-    let factCap = 0;
-    const refining = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] }[g];
-    if (refining) {
-      for (const bid of refining) {
-        const bb = G.ownsBuilding(p, bid);
-        if (bb) factCap += BLD_BY_ID[bid].men;
-      }
-      if (plantCount < factCap) return i;
-    }
+    let s = GOOD_PRICE[g] * 1.5;                       // 基础：贵货种植园略高
+    if (g === "corn") s += (phase === "early" ? 6 : 3); // 早期玉米强(不需厂、1人即产)
+    const ref = refMap[g];
+    let factCap = 0; if (ref) for (const bid of ref) { const bb = G.ownsBuilding(p, bid); if (bb) factCap += BLD_BY_ID[bid].men; }
+    const myCount = p.plantations.filter(pp => pp.good === g).length;
+    if (ref && myCount < factCap) s += 14;             // 有厂缺田 → 补全产业链(主因)
+    if (myCount === 0 && g !== "corn") s += 2;          // 多样化(利于贸易/运货、打破重复)
+    // 垄断意识：全场没别人产这种 → 加分(独家卖钱+占船拖慢对手)，贵货更值
+    if (!G.anyOpponentProduces(p, g)) s += 3 + GOOD_PRICE[g];
+    // 不与右手做同种高价货：上家已做咖啡/烟草而我去撞 → 减分(他先卖/先运堵我)
+    if ((g === "coffee" || g === "tobacco") && G.playerProduces(upstream, g)) s -= 5;
+    if (s > bestS) { bestS = s; bestI = i; }
   }
-  // 缺什么补什么：早期玉米和靛蓝
-  const priorityGood = ["corn", "indigo", "sugar", "tobacco", "coffee"];
-  for (const g of priorityGood) {
-    const idx = options.findIndex(o => o.kind === "plant" && o.good === g);
-    if (idx >= 0) return idx;
-  }
-  return 0;
+  return bestI >= 0 ? bestI : 0;
 }
 
 function aiPickBuilding(p, options, isChooser) {

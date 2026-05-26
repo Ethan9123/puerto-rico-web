@@ -181,6 +181,26 @@ const src = `(async () => {
     check('船长早期运玉米留咖啡', early.good === 'corn', '早期优先装了 ' + early.good);
   }
 
+  // ---- 不与右手撞高价货 + 垄断：上家有咖啡 → 选田偏向烟草(独家) ----
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; delete me._dna; me._aiLevel = 4; // upstream = players[0]
+    me.plantations = []; me.buildings = []; me.money = 0;
+    G.players[0].plantations = [{good:'coffee',manned:false}]; // 右手(先行动)在做咖啡
+    const options = [{kind:'plant',good:'coffee',idx:0},{kind:'plant',good:'tobacco',idx:1}];
+    const idx = aiPickPlantation(me, options, false);
+    check('不撞右手咖啡→选烟草(垄断)', options[idx].good === 'tobacco', '选了 ' + options[idx].good);
+  }
+  // ---- 垄断意识：独家咖啡时咖啡厂估值 > 与右手撞货时 ----
+  {
+    G = new Game(4, 'P');
+    const me = G.players[1]; me.plantations = [{good:'coffee',manned:true}];
+    const vMono = evalBuildingValue(me, BLD_BY_ID[6], 'early'); // 无人产咖啡=垄断
+    G.players[0].plantations = [{good:'coffee',manned:false}];  // 右手也产咖啡=撞货
+    const vClash = evalBuildingValue(me, BLD_BY_ID[6], 'early');
+    check('垄断咖啡厂估值>撞货', vMono > vClash, 'mono=' + vMono + ' clash=' + vClash);
+  }
+
   return results;
 })()`;
 
