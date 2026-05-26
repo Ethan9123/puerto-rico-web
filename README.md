@@ -4,23 +4,19 @@
 
 ---
 
-## 🌐 在线游玩（推荐）
+## 🌐 在线游玩
 
-直接打开浏览器访问：
+### 🌍 全球访问
+**👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** （GitHub Pages）
 
-### **👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈**
+### 🇨🇳 国内访问（Cloudflare Workers · 推荐国内朋友）
+**👉 [https://puerto-rico-web.kids1995eva.workers.dev/](https://puerto-rico-web.kids1995eva.workers.dev/) 👈**
 
-无需下载、无需安装。Chrome / Edge / Firefox / Safari 都可，手机也可玩（推荐桌面 1280×800+）。
+无需下载、无需安装、无需 VPN。这个域名国内电信/联通/移动通常都能直连（Cloudflare 在 HK / SG / JP 有 edge 节点）。
 
-### 🇨🇳 国内访问
+如果上面两个都打不开，离线方案：双击 `pack.bat` 打包 zip → 通过微信 / 百度网盘发给朋友 → 朋友双击 `run.bat` 本地玩。
 
-GitHub Pages 在中国大陆经常被网络干扰。三个能稳定让国内朋友玩到的方案：
-
-- **方案 A · 最经济**：双击 `pack.bat` 打包 zip → 通过微信文件传输助手 / 百度网盘发给朋友 → 朋友双击 `run.bat` 离线玩
-- **方案 B · 长期推荐**：把仓库连到 [Cloudflare Pages](https://pages.cloudflare.com/)（免费、无需 ICP 备案、5 分钟搭好）拿到永久 `*.pages.dev` 国内可访问链接
-- **方案 C · 资源加速**：项目内部的图片/JS 已可通过 `cdn.jsdelivr.net/gh/Ethan9123/puerto-rico-web@main/*` 国内秒开
-
-👉 **详细步骤见 [CN-ACCESS.md](CN-ACCESS.md)**
+👉 国内访问完整方案见 **[CN-ACCESS.md](CN-ACCESS.md)**
 
 ---
 
