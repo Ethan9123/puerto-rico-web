@@ -68,12 +68,32 @@ for ((gen = START_GEN; gen < START_GEN + GENS; gen++)); do
   # 3) 导出 JSON
   ( cd train && python export_weights.py "exports/weights-v${gen}.pt" "exports/weights-v${gen}.json" )
 
-  # 4) 评估 vs best（TODO：用 tests/l6_test.js 改造为 NN_new vs NN_best）
-  # 暂时简化：直接提升为 best（不评估），用户可手动复制 weights-v{N}.json → mcts_value_nn.json
-  echo "[gen $gen] (评估暂未实现) 自动提升为 best"
-  echo "weights-v${gen}.json" > "$EXPORTS/best.txt"
+  # 4) 评估 NN_new vs L5 (原版 ISMCTS)：12 局 800ms/步
+  # 把 NN_new 暂时挂到 mcts_value_nn.json，跑 eval，再恢复原来的 best
+  echo "[gen $gen] eval NN_new vs L5 (12 games, 800ms)..."
+  PREV_BEST=""
+  if [[ -f "mcts_value_nn.json" ]]; then
+    cp mcts_value_nn.json mcts_value_nn.json.bak
+    PREV_BEST=$(readlink -f mcts_value_nn.json.bak || echo "mcts_value_nn.json.bak")
+  fi
+  cp "$EXPORTS/weights-v${gen}.json" mcts_value_nn.json
+  WINRATE=$(node tools/eval_l6.js 800 12 "mcts_value_nn.json" 2>&1 | grep -oE 'L6 winrate: [0-9.]+%' | grep -oE '[0-9.]+' | head -1)
+  WINRATE=${WINRATE:-0}
+  echo "[gen $gen] NN_new winrate vs L5: ${WINRATE}%"
+  # 决策：胜率 ≥ 30% 即视为不弱于 L5（公平线 25%），≥ 40% 强于 L5
+  PROMOTE=$(awk "BEGIN {print (${WINRATE} >= 30) ? 1 : 0}")
+  if [[ "$PROMOTE" == "1" ]]; then
+    echo "[gen $gen] PROMOTE → new best: weights-v${gen}.json (winrate ${WINRATE}%)"
+    echo "weights-v${gen}.json" > "$EXPORTS/best.txt"
+    rm -f mcts_value_nn.json.bak
+  else
+    echo "[gen $gen] REJECT (winrate ${WINRATE}% < 30%), keep previous best"
+    if [[ -n "$PREV_BEST" ]] && [[ -f "mcts_value_nn.json.bak" ]]; then
+      mv mcts_value_nn.json.bak mcts_value_nn.json
+    fi
+  fi
 done
 
 echo ""
-echo "Done. Latest best: $(cat $EXPORTS/best.txt)"
-echo "把 $EXPORTS/$(cat $EXPORTS/best.txt) 复制到 mcts_value_nn.json 来在游戏中使用"
+echo "Done. Latest best: $(cat $EXPORTS/best.txt 2>/dev/null || echo none)"
+echo "mcts_value_nn.json 已就绪可在游戏中使用 (选 L6 宗师)"
