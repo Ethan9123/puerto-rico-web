@@ -523,14 +523,15 @@
 
   function rolloutToEnd(st, rnd) {
     let guard = 0;
+    const eps = (root._mctsEps != null) ? root._mctsEps : 0.05; // rollout 随机率（低=更贴近强手）
     while (!isTerminal(st) && guard++ < 400) {
       const ch = currentChooser(st);
       if (ch < 0) break;
       const legal = legalRoleIdxs(st);
       if (legal.length === 0) break;
-      // ε-greedy：大多用启发式，小概率随机，增加探索多样性
+      // ε-greedy：大多用启发式，小概率随机增加探索多样性
       let ri;
-      if ((rnd ? rnd() : Math.random()) < 0.15) ri = legal[Math.floor((rnd ? rnd() : Math.random()) * legal.length)];
+      if ((rnd ? rnd() : Math.random()) < eps) ri = legal[Math.floor((rnd ? rnd() : Math.random()) * legal.length)];
       else ri = heuristicPickRole(st, ch, legal);
       applyRole(st, ri);
     }
@@ -625,7 +626,7 @@
     opts = opts || {};
     const budgetMs = opts.budgetMs || 1500;
     const maxIters = opts.maxIters || 20000;
-    const C = opts.C || 1.4;
+    const C = opts.C || (root._mctsC != null ? root._mctsC : 1.0); // 探索常数(低=更重利用，rollout 已较强)
     const valueW = opts.valueW || null;        // 价值函数权重（给定则用价值制导）
     const truncate = opts.truncate != null ? opts.truncate : 6; // 截断 rollout 步数
     if (currentChooser(rootState) < 0) return -1;
@@ -633,7 +634,7 @@
     if (rootLegal.length <= 1) return rootLegal[0];
 
     // 信息集树：节点 children keyed by 角色名（角色卡公开 → 各确定化下动作集一致）。
-    const root = { N: 0, Q: 0, children: new Map() };
+    const treeRoot = { N: 0, Q: 0, children: new Map() };
     const t0 = Date.now();
     let iters = 0;
     while (iters < maxIters) {
@@ -641,7 +642,7 @@
       iters++;
       const st = determinize(rootState);
       const visited = []; // {child, chooser}
-      let node = root;
+      let node = treeRoot;
       while (!isTerminal(st)) {
         const ch = currentChooser(st);
         if (ch < 0) break;
@@ -664,12 +665,12 @@
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout
       }
       const leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
-      root.N++;
+      treeRoot.N++;
       for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
-    // 选 root 下访问最多的动作（最稳健）
+    // 选访问最多的根动作（最稳健）
     let bestName = null, bestN = -1;
-    for (const [nm, c] of root.children) if (c.N > bestN) { bestN = c.N; bestName = nm; }
+    for (const [nm, c] of treeRoot.children) if (c.N > bestN) { bestN = c.N; bestName = nm; }
     const ri = rootLegal.find(i => rootState.roleCards[i].name === bestName);
     return ri != null ? ri : rootLegal[0];
   }

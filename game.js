@@ -600,7 +600,7 @@ function startGame() {
   // 困难/专家(MCTS)用搜索迭代数(iters)+墙钟上限(ms)；L4/L5 键供内部启发式深度用
   const budgetMap = {
     fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800 },
-    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 700,  expertMs: 3000 },
+    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000 },
     deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000 },
     extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000 },
   };
