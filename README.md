@@ -6,18 +6,37 @@
 
 ## 🌐 在线游玩
 
-### 🇨🇳 国内访问（Vercel · 推荐国内朋友）
-**👉 [https://puerto-rico-web.vercel.app/](https://puerto-rico-web.vercel.app/) 👈**
+### 🌍 海外/翻墙用户首选
+**👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** （GitHub Pages）
 
-无需下载、无需安装、无需 VPN。Vercel 的 `*.vercel.app` 域名在国内电信 / 联通 / 移动通常都能直连。
+### 🇨🇳 国内朋友推荐：微信发离线包
 
-### 🌍 全球访问
-- [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) （GitHub Pages，墙外更快）
+GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW 干扰，每个 ISP / 时段不同）。腾讯 EdgeOne 的中国大陆节点**默认域名只有 3 小时预览**，长期访问要 ICP 备案（1-3 周）。
 
-### 💾 完全离线
-打不开网络？双击仓库根的 `pack.bat` 打包 zip → 通过微信 / 百度网盘发给朋友 → 朋友双击 `run.bat` 本地玩。
+**真正 100% 国内可用 + 0 成本 + 0 备案**：
 
-👉 国内访问完整方案见 **[CN-ACCESS.md](CN-ACCESS.md)**
+```
+1. 仓库根目录双击 pack.bat
+   → 桌面生成 puerto-rico-web-{date}.zip (~5.6 MB)
+2. 微信 → 文件传输助手 → 拖入 zip → 转发给朋友
+3. 朋友：解压 → 双击 run.bat → 浏览器自动开 http://localhost:8765
+```
+
+完全离线、永久可用、不走 GFW、不需要网络。所有 AI、所有建筑、所有规则都在本地跑。
+
+### 🎲 在线尝试（可能不稳）
+
+如果不想搞离线分发，国内朋友可以按顺序试：
+
+| 链接 | 备注 |
+|---|---|
+| https://puerto-rico-web.vercel.app/ | Vercel，部分 ISP/时段可用 |
+| https://puerto-rico-web.kids1995eva.workers.dev/ | Cloudflare Workers，国际节点 |
+| https://ethan9123.github.io/puerto-rico-web/ | GitHub Pages，多数被墙 |
+
+哪个能开用哪个；都不行就走上面的"微信发离线包"。
+
+👉 国内访问完整原理分析见 **[CN-ACCESS.md](CN-ACCESS.md)**
 
 ---
 
