@@ -39,7 +39,7 @@ const AI_LEVEL_NAMES = {
   1: { cn: "入门", en: "Beginner", desc: "只看自己面板" },
   2: { cn: "进化", en: "DNA",      desc: "700代进化AI" },
   3: { cn: "普通", en: "Normal",   desc: "看邻座+流派" },
-  4: { cn: "困难", en: "Hard",     desc: "全场卡位+2轮前瞻" },
+  4: { cn: "困难", en: "Hard",     desc: "全场卡位+前瞻+策略" },
   5: { cn: "专家", en: "Expert",   desc: "MCTS 深搜·逐步深想" },
 };
 
@@ -2792,67 +2792,49 @@ function roleValueFor(p, r, asChooser, phase) {
   return s;
 }
 
-// 评估一座建筑对此玩家的价值
+// 评估一座建筑对此玩家的价值（编码 Alexfrog/jimc 策略：收入引擎早→得分建筑中→大紫晚）
 function evalBuildingValue(p, b, phase) {
-  let v = b.vp * 6;
-  // 生产链建筑：价值取决于"能不能喂得起"——有没有对应种植园
+  let v = b.vp * 5;
+  const id = b.id;
+  // ① 生产建筑：必须喂得起；咖啡/烟草=收入引擎，早期"三重红利"最强
   if (b.type === "production") {
     const good = b.good;
-    // 已拥有的同类田 + 池里还能拿到的同类田
     const ownedFields = p.plantations.filter(pl => pl.good === good).length;
     const poolFields = G.plantationPool.filter(g => g === good).length;
-    // 已有的同类加工产能（避免重复买超出田数的厂）
     let existingCap = 0;
-    for (const bb of p.buildings) {
-      const bd2 = BLD_BY_ID[bb.bid];
-      if (bd2.type === "production" && bd2.good === good) existingCap += bd2.men;
+    for (const bb of p.buildings) { const bd2 = BLD_BY_ID[bb.bid]; if (bd2.type === "production" && bd2.good === good) existingCap += bd2.men; }
+    const feedNow = Math.max(0, Math.min(ownedFields - existingCap, b.men));
+    const feedSoon = Math.max(0, Math.min(ownedFields + poolFields - existingCap, b.men));
+    if (feedSoon <= 0) return v - 30; // 喂不起=死建筑，强烈不买
+    v += feedNow * 12 + (feedSoon - feedNow) * 4;
+    const income = (good === "coffee" || good === "tobacco"); // 高价收入货
+    if (phase === "early") v += income ? 22 : 10;  // 收入引擎早期最值（三重红利）
+    else if (phase === "mid") v += income ? 10 : 4;
+    else v -= 12;                                   // 后期生产建筑来不及发挥
+    return v;
+  }
+  // ② 紫色建筑：按文章的"位"与时机
+  switch (id) {
+    case 7:  v += phase === "early" ? 14 : phase === "mid" ? 16 : 6; break; // 小市场：全场最通用、便宜
+    case 8:  v += phase === "early" ? 12 : 3; break;                        // 庄园：仅前几买
+    case 9:  v += phase === "early" ? 12 : 2; break;                        // 建筑工地：早期且很少最优
+    case 10: v += phase === "mid" ? 14 : phase === "early" ? 6 : 9; break;  // 小仓库：得分型，中期好(Wharf 低价替代)
+    case 11: v += phase === "early" ? 2 : 4; break;                         // 济贫院：差，不建立收入源
+    case 12: v += 5; break;                                                 // 办公室：很少好
+    case 13: v += phase === "mid" ? 16 : 8; break;                          // 大市场
+    case 14: v += 3; break;                                                 // 大仓库：避免(伪两倍效果)
+    case 15: {                                                              // 工厂：收入引擎+时序扰乱，早中很强
+      const kinds = GOODS.filter(g => G.productionCapacity(p, g) > 0).length;
+      v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4);
+      break;
     }
-    const feedNow = Math.max(0, Math.min(ownedFields - existingCap, b.men));        // 立刻能产
-    const feedSoon = Math.max(0, Math.min(ownedFields + poolFields - existingCap, b.men)); // 补田后能产
-    if (feedSoon <= 0) {
-      v -= 30; // 没田、池里也没得拿 → 这厂是死的，强烈不买
-    } else {
-      v += feedNow * 12 + (feedSoon - feedNow) * 4; // 立刻能产值钱，要补田的打折
-      if (phase === "early") v += 6;
-      if (phase === "mid") v += 2;
-      if (phase === "late") v -= 8; // 后期来不及发挥
-    }
+    case 16: v += 1; break;                                                 // 大学：烂建筑(文章判决)
+    case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break; // 港口：得分型，中期峰值；后期勿替代大建筑
+    case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;  // 码头
   }
-  // 紫色建筑 — 看具体效果
-  const id = b.id;
-  if (id === 7) v += phase === "mid" ? 18 : 8; // 小市场
-  if (id === 8) v += 12; // 庄园（拿种植园 +1）
-  if (id === 9) v += phase === "early" ? 18 : 5; // 建筑工地（采石场）
-  if (id === 10) v += 8; // 小仓库
-  if (id === 11) v += phase === "early" ? 18 : 6; // 济贫院
-  if (id === 12) v += 14; // 办公室
-  if (id === 13) v += 18; // 大市场
-  if (id === 14) v += 10; // 大仓库
-  if (id === 15) {
-    // 工厂 — 看种类多样性
-    const kinds = GOODS.filter(g => G.productionCapacity(p, g) > 0).length;
-    v += kinds * 10;
-  }
-  if (id === 16) v += phase === "mid" || phase === "late" ? 22 : 8; // 大学
-  if (id === 17) v += 30; // 港口
-  if (id === 18) v += 25; // 码头
-  // 大紫建筑 — 看条件
-  if (id === 19) {
-    // 公会大厅
-    const prodSmall = p.buildings.filter(bb => BLD_BY_ID[bb.bid].type === "production" && BLD_BY_ID[bb.bid].men === 1).length;
-    const prodLarge = p.buildings.filter(bb => BLD_BY_ID[bb.bid].type === "production" && BLD_BY_ID[bb.bid].men > 1).length;
-    v += (prodSmall + prodLarge * 2) * 5;
-  }
-  if (id === 20) {
-    v += p.plantations.length * 3;
-  }
-  if (id === 21) {
-    v += G.totalColonists(p) * 2;
-  }
-  if (id === 22) v += p.shippingVP * 2; // 海关大楼
-  if (id === 23) {
-    const violet = p.buildings.filter(bb => BLD_BY_ID[bb.bid].type === "violet" || BLD_BY_ID[bb.bid].type === "large_violet").length;
-    v += violet * 4;
+  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）
+  if (b.type === "large_violet") {
+    v += estLargeVioletSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
   }
   return v;
 }

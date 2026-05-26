@@ -90,10 +90,10 @@ const testSrc = `(async () => {
     return totals;
   }
 
-  // 守恒/终局用全 L4(强启发式，快)跑 3/4/5 人，避免全 MCTS 太慢
+  // 守恒/终局用全 L3(强启发式，快)跑 3/4/5 人，避免全 MCTS 太慢
   for (const n of [3,4,5]) {
     for (let i = 0; i < ${perConfig}; i++) {
-      await runOneGame(n, [4,4,4,4,4]);
+      await runOneGame(n, [3,3,3,3,3]);
     }
   }
   for (let g = 0; g < ${mixedGames}; g++) {

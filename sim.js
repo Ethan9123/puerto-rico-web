@@ -234,35 +234,45 @@
     p.unplaced = rem;
   }
 
+  function estLVSpecial(p, id) {
+    if (id === 19) { let s = 0; for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") s += (bd.men === 1 ? 1 : 2); } return s; }
+    if (id === 20) { const n = p.plantations.length; return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
+    if (id === 21) return Math.floor(totalColonists(p) / 3);
+    if (id === 22) return Math.floor(p.shippingVP / 4);
+    if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+    return 1;
+  }
+  // 收入引擎早→得分建筑中→大紫晚（与 game.js evalBuildingValue 同步）
   function evalBuilding(st, p, b, phase) {
-    let v = b.vp * 6;
+    let v = b.vp * 5;
+    const id = b.id;
     if (b.type === "production") {
       const good = b.good;
       const owned = p.plantations.filter(pl => pl.good === good).length;
       const pool = st.plantationPool.filter(g => g === good).length;
       let ex = 0; for (const bb of p.buildings) { const bd = BLD[bb.bid]; if (bd.type === "production" && bd.good === good) ex += bd.men; }
       const now = Math.max(0, Math.min(owned - ex, b.men)), soon = Math.max(0, Math.min(owned + pool - ex, b.men));
-      if (soon <= 0) v -= 30;
-      else { v += now * 12 + (soon - now) * 4; if (phase === "early") v += 6; if (phase === "mid") v += 2; if (phase === "late") v -= 8; }
+      if (soon <= 0) return v - 30;
+      v += now * 12 + (soon - now) * 4;
+      const income = (good === "coffee" || good === "tobacco");
+      if (phase === "early") v += income ? 22 : 10; else if (phase === "mid") v += income ? 10 : 4; else v -= 12;
+      return v;
     }
-    const id = b.id;
-    if (id === 7) v += phase === "mid" ? 18 : 8;
-    if (id === 8) v += 12;
-    if (id === 9) v += phase === "early" ? 18 : 5;
-    if (id === 10) v += 8;
-    if (id === 11) v += phase === "early" ? 18 : 6;
-    if (id === 12) v += 14;
-    if (id === 13) v += 18;
-    if (id === 14) v += 10;
-    if (id === 15) { const kinds = GOODS_.filter(g => productionCapacity(p, g) > 0).length; v += kinds * 10; }
-    if (id === 16) v += (phase === "mid" || phase === "late") ? 22 : 8;
-    if (id === 17) v += 30;
-    if (id === 18) v += 25;
-    if (id === 19) { const ps = p.buildings.filter(bb => BLD[bb.bid].type === "production" && BLD[bb.bid].men === 1).length, pl = p.buildings.filter(bb => BLD[bb.bid].type === "production" && BLD[bb.bid].men > 1).length; v += (ps + pl * 2) * 5; }
-    if (id === 20) v += p.plantations.length * 3;
-    if (id === 21) v += totalColonists(p) * 2;
-    if (id === 22) v += p.shippingVP * 2;
-    if (id === 23) { const vi = p.buildings.filter(bb => BLD[bb.bid].type === "violet" || BLD[bb.bid].type === "large_violet").length; v += vi * 4; }
+    switch (id) {
+      case 7:  v += phase === "early" ? 14 : phase === "mid" ? 16 : 6; break;
+      case 8:  v += phase === "early" ? 12 : 3; break;
+      case 9:  v += phase === "early" ? 12 : 2; break;
+      case 10: v += phase === "mid" ? 14 : phase === "early" ? 6 : 9; break;
+      case 11: v += phase === "early" ? 2 : 4; break;
+      case 12: v += 5; break;
+      case 13: v += phase === "mid" ? 16 : 8; break;
+      case 14: v += 3; break;
+      case 15: { const kinds = GOODS_.filter(g => productionCapacity(p, g) > 0).length; v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4); break; }
+      case 16: v += 1; break;
+      case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break;
+      case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;
+    }
+    if (b.type === "large_violet") v += estLVSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
     return v;
   }
 
