@@ -34,8 +34,8 @@ const src = `(async () => {
   const N = 4;
   let l6Wins = 0, l6Score = 0, l5Score = 0, played = 0;
   for (let g = 0; g < ${GAMES}; g++) {
-    const seat = g % N;                       // L6 轮转座位，消除位置偏置
-    const levels = [5,5,5,5]; levels[seat] = 6;
+    const seat = g % N;                       // MCTS 座位轮转，消除位置偏置
+    const levels = [5,5,5,5]; levels[seat] = 6; // 内部 5=专家(显示L4), 6=MCTS(显示L5)
     G = new Game(N, 'AI');
     G.players.forEach((p,i)=>{ p.isHuman=false; p._aiLevel=levels[i]; });
     await runMainLoop();
@@ -50,8 +50,8 @@ const src = `(async () => {
 })()`;
 
 vm.runInContext(src, sandbox).then(r => {
-  console.log(`L6(ISMCTS ${ITERS} iters) vs 3×L5(真实专家) — ${r.played} 局`);
+  console.log(`L5(MCTS, ISMCTS ${ITERS} iters) vs 3×L4(真实专家) — ${r.played} 局`);
   console.log(`  胜率 ${(r.winrate*100).toFixed(0)}%  (公平=25%)`);
-  console.log(`  均分  L6=${r.l6Avg.toFixed(1)}   L5=${r.l5Avg.toFixed(1)}`);
-  console.log(r.winrate > 0.25 && r.l6Avg > r.l5Avg ? '\nL6 OK: ISMCTS 在真实引擎中强于 L5' : '\n需调参：L6 未明显超过 L5');
+  console.log(`  均分  MCTS=${r.l6Avg.toFixed(1)}   专家=${r.l5Avg.toFixed(1)}`);
+  console.log(r.winrate > 0.25 && r.l6Avg > r.l5Avg ? '\nOK: MCTS(L5) 在真实引擎中强于 专家(L4)' : '\n需调参：MCTS 未明显超过专家');
 }).catch(e => { console.error('ERROR', e); process.exit(1); });

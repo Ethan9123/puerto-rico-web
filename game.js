@@ -40,9 +40,19 @@ const AI_LEVEL_NAMES = {
   2: { cn: "进化", en: "DNA",      desc: "700代进化AI" },
   3: { cn: "普通", en: "Normal",   desc: "看邻座+流派" },
   4: { cn: "困难", en: "Hard",     desc: "看全场+智能覆盖" },
-  5: { cn: "专家", en: "Expert",   desc: "针对领先者+前瞻" },
+  5: { cn: "专家", en: "Expert",   desc: "全场卡位+2轮前瞻" },
   6: { cn: "蒙特卡洛", en: "MCTS", desc: "ISMCTS实时搜索" },
 };
+
+// 设置界面可选难度阶梯（仅影响显示；内部 _aiLevel 保持不变）：
+// 原"困难"(内部4)不再可选；"专家"(内部5)显示为 L4，"蒙特卡洛/MCTS"(内部6)显示为 L5。
+const SELECTABLE_LEVELS = [
+  { internal: 1, label: "L1" },
+  { internal: 2, label: "L2" },
+  { internal: 3, label: "L3" },
+  { internal: 5, label: "L4" },
+  { internal: 6, label: "L5" },
+];
 
 // 23 建筑（来自 VBA Initial_Setup）
 // id, name(中), 类型, 成本, 容人数, 胜利点, 占地, 是否大型, 数量
@@ -598,13 +608,13 @@ function renderCpuLevels() {
   for (let i = startIdx; i < np; i++) {
     const wrap = document.createElement("label");
     wrap.className = "cpu-row";
-    // 默认值：依玩家数和位置选 — 后面 CPU 默认更强
-    const defaultLvl = (i === np - 1) ? 5 : (i === np - 2) ? 4 : (i === 1) ? 2 : 3;
+    // 默认值（内部 _aiLevel）：后面 CPU 默认更强 — 最后一个=MCTS(6)，次后=专家(5)
+    const defaultInternal = (i === np - 1) ? 6 : (i === np - 2) ? 5 : (i === 1) ? 2 : 3;
     wrap.innerHTML = `
       <span>CPU ${i + 1}：</span>
       <select id="cpu-level-${i}" class="cpu-level-sel">
-        ${Object.entries(AI_LEVEL_NAMES).map(([lvl, meta]) =>
-          `<option value="${lvl}" ${parseInt(lvl) === defaultLvl ? 'selected' : ''}>L${lvl} ${meta.cn} · ${meta.desc}</option>`).join("")}
+        ${SELECTABLE_LEVELS.map(({ internal, label }) =>
+          `<option value="${internal}" ${internal === defaultInternal ? 'selected' : ''}>${label} ${AI_LEVEL_NAMES[internal].cn} · ${AI_LEVEL_NAMES[internal].desc}</option>`).join("")}
       </select>
     `;
     container.appendChild(wrap);
@@ -619,10 +629,11 @@ document.querySelectorAll(".qs-btn").forEach(btn => {
     document.querySelectorAll(".cpu-level-sel").forEach((sel, idx) => {
       if (set === "all1") sel.value = "1";
       else if (set === "all3") sel.value = "3";
-      else if (set === "all5") sel.value = "5";
+      else if (set === "all5") sel.value = "5"; // 专家(内部5，显示 L4)
       else if (set === "mixed") {
-        // 混合：依次 1,2,3,4,5 循环
-        sel.value = String((idx % 5) + 1);
+        // 混合：在可选档位间循环（内部 1,2,3,5,6 = 入门/进化/普通/专家/MCTS）
+        const opts = [1, 2, 3, 5, 6];
+        sel.value = String(opts[idx % opts.length]);
       }
     });
   });
