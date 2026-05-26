@@ -60,12 +60,12 @@ def split_train_val(ds: SelfPlayDataset, val_frac: float = 0.1, seed: int = 42) 
     return _Sub(ds, train_idx), _Sub(ds, val_idx)
 
 
-def make_loaders(paths: Iterable[Path], batch_size: int = 256, val_frac: float = 0.1):
+def make_loaders(paths: Iterable[Path], batch_size: int = 256, val_frac: float = 0.1, pin_memory: bool = False):
     ds = SelfPlayDataset(paths)
     train, val = split_train_val(ds, val_frac=val_frac)
     return (
-        DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=0),
-        DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=0),
+        DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin_memory),
+        DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory),
         ds,
     )
 

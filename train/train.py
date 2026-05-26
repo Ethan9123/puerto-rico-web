@@ -27,24 +27,41 @@ def main():
     ap.add_argument("--policy-w", type=float, default=1.0, help="weight on policy loss")
     ap.add_argument("--value-w", type=float, default=1.0, help="weight on value loss")
     ap.add_argument("--out", default="train/exports/weights-v1.pt", help="output weights .pt")
-    ap.add_argument("--device", default="cpu", help="cpu or cuda")
+    ap.add_argument("--device", default="auto", help="auto | cpu | cuda | cuda:0")
     args = ap.parse_args()
+
+    # 设备选择：auto = 优先 CUDA
+    if args.device == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device("cpu")
+    else:
+        device = torch.device(args.device)
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     paths = [Path(p) for p in args.data]
-    train_dl, val_dl, ds = make_loaders(paths, batch_size=args.batch, val_frac=args.val_frac)
-    print(f"Dataset: {len(ds)} samples, train batches: {len(train_dl)}, val batches: {len(val_dl)}")
+    # 数据加载在 GPU 上启用 pin_memory（host→device 拷贝更快）
+    train_dl, val_dl, ds = make_loaders(paths, batch_size=args.batch, val_frac=args.val_frac,
+                                        pin_memory=(device.type == "cuda"))
+    print(f"Dataset: {len(ds)} samples, train batches: {len(train_dl)}, val batches: {len(val_dl)}", flush=True)
+    if device.type == "cuda":
+        gpu_name = torch.cuda.get_device_name(device)
+        gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / 1e9
+        print(f"Device: {device} ({gpu_name}, {gpu_mem_gb:.1f} GB)", flush=True)
+        torch.backends.cudnn.benchmark = True
+    else:
+        print(f"Device: {device} (CPU)", flush=True)
 
-    device = torch.device(args.device)
     net = PolicyValueNet().to(device)
-    print(f"Model params: {net.num_params():,}")
+    print(f"Model params: {net.num_params():,}", flush=True)
 
     opt = optim.Adam(net.parameters(), lr=args.lr, weight_decay=1e-5)
     ce = nn.CrossEntropyLoss()
     mse = nn.MSELoss()
 
     def step(X, A, V, training: bool):
-        X = X.to(device); A = A.to(device); V = V.to(device)
+        X = X.to(device, non_blocking=True); A = A.to(device, non_blocking=True); V = V.to(device, non_blocking=True)
         pi, v = net(X)
         loss_p = ce(pi, A)
         loss_v = mse(v, V)
@@ -87,9 +104,9 @@ def main():
             }, args.out)
         dt = time.time() - t0
         print(f"ep {ep:3d}{improved}  train: loss={tr[0]:.4f} (p={tr[1]:.4f} v={tr[2]:.4f}) acc={tr[3]*100:.1f}%  "
-              f"val: loss={vl[0]:.4f} (p={vl[1]:.4f} v={vl[2]:.4f}) acc={vl[3]*100:.1f}%  ({dt:.1f}s)")
+              f"val: loss={vl[0]:.4f} (p={vl[1]:.4f} v={vl[2]:.4f}) acc={vl[3]*100:.1f}%  ({dt:.1f}s)", flush=True)
 
-    print(f"Done. Best val_loss={best_val:.4f}. Weights saved to {args.out}")
+    print(f"Done. Best val_loss={best_val:.4f}. Weights saved to {args.out}", flush=True)
 
 
 if __name__ == "__main__":
