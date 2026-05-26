@@ -112,8 +112,30 @@ function calcMinSpaces() {
 //   m=Mayor, s=Settler, b=Builder, c=Craftsman, t=Trader, d=Captain, p=Prospector
 const ROLE_CHAR = { m: "Mayor", s: "Settler", b: "Builder", c: "Craftsman", t: "Trader", d: "Captain", p: "Prospector" };
 
+// Capitalize 层（取自 VBA Musts 阶段的精神：capitalize 自己的引擎）。
+// 只抢两类"稀有且高价值"的建造，不会每回合触发，故不会过度建造提前结束游戏：
+//   (1) 买得起任一大紫(10块/4VP+终局特殊分) → 抢建造兑现
+//   (2) 我有某经济作物田 ≥2 却完全没有对应加工厂 → 补厂启动产线
+function dnaMustsRole(player, available) {
+  const builderIdx = available.findIndex(r => r.name === "Builder");
+  if (builderIdx < 0) return -1;
+  const spaceLeft = 12 - G.buildingUsedSpaces(player);
+  const canBuy = (b) => b && G.buildingStock[b.id] > 0 && !G.ownsBuilding(player, b.id) && spaceLeft >= b.size && player.money >= G.effectiveCostWithRoleBonus(player, b, true);
+  for (const b of BUILDINGS) if (b.type === "large_violet" && canBuy(b)) return builderIdx;
+  const refMap = { coffee: [6], tobacco: [5], sugar: [2, 4], indigo: [1, 3] };
+  for (const g of ["coffee", "tobacco", "sugar", "indigo"]) {
+    if (player.plantations.filter(pl => pl.good === g).length < 2) continue;
+    if (refMap[g].some(bid => G.ownsBuilding(player, bid))) continue; // 已有加工厂
+    for (const bid of refMap[g]) if (canBuy(BLD_BY_ID[bid])) return builderIdx;
+  }
+  return -1;
+}
+
 function dnaPickRole(player, available) {
   if (!player._dna) return null;
+  // Musts 阶段：仅"高价值"必抢（补产业链 / 大紫），不含买便宜小建筑——避免过度建造提前结束游戏拉低分。
+  const must = dnaMustsRole(player, available);
+  if (must >= 0) return must;
   const phase = detectPhase(player._dna.triggers, {
     colonistsLeft: G.colonistsLeft, vpLeft: G.vpLeft, minSpaces: calcMinSpaces()
   });
