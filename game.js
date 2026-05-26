@@ -1007,16 +1007,9 @@ function estLargeVioletSpecial(p, id) {
 }
 
 function aiReallocate(p) {
+  // 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费工人）。
   let remaining = p._unplacedMen || 0;
   if (remaining <= 0) { p._unplacedMen = 0; return; }
-  // 入门(L1) 朴素派工：按顺序先填建筑槽再填田，不看产业链瓶颈（会浪费工人）→ 最弱档
-  if ((p._aiLevel || 3) <= 1) {
-    for (const b of p.buildings) { const bd = BLD_BY_ID[b.bid]; while (remaining > 0 && b.men < bd.men) { b.men++; remaining--; } }
-    for (const pl of p.plantations) { if (remaining <= 0) break; if (!pl.manned) { pl.manned = true; remaining--; } }
-    p._unplacedMen = remaining;
-    return;
-  }
-  // 进化+(L2+) 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费）。
   const prodUnit = g => 4 + GOOD_PRICE[g] * 2; // corn4 indigo6 sugar8 tobacco10 coffee12
   // 采石场上岗价值：建筑流（已有紫色建筑越多）越高 —— 每个有人采石场减少未来建造花费
   const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
@@ -2375,39 +2368,45 @@ function level3PickRole(me, available) {
 // 只看自己面板。1-3 种作物。优先级：缺人→Mayor；卖货≥4分→Captain；钱≥12→Builder
 // ============================================================
 function level1PickRole(me, available) {
-  const myMoney = me.money;
-  const myGoodsCount = GOODS.map(g => me.goods[g]).reduce((a,b)=>a+b, 0);
+  // 入门：凭直觉发挥自身优势（不做卡位/前瞻等高级战术，只顺着自己的强项走）
+  const has = name => available.find(r => r.name === name);
+  const idxOf = name => available.indexOf(has(name));
+  const goods = GOODS.map(g => me.goods[g]).reduce((a, b) => a + b, 0);
   let openSlots = 0;
   for (const pl of me.plantations) if (!pl.manned) openSlots++;
   for (const b of me.buildings) openSlots += (BLD_BY_ID[b.bid].men - b.men);
-  const has = name => available.find(r => r.name === name);
+  let shipSpace = 0; for (const sh of G.ships) shipSpace += (sh.capacity - sh.count);
+  let prod = 0; for (const g of GOODS) prod += G.productionCapacity(me, g);
+  const hasOffice = G.isManned(me, 12);
 
-  // 1) 田/建筑缺人 → 市长
-  if (openSlots >= 1 && has("Mayor")) return available.indexOf(has("Mayor"));
-  // 2) 钱 ≥ 12 → 建造（买最好建筑）
-  if (myMoney >= 12 && has("Builder")) return available.indexOf(has("Builder"));
-  // 3) 有货物 ≥ 4 个 → 船长（可上船 ≥ 4 VP）
-  if (myGoodsCount >= 4 && has("Captain")) return available.indexOf(has("Captain"));
-  // 4) 有货物 + Trader 可用 → 商人
-  if (myGoodsCount > 0 && has("Trader")) {
-    let bestSale = 0;
-    const hasOffice = G.isManned(me, 12);
-    for (const g of GOODS) {
-      if (me.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) {
-        bestSale = Math.max(bestSale, GOOD_PRICE[g] + 1);
-      }
-    }
-    if (bestSale >= 2) return available.indexOf(has("Trader"));
+  // 1) 货多 + 船有空 → 船长，把产出换成分（生产多就往多运货靠）
+  if (goods >= 3 && shipSpace > 0 && has("Captain")) return idxOf("Captain");
+  // 2) 有高价货(咖啡/烟草)能卖 → 商人赚钱（有咖啡就往咖啡赚钱靠）
+  if (has("Trader") && G.tradingHouse.length < 4) {
+    for (const g of ["coffee", "tobacco"]) if (me.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) return idxOf("Trader");
   }
-  // 5) 能生产 → 工匠
-  let canProduce = false;
-  for (const g of GOODS) if (G.productionCapacity(me, g) > 0) { canProduce = true; break; }
-  if (canProduce && has("Craftsman")) return available.indexOf(has("Craftsman"));
-  // 6) 种植园不够（<3）→ 拓殖者
-  if (me.plantations.length < 3 && has("Settler")) return available.indexOf(has("Settler"));
-  // 7) 默认：金矿主（不看角色卡上的钱，纯简单）
-  if (has("Prospector")) return available.indexOf(has("Prospector"));
-  // 8) 实在没办法：选第一个
+  // 3) 缺人手(空岗 + 船上有殖民者) → 市长
+  if (openSlots >= 1 && G.colonistsOnShip >= 1 && has("Mayor")) return idxOf("Mayor");
+  // 4) 产能高 → 工匠多产货
+  if (prod >= 2 && has("Craftsman")) return idxOf("Craftsman");
+  // 5) 攒够钱买得起像样建筑 → 建造（建筑能多就往多买建筑靠；不为买便宜小建筑而频繁建造）
+  if (has("Builder") && me.money >= 5) {
+    for (const b of BUILDINGS) {
+      if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(me, b.id)) continue;
+      if (12 - G.buildingUsedSpaces(me) < b.size) continue;
+      if (me.money < G.effectiveCostWithRoleBonus(me, b, true)) continue;
+      const fits = b.type === "production" ? (b.good === "corn" || me.plantations.some(pl => pl.good === b.good)) : b.vp >= 2;
+      if (fits) return idxOf("Builder"); // 有对应田的生产建筑 或 ≥2分的建筑才直觉去买
+    }
+  }
+  // 6) 还有货没卖 → 商人
+  if (goods > 0 && has("Trader") && G.tradingHouse.length < 4) {
+    for (const g of GOODS) if (me.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g)) && GOOD_PRICE[g] >= 1) return idxOf("Trader");
+  }
+  // 7) 种植园少 → 拓殖，铺设产业
+  if (me.plantations.length < 4 && has("Settler")) return idxOf("Settler");
+  // 8) 拿金币
+  if (has("Prospector")) return idxOf("Prospector");
   return 0;
 }
 
@@ -2837,16 +2836,8 @@ function evalBuildingValue(p, b, phase) {
 
 function aiPickPlantation(p, options, isChooser) {
   const lvl = p._aiLevel || 3;
-  // 入门(L1)：朴素优先级选田，不看采石场/产业链/垄断 → 作为最弱档
-  if (lvl <= 1) {
-    for (const g of ["corn", "indigo", "sugar", "tobacco", "coffee"]) {
-      const i = options.findIndex(o => o.kind === "plant" && o.good === g);
-      if (i >= 0) return i;
-    }
-    return 0;
-  }
-  // 进化/普通(L2,L3) 用基因选田；困难/专家(L4,L5)用带采石场/垄断意识的启发式。
-  if (p._dna && lvl <= 3) {
+  // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
+  if (p._dna && (lvl === 2 || lvl === 3)) {
     const idx = dnaPickPlantation(p, options, isChooser);
     if (idx !== null && idx >= 0 && idx < options.length) return idx;
   }
@@ -2887,13 +2878,6 @@ function aiPickPlantation(p, options, isChooser) {
 }
 
 function aiPickBuilding(p, options, isChooser) {
-  const lvl = p._aiLevel || 3;
-  // 入门(L1) 朴素选建筑：买买得起里最便宜的 → 最弱档
-  if (lvl <= 1) {
-    let best = -1, bestCost = Infinity;
-    for (let i = 0; i < options.length; i++) if (options[i].cost < bestCost) { bestCost = options[i].cost; best = i; }
-    return best >= 0 ? best : 0;
-  }
   const phase = gamePhase();
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
