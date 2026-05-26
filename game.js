@@ -34,13 +34,14 @@ const ROLE_NAME_CN = {
   Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主"
 };
 
-// 5 级 AI 难度（基于实测胜率从弱到强）
+// 6 级 AI 难度（基于实测胜率从弱到强）
 const AI_LEVEL_NAMES = {
   1: { cn: "入门", en: "Beginner", desc: "只看自己面板" },
   2: { cn: "进化", en: "DNA",      desc: "700代进化AI" },
   3: { cn: "普通", en: "Normal",   desc: "看邻座+流派" },
   4: { cn: "困难", en: "Hard",     desc: "看全场+智能覆盖" },
   5: { cn: "专家", en: "Expert",   desc: "针对领先者+前瞻" },
+  6: { cn: "蒙特卡洛", en: "MCTS", desc: "ISMCTS实时搜索" },
 };
 
 // 23 建筑（来自 VBA Initial_Setup）
@@ -572,11 +573,12 @@ function startGame() {
   // 读取 AI 思考预算（全 AI 模式强制 fast 以保持速度）
   const budgetSel = document.getElementById("ai-think-budget");
   const budgetMode = allAI ? 'fast' : (budgetSel ? budgetSel.value : 'deep');
+  // L6(MCTS) 预算用搜索迭代数(iters) + 墙钟上限(ms)
   const budgetMap = {
-    fast:    { L4: 50,    L5: 100 },
-    normal:  { L4: 800,   L5: 1500 },
-    deep:    { L4: 1500,  L5: 6000 },
-    extreme: { L4: 2500,  L5: 10000 },
+    fast:    { L4: 50,    L5: 100,   L6iters: 200,  L6ms: 600 },
+    normal:  { L4: 800,   L5: 1500,  L6iters: 800,  L6ms: 2500 },
+    deep:    { L4: 1500,  L5: 6000,  L6iters: 2000, L6ms: 6000 },
+    extreme: { L4: 2500,  L5: 10000, L6iters: 4000, L6ms: 10000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
@@ -1414,7 +1416,55 @@ function aiPickRole(p, available) {
   if (lvl === 3) return level2PickRoleNew(p, available);
   if (lvl === 4) return level4Reactive(p, available);
   if (lvl === 5) return level5Reactive(p, available);
+  if (lvl === 6) return ismctsPickRole(p, available);
   return level2PickRoleNew(p, available);
+}
+
+// ---- L6: ISMCTS 实时搜索（sim.js）----
+// 把当前真实 G 转成无头 sim 状态，跑 ISMCTS 选角色，再映射回 available 索引。
+function buildSimState(G) {
+  const st = {
+    numPlayers: G.numPlayers, governor: G.governor, turnNumber: G.turnNumber,
+    gameOver: false, endTriggered: G.endTriggered,
+    colonistsLeft: G.colonistsLeft, colonistsOnShip: G.colonistsOnShip, vpLeft: G.vpLeft,
+    supply: Object.assign({}, G.supply), buildingStock: Object.assign({}, G.buildingStock),
+    quarriesLeft: G.quarriesLeft,
+    plantationDeck: G.plantationDeck.slice(), plantationDiscard: G.plantationDiscard.slice(),
+    plantationPool: G.plantationPool.slice(),
+    ships: G.ships.map(s => ({ capacity: s.capacity, good: s.good, count: s.count })),
+    tradingHouse: G.tradingHouse.slice(),
+    roleCards: G.roleCards.map(r => ({ name: r.name, money: r.money, taken: r.taken, takenBy: r.takenBy })),
+    // 本回合已选人数 = 已 taken 的角色卡数（回合初全部重置为未选）
+    picksThisTurn: G.roleCards.filter(r => r.taken).length,
+    rnd: Math.random,
+    players: G.players.map(p => ({
+      idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0,
+      plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
+      buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
+      goods: Object.assign({}, p.goods),
+      unplaced: p._unplacedMen || 0, wharfUsed: p._wharfUsedThisRound || false, aiLevel: p._aiLevel || 5,
+    })),
+  };
+  return st;
+}
+
+function ismctsPickRole(p, available) {
+  // sim.js 未加载时回退到 L5
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.ismctsPickRoleIdx) return level5Reactive(p, available);
+  try {
+    const st = buildSimState(G);
+    // 健壮性：sim 当前决策者应等于 p；否则回退
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    const budget = window._aiThinkBudget || {};
+    const ri = PRSim.ismctsPickRoleIdx(st, { maxIters: budget.L6iters || 1500, budgetMs: budget.L6ms || 4000 });
+    if (ri == null || ri < 0) return level5Reactive(p, available);
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : level5Reactive(p, available);
+  } catch (e) {
+    console.warn("ISMCTS failed, fallback to L5", e);
+    return level5Reactive(p, available);
+  }
 }
 
 // ============================================================
