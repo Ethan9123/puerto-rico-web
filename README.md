@@ -12,6 +12,16 @@
 
 无需下载、无需安装。Chrome / Edge / Firefox / Safari 都可，手机也可玩（推荐桌面 1280×800+）。
 
+### 🇨🇳 国内访问
+
+GitHub Pages 在中国大陆经常被网络干扰。三个能稳定让国内朋友玩到的方案：
+
+- **方案 A · 最经济**：双击 `pack.bat` 打包 zip → 通过微信文件传输助手 / 百度网盘发给朋友 → 朋友双击 `run.bat` 离线玩
+- **方案 B · 长期推荐**：把仓库连到 [Cloudflare Pages](https://pages.cloudflare.com/)（免费、无需 ICP 备案、5 分钟搭好）拿到永久 `*.pages.dev` 国内可访问链接
+- **方案 C · 资源加速**：项目内部的图片/JS 已可通过 `cdn.jsdelivr.net/gh/Ethan9123/puerto-rico-web@main/*` 国内秒开
+
+👉 **详细步骤见 [CN-ACCESS.md](CN-ACCESS.md)**
+
 ---
 
 ## ✨ 特性
