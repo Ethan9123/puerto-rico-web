@@ -46,13 +46,19 @@ for ((gen = START_GEN; gen < START_GEN + GENS; gen++)); do
   echo " Generation $gen"
   echo "============================================================"
 
-  # 1) 自对弈
+  # 1) 自对弈（gen>=2 用上代 best NN 做 PUCT 制导）
   DATA_FILE="$DATA_DIR/selfplay-v${gen}.jsonl"
   if [[ -f "$DATA_FILE" ]]; then
     echo "[gen $gen] skip self-play (data exists: $DATA_FILE)"
   else
-    echo "[gen $gen] self-play → $DATA_FILE"
-    node tools/selfplay_dump.js "$GAMES" "$ITERS" "$DATA_FILE" 4
+    NN_ARG=""
+    if [[ -f "mcts_value_nn.json" ]] && [[ "$gen" -gt 1 ]]; then
+      echo "[gen $gen] self-play with NN guidance (mcts_value_nn.json)"
+      NN_ARG="mcts_value_nn.json"
+    else
+      echo "[gen $gen] self-play (pure ISMCTS, no NN)"
+    fi
+    node tools/selfplay_dump.js "$GAMES" "$ITERS" "$DATA_FILE" 4 ${NN_ARG}
   fi
 
   # 2) 训练（合并最近 3 代数据）

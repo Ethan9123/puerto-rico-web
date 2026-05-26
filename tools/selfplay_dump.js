@@ -5,12 +5,14 @@
 // 输出 JSONL（每行一个样本），便于 Python 后续读取训练。
 //
 // 使用：
-//   node tools/selfplay_dump.js [GAMES] [MCTS_ITERS] [OUT_PATH] [NUM_PLAYERS]
+//   node tools/selfplay_dump.js [GAMES] [MCTS_ITERS] [OUT_PATH] [NUM_PLAYERS] [NN_PATH]
 // 示例：
 //   node tools/selfplay_dump.js 100 80 data/selfplay-test.jsonl 4
 //   node tools/selfplay_dump.js 10000 150 data/selfplay-v1.jsonl 4
+//   node tools/selfplay_dump.js 2000 80 data/selfplay-v2.jsonl 4 mcts_value_nn.json
 //
 // 性能：~80 iters/decision，4 玩家 ~15 回合 → 每局约 1-3 秒 CPU。
+// 有 NN 时每次决策跑 NN priorPolicy + NN evalLeaf，开销不到 1ms/决策。
 
 const fs = require('fs');
 const path = require('path');
@@ -39,6 +41,7 @@ load('ai_dna.js');
 load('game.js');
 load('sim.js');
 load('sim_features.js');
+load('sim_nn.js');
 
 const PRSim = sandbox.PRSim;
 const { extractRich, roleNameToPolicyIdx, FEATURE_DIM_RICH, N_ROLES } = PRSim;
@@ -49,29 +52,59 @@ const GAMES = parseInt(process.argv[2] || '100');
 const MCTS_ITERS = parseInt(process.argv[3] || '80');
 const OUT_PATH = process.argv[4] || path.join(__dirname, '..', 'data', `selfplay-${Date.now()}.jsonl`);
 const NUM_PLAYERS = parseInt(process.argv[5] || '4');
+const NN_PATH = process.argv[6] || null; // 可选 NN：有则用 PUCT+NN 制导 self-play
 
 // 确保 data/ 目录存在
 fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
 const fd = fs.openSync(OUT_PATH, 'w');
+
+(async () => {
+let NN_LOADED = false;
+if (NN_PATH) {
+  try {
+    await PRSim.loadNetwork(NN_PATH);
+    NN_LOADED = true;
+  } catch (e) {
+    console.error(`Failed to load NN ${NN_PATH}:`, e.message);
+    console.error('Continuing with pure ISMCTS (no NN guidance)');
+  }
+}
 
 console.log(`SelfPlay dump:`);
 console.log(`  games        : ${GAMES}`);
 console.log(`  mcts iters   : ${MCTS_ITERS} per decision`);
 console.log(`  num players  : ${NUM_PLAYERS}`);
 console.log(`  output       : ${OUT_PATH}`);
+console.log(`  NN guide     : ${NN_LOADED ? NN_PATH : '(none, pure ISMCTS)'}`);
 console.log(`  feature dim  : ${FEATURE_DIM_RICH}`);
 console.log(`  policy dim   : ${N_ROLES}`);
 console.log('---');
 
-// 用 sim 内部的 ISMCTS 来选角色。所有玩家用同一档强度（5 = ISMCTS）。
+// 选角色：有 NN 时跑 PUCT+NN，否则纯 ISMCTS
 function ismcts(state, chooserIdx, iters) {
-  // sim.js: ismctsPickRoleIdx(rootState, opts) → returns role card index
-  if (typeof PRSim.ismctsPickRoleIdx === 'function') {
-    return PRSim.ismctsPickRoleIdx(state, { maxIters: iters, budgetMs: 30000 });
+  if (typeof PRSim.ismctsPickRoleIdx !== 'function') {
+    const legal = PRSim.legalRoleIdxs(state);
+    return legal[0];
   }
-  // 兼容回退：找不到时用合法角色第一个
-  const legal = PRSim.legalRoleIdxs(state);
-  return legal[0];
+  const opts = { maxIters: iters, budgetMs: 30000 };
+  if (NN_LOADED) {
+    opts.C = 1.5;
+    opts.evalLeafFn = (s, p) => PRSim.evalLeafNN(s, p);
+    opts.priorPolicyFn = (s, p) => {
+      const o = PRSim.networkEval(s, p);
+      if (!o) return null;
+      const legal = PRSim.legalRoleIdxs(s);
+      const legalNames = new Set(legal.map(i => s.roleCards[i].name));
+      const dist = {};
+      let sum = 0;
+      for (let k = 0; k < ROLE_LIST.length; k++) {
+        if (legalNames.has(ROLE_LIST[k])) { dist[ROLE_LIST[k]] = o.policy[k]; sum += o.policy[k]; }
+      }
+      if (sum > 0) for (const k of Object.keys(dist)) dist[k] /= sum;
+      return dist;
+    };
+  }
+  return PRSim.ismctsPickRoleIdx(state, opts);
 }
 
 function finalScores(state) {
@@ -140,3 +173,4 @@ console.log(`Avg ${(totalSamples / totalGames).toFixed(1)} samples/game, ${(tota
 console.log(`Output: ${OUT_PATH}`);
 const sizeMB = (fs.statSync(OUT_PATH).size / 1e6).toFixed(2);
 console.log(`Size  : ${sizeMB} MB`);
+})().catch(e => { console.error(e); process.exit(1); });
