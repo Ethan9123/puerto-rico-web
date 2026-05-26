@@ -508,6 +508,70 @@
     return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
   }
 
+  // ---------- 价值函数（自对弈训练的逻辑回归，指导 MCTS 叶子评估）----------
+  // 从 perspective 玩家视角抽取状态特征（与对手相对）。第 0 维为偏置。
+  function extractFeatures(st, idx) {
+    const me = st.players[idx];
+    const myScore = finalScore(me);
+    const oppCount = st.numPlayers - 1;
+    let bestOpp = 0, sumOpp = 0, avgOppProd = 0, avgOppBuild = 0;
+    let myProd = 0; for (const g of GOODS_) myProd += productionCapacity(me, g);
+    for (const p of st.players) {
+      if (p === me) continue;
+      const s = finalScore(p); if (s > bestOpp) bestOpp = s; sumOpp += s;
+      let pr = 0; for (const g of GOODS_) pr += productionCapacity(p, g);
+      avgOppProd += pr; avgOppBuild += p.buildings.length;
+    }
+    avgOppProd /= oppCount; avgOppBuild /= oppCount;
+    const myGoods = GOODS_.reduce((a, g) => a + me.goods[g], 0);
+    let myQuarry = 0; for (const pl of me.plantations) if (pl.good === "quarry" && pl.manned) myQuarry++;
+    let bigV = 0; for (const b of me.buildings) { const bd = BLD[b.bid]; if (bd.type === "large_violet" && b.men >= bd.men) bigV++; }
+    const colTot = COL_TOTAL[st.numPlayers], vpTot = VP_TOTAL[st.numPlayers];
+    const progress = Math.max(1 - st.colonistsLeft / colTot, 1 - st.vpLeft / vpTot);
+    return [
+      1,                                        // 0 偏置
+      myScore / 40,                             // 1 我的分
+      (myScore - bestOpp) / 25,                 // 2 与最强对手分差
+      (myScore - sumOpp / oppCount) / 25,       // 3 与平均对手分差
+      myGoods / 10,                             // 4 我的货
+      myProd / 8,                               // 5 我的产能
+      (myProd - avgOppProd) / 5,                // 6 产能优势
+      me.buildings.length / 10,                 // 7 建筑数
+      (me.buildings.length - avgOppBuild) / 5,  // 8 建筑优势
+      me.plantations.length / 12,               // 9 田数
+      me.money / 12,                            // 10 钱
+      totalColonists(me) / 18,                  // 11 殖民者
+      myQuarry / 4,                             // 12 已上岗采石场
+      me.shippingVP / 20,                       // 13 船运 VP
+      bigV / 2,                                 // 14 已激活大紫
+      progress,                                 // 15 进程
+      st.vpLeft / vpTot,                        // 16 VP 池余量
+      st.colonistsLeft / colTot,                // 17 殖民者池余量
+    ];
+  }
+  const FEATURE_DIM = 18;
+
+  function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+  // 返回胜率估计 [0,1]
+  function evalValue(features, W) {
+    let z = 0; for (let i = 0; i < features.length; i++) z += features[i] * W[i];
+    return sigmoid(z);
+  }
+
+  // 叶子评估：有权重 W 时截断 rollout truncate 步后用价值函数；否则全 rollout。
+  // 返回一个函数 perspective→[-1,1] 奖励（统一标度供 UCT 用）。
+  function evalLeaf(st, W, truncate, rnd) {
+    if (!W) { rolloutToEnd(st, rnd); return (persp) => reward(st, persp); }
+    let steps = 0;
+    while (!isTerminal(st) && steps++ < truncate) {
+      const ch = currentChooser(st); if (ch < 0) break;
+      const legal = legalRoleIdxs(st); if (!legal.length) break;
+      applyRole(st, heuristicPickRole(st, ch, legal));
+    }
+    if (isTerminal(st)) return (persp) => reward(st, persp);
+    return (persp) => 2 * evalValue(extractFeatures(st, persp), W) - 1; // [0,1]→[-1,1]
+  }
+
   // ---------- ISMCTS（单观察者，确定化隐藏牌堆）----------
   function determinize(st) {
     // 重排未知的种植园牌堆顺序（公开的 pool 不动）；对手 VP 在本模型中已公开（简化）
@@ -521,6 +585,8 @@
     const budgetMs = opts.budgetMs || 1500;
     const maxIters = opts.maxIters || 20000;
     const C = opts.C || 1.4;
+    const valueW = opts.valueW || null;        // 价值函数权重（给定则用价值制导）
+    const truncate = opts.truncate != null ? opts.truncate : 6; // 截断 rollout 步数
     if (currentChooser(rootState) < 0) return -1;
     const rootLegal = legalRoleIdxs(rootState);
     if (rootLegal.length <= 1) return rootLegal[0];
@@ -556,9 +622,9 @@
         node = child;
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout
       }
-      rolloutToEnd(st, rootState.rnd);
+      const leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
       root.N++;
-      for (const v of visited) { v.child.N++; v.child.Q += reward(st, v.chooser); }
+      for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
     // 选 root 下访问最多的动作（最稳健）
     let bestName = null, bestN = -1;
@@ -571,6 +637,7 @@
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward,
     ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
+    extractFeatures, evalValue, FEATURE_DIM,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
