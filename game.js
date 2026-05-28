@@ -479,6 +479,12 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// 全 AI 观战模式的节奏（让人类能看清每一步）：
+//   - 每个 AI 操作（选角色+执行阶段）后停 5 秒
+//   - 一个大回合（所有人操作完、换起始玩家前）后停 10 秒
+const SPECTATOR_ACTION_DELAY = 5000;
+const SPECTATOR_ROUND_DELAY = 10000;
+
 function showToast(html, opts = {}) {
   if (window._allAIMode) return;
   const stack = document.getElementById('toast-stack');
@@ -608,9 +614,10 @@ function startGame() {
     }
   });
   window._allAIMode = !!allAI;
-  // 读取 AI 思考预算（全 AI 模式强制 fast 以保持速度）
+  // 读取 AI 思考预算。全 AI 观战模式也尊重所选预算（配合 5s/10s 节奏让观众
+  // 能看清强 AI 的对局），不再强制 fast。想快速看完可自行选 fast。
   const budgetSel = document.getElementById("ai-think-budget");
-  const budgetMode = allAI ? 'fast' : (budgetSel ? budgetSel.value : 'deep');
+  const budgetMode = budgetSel ? budgetSel.value : 'deep';
   // 困难/专家(MCTS)用搜索迭代数(iters)+墙钟上限(ms)；L4/L5/L6 键供内部启发式深度用
   // L6(AlphaZero) 用 NN 制导 PUCT，每次 sim 跑一次 NN forward (~1ms)，所以 iters/ms 都比 L5 略低
   const budgetMap = {
@@ -744,6 +751,9 @@ async function runMainLoop() {
       // 检查游戏结束
       checkEndCondition();
       render();
+
+      // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手
+      if (window._allAIMode) await sleep(SPECTATOR_ACTION_DELAY);
     }
 
     // 回合结束：未被选的角色卡 +1 金
@@ -754,6 +764,14 @@ async function runMainLoop() {
     if (G.endTriggered) {
       G.gameOver = true;
       break;
+    }
+
+    // 全 AI 观战：一个大回合结束后、换起始玩家前停 10 秒
+    if (window._allAIMode) {
+      G._currentPrompt = `本回合结束 — 即将轮换起始玩家（观战暂停 ${SPECTATOR_ROUND_DELAY / 1000}s）`;
+      render();
+      await sleep(SPECTATOR_ROUND_DELAY);
+      G._currentPrompt = null;
     }
 
     G.governor = (G.governor + 1) % G.numPlayers;
