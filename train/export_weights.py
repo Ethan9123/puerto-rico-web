@@ -47,14 +47,39 @@ def export(pt_path: Path, json_path: Path):
 
     # 因为 model 是 nn.Sequential 的 trunk + policy_head + value_head(Sequential)，
     # 手动按已知拓扑展开。
+    # trunk 顺序: Linear → ReLU → (可选 Dropout) → Linear → ReLU → (可选 Dropout) → ...
+    # Dropout 推理时是 no-op，不输出。
+    # 注意：JS 端 sim_nn.js 通过 L.name.startsWith("trunk.5") 判断最后一层 ReLU
+    # 来切出 trunk_out，因此最后一层 ReLU 的索引必须命名为 "trunk.5"（v1 兼容）。
+    # 新模型可能有更多/更少层，所以我们重新映射：
+    #   - 最后一个 trunk ReLU 重命名为 "trunk.LAST_RELU"
+    #   - JS 端会根据 head 之前/L.type=="relu" 的最后一个识别
+    # 为兼容旧 JS，我们在 export 时把最后一个 trunk ReLU 命名为 "trunk.5"。
     layers = []
     sd = net.state_dict()
-    # trunk: Linear(446,256)+ReLU, Linear(256,256)+ReLU, Linear(256,128)+ReLU
+    # 第一遍：找出最后一个 trunk Linear 的索引
+    trunk_modules = list(net.trunk)
+    last_linear_idx = max(i for i, m in enumerate(trunk_modules) if isinstance(m, torch.nn.Linear))
+    last_relu_idx = None
+    for i, m in enumerate(trunk_modules):
+        if isinstance(m, torch.nn.ReLU) and i > last_linear_idx:
+            last_relu_idx = i
+            break
+    if last_relu_idx is None:
+        # 最后一个 ReLU 应该紧跟最后一个 Linear；若无则在最后一个 Linear 之前找
+        for i in range(last_linear_idx + 1, len(trunk_modules)):
+            if isinstance(trunk_modules[i], torch.nn.ReLU):
+                last_relu_idx = i
+                break
+    # 第二遍：实际导出。最后一个 trunk ReLU 命名为 "trunk.5" 以兼容 JS。
     for i, sub in enumerate(net.trunk):
         if isinstance(sub, torch.nn.Linear):
             layers.append(linear_layer(f"trunk.{i}", sub.weight.detach().numpy(), sub.bias.detach().numpy()))
         elif isinstance(sub, torch.nn.ReLU):
-            layers.append({"name": f"trunk.{i}_relu", "type": "relu"})
+            name = "trunk.5" if i == last_relu_idx else f"trunk.{i}_relu"
+            layers.append({"name": name, "type": "relu"})
+        elif isinstance(sub, torch.nn.Dropout):
+            pass  # Dropout 推理时无 op，不导出
     # policy head: Linear(128,7) → softmax 在 JS 里做
     ph = net.policy_head
     layers.append({"name": "policy_head", "type": "linear",

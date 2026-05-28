@@ -1544,6 +1544,7 @@ function alphazeroPickRole(p, available) {
       maxIters: iters,
       budgetMs: ms,
       C: 1.5, // PUCT 常数；NN policy 比较自信，稍微鼓励探索
+      truncate: 999, // 全 rollout 到终局：用 NN 仅作 policy prior，value 用真实回报
       evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
       priorPolicyFn: (state, seat) => {
         const out = PRSim.networkEval(state, seat);

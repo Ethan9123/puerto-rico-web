@@ -745,14 +745,28 @@
       }
       let leafEval;
       if (evalLeafFn) {
-        // NN 叶评估：返回 perspective -> [-1, 1]
-        leafEval = (persp) => {
-          try {
-            const v = evalLeafFn(st, persp);
-            if (typeof v !== "number" || !isFinite(v)) return 0;
-            return Math.max(-1, Math.min(1, v));
-          } catch (e) { return 0; }
-        };
+        // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
+        // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
+        // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
+        // 这些动作），引入 truncate 步是把状态稍微推到 NN 训练分布之外，
+        // 再让 NN 给出 value 评估。等价于 evalLeaf 把线性 value 换成 NN。
+        let steps = 0;
+        while (!isTerminal(st) && steps++ < truncate) {
+          const ch = currentChooser(st); if (ch < 0) break;
+          const legal = legalRoleIdxs(st); if (!legal.length) break;
+          applyRole(st, heuristicPickRole(st, ch, legal));
+        }
+        if (isTerminal(st)) {
+          leafEval = (persp) => reward(st, persp);
+        } else {
+          leafEval = (persp) => {
+            try {
+              const v = evalLeafFn(st, persp);
+              if (typeof v !== "number" || !isFinite(v)) return 0;
+              return Math.max(-1, Math.min(1, v));
+            } catch (e) { return 0; }
+          };
+        }
       } else {
         leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
       }

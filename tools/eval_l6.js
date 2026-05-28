@@ -55,6 +55,7 @@ async function main() {
       const opts = (ch === seat)
         ? {
             budgetMs: BUDGET, maxIters: 1e9, C: 1.5,
+            truncate: 999, // hybrid: full rollout + NN policy prior
             evalLeafFn: (state, pp) => S.evalLeafNN(state, pp),
             priorPolicyFn: (state, pp) => {
               const o = S.networkEval(state, pp);
