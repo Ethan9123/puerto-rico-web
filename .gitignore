@@ -18,3 +18,10 @@ tests/_nn_ref.json
 # Build artifacts
 puerto-rico-web-offline.zip
 puerto-rico-web-*.zip
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
