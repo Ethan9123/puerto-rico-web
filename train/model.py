@@ -20,10 +20,14 @@ import torch.nn as nn
 
 FEATURE_DIM = 446
 N_ROLES = 7
+N_VALUE = 4  # Multiplayer AlphaZero: value 是向量，每个玩家一个（perspective-ordered）。
+            # 推理只用 index 0（视角玩家），其余作为辅助多任务信号帮 trunk 学更好表征。
+            # 固定 4（训练数据均 4 人局）；3/5 人局推理时仍只读 [0]，多余输出无害。
 
 
 class PolicyValueNet(nn.Module):
     def __init__(self, feature_dim: int = FEATURE_DIM, n_roles: int = N_ROLES,
+                 n_value: int = N_VALUE,
                  hidden_dims=(512, 512, 256, 128), dropout=(0.3, 0.3, 0.2, 0.0)):
         super().__init__()
         assert len(hidden_dims) == len(dropout), "hidden_dims/dropout length mismatch"
@@ -37,15 +41,16 @@ class PolicyValueNet(nn.Module):
             prev = h
         self.trunk = nn.Sequential(*layers)
         self.policy_head = nn.Linear(prev, n_roles)
+        # 价值向量头：n_value 个输出（每玩家一个，[-1,1]）
         self.value_head = nn.Sequential(
-            nn.Linear(prev, 1),
+            nn.Linear(prev, n_value),
             nn.Tanh(),
         )
 
     def forward(self, x: torch.Tensor):
         h = self.trunk(x)
         policy_logits = self.policy_head(h)
-        value = self.value_head(h).squeeze(-1)
+        value = self.value_head(h)  # [batch, n_value]，不再 squeeze
         return policy_logits, value
 
     def num_params(self) -> int:

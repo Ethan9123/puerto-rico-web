@@ -12,6 +12,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
+VVDIM = 4  # value 向量维度（每玩家一个，perspective-ordered）
+
+
 class SelfPlayDataset(Dataset):
     def __init__(self, paths: Iterable[Path]):
         feats, actions, values = [], [], []
@@ -24,13 +27,22 @@ class SelfPlayDataset(Dataset):
                     d = json.loads(line)
                     feats.append(d["f"])
                     actions.append(d["a"])
-                    values.append(d["v"])
+                    # value 目标：优先用向量 vv（4 维）；旧数据只有标量 v 时
+                    # 退化为 [v, 0, 0, 0]（仅 index 0 有意义，其余 mask 不会用）
+                    if "vv" in d:
+                        vv = d["vv"]
+                        if len(vv) < VVDIM:
+                            vv = vv + [0.0] * (VVDIM - len(vv))
+                        values.append(vv[:VVDIM])
+                    else:
+                        values.append([d["v"]] + [0.0] * (VVDIM - 1))
         self.X = torch.tensor(np.asarray(feats, dtype=np.float32))
         self.A = torch.tensor(actions, dtype=torch.long)
-        self.V = torch.tensor(values, dtype=torch.float32)
+        self.V = torch.tensor(np.asarray(values, dtype=np.float32))  # [N, VVDIM]
         assert self.X.dim() == 2 and self.X.shape[1] == 446, f"feature dim mismatch: {self.X.shape}"
         assert self.A.shape[0] == self.X.shape[0]
         assert self.V.shape[0] == self.X.shape[0]
+        assert self.V.shape[1] == VVDIM, f"value dim mismatch: {self.V.shape}"
 
     def __len__(self) -> int:
         return self.X.shape[0]

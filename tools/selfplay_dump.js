@@ -141,17 +141,30 @@ for (let g = 0; g < GAMES; g++) {
   }
   // 终局分数（vp + 建筑 + 大紫终局 + ...）→ sim 已经在 finalScore 里算了
   const scores = finalScores(st);
+  const N = scores.length;
   // 写出每个样本：特征 + 行动（policy target）+ 终局结果（value target）
-  // value target 设计：从该玩家视角的「(我得 - 对手平均) / 50」压到 [-1, 1]
+  // value target 设计（Multiplayer AlphaZero 风格 value 向量）：
+  //   - 标量 v: 从该玩家视角的「(我得 - 对手平均) / 50」压到 [-1, 1]（向后兼容）
+  //   - 向量 vv[k]: perspective-ordered，vv[k] = 第 (seat+k)%N 个玩家的相对优势。
+  //     vv[0] === v（视角玩家）。特征也是 perspective-first 排列，所以两者对齐。
+  //     推理只读 vv[0]；vv[1..] 作辅助多任务。固定写 4 维（不足补 0，多则截断）。
+  const VVDIM = 4;
+  function relAdv(playerIdx) {
+    let oppSum = 0;
+    for (let i = 0; i < N; i++) if (i !== playerIdx) oppSum += scores[i];
+    const oppAvg = oppSum / (N - 1);
+    return Math.max(-1, Math.min(1, (scores[playerIdx] - oppAvg) / 50));
+  }
   for (const s of gameSamples) {
-    const my = scores[s.seat];
-    let oppSum = 0; for (let i = 0; i < scores.length; i++) if (i !== s.seat) oppSum += scores[i];
-    const oppAvg = oppSum / (scores.length - 1);
-    const value = Math.max(-1, Math.min(1, (my - oppAvg) / 50));
+    const value = relAdv(s.seat);
+    const vv = new Array(VVDIM).fill(0);
+    for (let k = 0; k < VVDIM && k < N; k++) {
+      vv[k] = Math.round(relAdv((s.seat + k) % N) * 10000) / 10000;
+    }
     // 把 Float32Array 转成普通数字数组写 JSON（精度足够）
     const featuresArr = new Array(s.features.length);
     for (let i = 0; i < s.features.length; i++) featuresArr[i] = Math.round(s.features[i] * 10000) / 10000;
-    const line = JSON.stringify({ f: featuresArr, a: s.role_idx, v: Math.round(value * 10000) / 10000, n: NUM_PLAYERS });
+    const line = JSON.stringify({ f: featuresArr, a: s.role_idx, v: Math.round(value * 10000) / 10000, vv, n: NUM_PLAYERS });
     fs.writeSync(fd, line + '\n');
     totalSamples++;
   }
