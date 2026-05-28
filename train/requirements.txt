@@ -1,0 +1,12 @@
+torch>=2.0
+numpy>=1.24
+
+# GPU 加速（NVIDIA 显卡）：根据 GPU 架构选择 CUDA 版本
+#   RTX 50 系（Blackwell，sm_120） → cu128 (CUDA 12.8)
+#   RTX 40 系（Ada，sm_89）        → cu126 / cu128
+#   RTX 30 系（Ampere，sm_86）     → cu126
+# 安装命令（替换默认的 CPU torch）：
+#   pip uninstall torch -y
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# 验证：
+#   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"

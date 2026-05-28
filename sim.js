@@ -689,12 +689,19 @@
     const C = opts.C || (root._mctsC != null ? root._mctsC : 1.0); // 探索常数(低=更重利用，rollout 已较强)
     const valueW = opts.valueW || null;        // 价值函数权重（给定则用价值制导）
     const truncate = opts.truncate != null ? opts.truncate : 6; // 截断 rollout 步数
+    // L6/AlphaZero hooks（向后兼容；不传则同 L5 行为）：
+    //   evalLeafFn(st, perspectiveSeat) -> number in [-1, 1]
+    //     有则替代 evalLeaf 的截断 rollout，直接用 NN 估值
+    //   priorPolicyFn(st, perspectiveSeat) -> { [roleName]: prob }
+    //     有则在每个节点用 PUCT 而非 UCT：score = Q/N + C * P * sqrt(N_parent) / (1 + N_child)
+    const evalLeafFn = opts.evalLeafFn || null;
+    const priorPolicyFn = opts.priorPolicyFn || null;
     if (currentChooser(rootState) < 0) return -1;
     const rootLegal = legalRoleIdxs(rootState);
     if (rootLegal.length <= 1) return rootLegal[0];
 
     // 信息集树：节点 children keyed by 角色名（角色卡公开 → 各确定化下动作集一致）。
-    const treeRoot = { N: 0, Q: 0, children: new Map() };
+    const treeRoot = { N: 0, Q: 0, children: new Map(), P: null };
     const t0 = Date.now();
     let iters = 0;
     while (iters < maxIters) {
@@ -708,12 +715,24 @@
         if (ch < 0) break;
         const legal = legalRoleIdxs(st);
         if (legal.length === 0) break;
-        for (const i of legal) { const nm = st.roleCards[i].name; if (!node.children.has(nm)) node.children.set(nm, { N: 0, Q: 0, children: new Map() }); }
-        // UCT（未访问动作记 +∞，优先扩展）
+        for (const i of legal) { const nm = st.roleCards[i].name; if (!node.children.has(nm)) node.children.set(nm, { N: 0, Q: 0, children: new Map(), P: null }); }
+        // 先验 P（PUCT）：每个节点在第一次访问时计算一次先验，缓存到 node.P[roleName]
+        if (priorPolicyFn && !node.P) {
+          try { node.P = priorPolicyFn(st, ch) || {}; } catch (e) { node.P = {}; }
+        }
+        // UCT / PUCT
         let chosen = null, bestV = -Infinity;
         for (const i of legal) {
           const nm = st.roleCards[i].name, c = node.children.get(nm);
-          const v = c.N === 0 ? Infinity : c.Q / c.N + C * Math.sqrt(Math.log(node.N + 1) / c.N);
+          let v;
+          if (priorPolicyFn) {
+            // PUCT: Q + C * P * sqrt(N_parent) / (1 + N_child)；未访问也用先验排序
+            const Pn = (node.P && node.P[nm] != null) ? node.P[nm] : (1 / legal.length);
+            const q = c.N === 0 ? 0 : c.Q / c.N;
+            v = q + C * Pn * Math.sqrt(node.N + 1) / (1 + c.N);
+          } else {
+            v = c.N === 0 ? Infinity : c.Q / c.N + C * Math.sqrt(Math.log(node.N + 1) / c.N);
+          }
           if (v > bestV) { bestV = v; chosen = nm; }
         }
         const ri = legal.find(i => st.roleCards[i].name === chosen);
@@ -722,9 +741,35 @@
         visited.push({ child, chooser: ch });
         applyRole(st, ri);
         node = child;
-        if (wasUnvisited) break; // 扩展一个新节点后转 rollout
+        if (wasUnvisited) break; // 扩展一个新节点后转 rollout / NN eval
       }
-      const leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+      let leafEval;
+      if (evalLeafFn) {
+        // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
+        // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
+        // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
+        // 这些动作），引入 truncate 步是把状态稍微推到 NN 训练分布之外，
+        // 再让 NN 给出 value 评估。等价于 evalLeaf 把线性 value 换成 NN。
+        let steps = 0;
+        while (!isTerminal(st) && steps++ < truncate) {
+          const ch = currentChooser(st); if (ch < 0) break;
+          const legal = legalRoleIdxs(st); if (!legal.length) break;
+          applyRole(st, heuristicPickRole(st, ch, legal));
+        }
+        if (isTerminal(st)) {
+          leafEval = (persp) => reward(st, persp);
+        } else {
+          leafEval = (persp) => {
+            try {
+              const v = evalLeafFn(st, persp);
+              if (typeof v !== "number" || !isFinite(v)) return 0;
+              return Math.max(-1, Math.min(1, v));
+            } catch (e) { return 0; }
+          };
+        }
+      } else {
+        leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+      }
       treeRoot.N++;
       for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
