@@ -1807,7 +1807,7 @@ function aiPickRole(p, available) {
     return level1PickRole(p, available);
   }
   if (lvl === 3) return level2PickRoleNew(p, available);        // 普通=邻座感知启发式
-  if (lvl === 4) return level5Reactive(p, available);           // 困难=全场卡位+2轮前瞻(即时)
+  if (lvl === 4) return ismctsPickRole(p, available, "hard");   // 困难=轻量ISMCTS(截断前瞻+手写经济评估)统筹全局
   if (lvl === 5) return ismctsPickRole(p, available, "expert"); // 专家=MCTS 深搜·逐步深想
   if (lvl === 6) return alphazeroPickRole(p, available);        // 宗师=AlphaZero NN+MCTS
   return level2PickRoleNew(p, available);
@@ -1853,7 +1853,11 @@ function ismctsPickRole(p, available, tier) {
     const ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
     // 专家档若已加载训练好的价值函数则启用价值制导（否则纯 rollout）
     const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
-    const ri = PRSim.ismctsPickRoleIdx(st, { maxIters: iters, budgetMs: ms, valueW, truncate: 8 });
+    // 困难档(两者结合)：截断 rollout 前瞻若干回合 + 手写"经济评估"做叶节点评估
+    //   → 自然实现"统筹全局/未来 N 回合收益最大/买 vs 攒/最优卖货/对手会怎么走(确定化搜索)"。
+    const opts = { maxIters: iters, budgetMs: ms, valueW, truncate: 8 };
+    if (tier === "hard" && PRSim.econReward) opts.evalLeafFn = (s2, persp) => PRSim.econReward(s2, persp);
+    const ri = PRSim.ismctsPickRoleIdx(st, opts);
     if (ri == null || ri < 0) return level5Reactive(p, available);
     const name = st.roleCards[ri].name;
     const idx = available.findIndex(r => r.name === name);
