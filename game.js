@@ -558,8 +558,8 @@ window.runBattle = runBattle;
 
 // FLIP 飞行动画：把源元素从当前位置克隆飞到目标元素位置（不阻塞主循环）
 function flyToDest(source, destFn, duration = 450) {
-  // 全 AI 测试模式跳过动画
-  if (window._allAIMode || !source) {
+  // 仅无头测试/训练(_fastSpectator)跳过动画；真人观战全 AI 对战时照常播放拿取动画
+  if (window._fastSpectator || !source) {
     render();
     return;
   }
@@ -590,6 +590,95 @@ function flyToDest(source, destFn, duration = 450) {
     // 兜底：1秒后强制清理
     setTimeout(() => ghost.remove(), duration + 1500);
   }, 30);
+}
+
+// ============================================================
+// 全 AI 观战「解说台」（足球解说风格）
+//   - 开牌前：用独立"行家"软评分预测每位 AI 选牌的概率，激情解说
+//   - 开牌后：核对预测命中/落空，累计本场命中率
+//   仅在真人观战全 AI 对战时启用；无头测试/训练(_fastSpectator)完全跳过。
+// ============================================================
+const CAST_PREDICT_MS = 2600; // 预测后的悬念时间
+const CAST_REACT_MS = 1800;   // 揭晓后的反应时间
+
+function spectatorOn() { return !!window._allAIMode && !window._fastSpectator; }
+
+function commentarySay(html, kind) {
+  const box = document.getElementById("commentary-box");
+  if (!box) return;
+  box.className = "cast-" + (kind || "talk"); // 同时移除 hidden
+  box.innerHTML = html;
+  box.style.animation = "none";
+  void box.offsetWidth; // 强制回流以重放脉冲动画
+  box.style.animation = "";
+}
+
+// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率（与具体 AI 等级无关，故会有"猜错"的戏剧性）
+function commentatorPredict(me, available) {
+  const phase = gamePhase();
+  const scored = available.map(r => ({
+    r,
+    s: roleSelfMinusOpp(me, r.name, r.money).margin + strategicRoleBias(me, r.name, phase),
+  }));
+  const mx = Math.max(...scored.map(x => x.s));
+  const T = 1.3; // softmax 温度：越小越尖锐（角色价值早期接近，过大会一片五五开）
+  let Z = 0;
+  for (const x of scored) { x.e = Math.exp((x.s - mx) / T); Z += x.e; }
+  for (const x of scored) x.p = x.e / Z;
+  scored.sort((a, b) => b.p - a.p);
+  return scored; // 概率降序 [{r,s,p}]
+}
+
+const CAST_REASON = {
+  Captain: ["船舱在召唤，是时候装船兑换分数了！", "再不装船仓库就要爆仓啦！"],
+  Trader: ["贸易站还空着，正是套现的好时机！", "高价货在手，不卖更待何时！"],
+  Builder: ["金币鼓鼓的，该置办大产业了！", "建筑市场有好货，钱要花在刀刃上！"],
+  Mayor: ["空岗一大片，人力才是硬道理！", "殖民船满载，抢人要趁早！"],
+  Craftsman: ["生产线火力全开，工匠能榨干每一分产能！", "原料齐备，开足马力生产！"],
+  Settler: ["地盘还不够，先圈块好地再说！", "采石场和好田，拓殖者眼里全是机会！"],
+  Prospector: ["没有更香的选择，稳稳收一金也不亏！", "闷声发财，金矿主默默 +1！"],
+};
+function castReason(role) { const a = CAST_REASON[role] || [""]; return a[Math.floor(Math.random() * a.length)]; }
+
+function commentaryPreRole(me, available) {
+  const pred = commentatorPredict(me, available);
+  const top = pred[0], second = pred[1];
+  const lvl = AI_LEVEL_NAMES[me._aiLevel] ? AI_LEVEL_NAMES[me._aiLevel].cn : "";
+  const pct = Math.round(top.p * 100);
+  const hot = `<b class="cast-hot">${ROLE_NAME_CN[top.r.name]}</b>`;
+  let lead;
+  if (pct >= 45) lead = `我重押 ${hot}，可能性 <b>${pct}%</b>！${castReason(top.r.name)}`;
+  else if (pct >= 28) lead = `我看好 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`;
+  else lead = `七个角色几乎势均力敌——我勉强压 ${hot}（仅 <b>${pct}%</b>），这一手太难猜了！`;
+  let html = `<div class="cast-head">🎙️ 解说台</div>`;
+  html += `<div class="cast-line">轮到 <b>${me.name}</b>（${lvl}选手）登场！${lead}`;
+  if (second && second.p > 0.18 && pct >= 28) html += `　紧追的是 <b>${ROLE_NAME_CN[second.r.name]}</b>（${Math.round(second.p * 100)}%）！`;
+  html += `</div>`;
+  commentarySay(html, "predict");
+  return pred;
+}
+
+function commentaryPostRole(me, pred, chosenRole) {
+  G._castTotal = (G._castTotal || 0) + 1;
+  const rank = pred.findIndex(x => x.r.name === chosenRole);
+  const picked = rank >= 0 ? pred[rank] : null;
+  const pct = Math.round((picked ? picked.p : 0) * 100);
+  const cn = ROLE_NAME_CN[chosenRole];
+  let html = `<div class="cast-head">🎙️ 解说台</div>`, kind;
+  if (rank === 0) {
+    G._castHits = (G._castHits || 0) + 1;
+    kind = "hit";
+    html += `<div class="cast-line cast-hit">正中下怀！<b>${me.name}</b> 果断拿下 <b>${cn}</b>——解说台完美预判，稳！🔥</div>`;
+  } else if (rank >= 1 && rank <= 2 && pct >= 12) {
+    kind = "near";
+    html += `<div class="cast-line">在我的候选名单里！<b>${me.name}</b> 选了 <b>${cn}</b>（赛前给到 ${pct}%）——首选落空但思路对得上！👏</div>`;
+  } else {
+    kind = "miss";
+    html += `<div class="cast-line cast-miss">啊?!大冷门！<b>${me.name}</b> 竟然抢了 <b>${cn}</b>（我只给 ${pct}%）！完全不按套路出牌，解说台被打脸！😱</div>`;
+  }
+  const acc = G._castTotal ? Math.round((G._castHits || 0) / G._castTotal * 100) : 0;
+  html += `<div class="cast-foot">本场解说命中 ${G._castHits || 0}/${G._castTotal}（${acc}%）</div>`;
+  commentarySay(html, kind);
 }
 
 function startGame() {
@@ -629,6 +718,9 @@ function startGame() {
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
+  // 观战解说台：仅真人观战全 AI 对战时显示，新开局先清空/隐藏
+  const cbox = document.getElementById("commentary-box");
+  if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
@@ -731,7 +823,12 @@ async function runMainLoop() {
       } else {
         // 仅在有人类玩家时延时（给人类看清节奏）；全 AI 测试模式立即执行
         if (!window._allAIMode) await sleep(700);
+        // 观战解说：开牌前预测
+        let castPred = null;
+        if (spectatorOn()) { castPred = commentaryPreRole(player, available); await sleep(CAST_PREDICT_MS); }
         chosenIdx = aiPickRole(player, available);
+        // 观战解说：开牌后核对
+        if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(CAST_REACT_MS); }
       }
       const chosen = available[chosenIdx];
       chosen.taken = true;
@@ -900,8 +997,8 @@ async function doSettler(playerIdx, isChooser) {
   flyToDest(sourceEl, () =>
     document.querySelector(`.player-board[data-player="${playerIdx}"] .plantation-grid .plantation:nth-child(${newIdx + 1})`)
   );
-  // 等动画播放（全 AI 模式短一些）
-  if (!window._allAIMode) await sleep(350);
+  // 等拿田动画播放完（真人观战也播放；仅无头测试跳过）
+  if (!window._fastSpectator) await sleep(350);
   // 庄园 Hacienda 效果：拿种植园同时从牌堆拿一张额外
   if (G.isManned(p, 8) && p.plantations.length < 12 && G.plantationDeck.length > 0) {
     const extra = G.plantationDeck.pop();
@@ -1165,7 +1262,7 @@ async function doBuilder(playerIdx, isChooser) {
   flyToDest(sourceEl, () =>
     document.querySelector(`.player-board[data-player="${playerIdx}"] .building-grid .mini-building:nth-child(${newBldIdx + 1})`)
   , 500);
-  if (!window._allAIMode) await sleep(350);
+  if (!window._fastSpectator) await sleep(350);
   // 大学：建造后+1殖民者直接上岗。优先从供应区取，没有则从船上取。
   if (G.isManned(p, 16)) {
     if (G.colonistsLeft > 0) {
@@ -1377,7 +1474,7 @@ async function doCaptain(order, chooserIdx) {
       G.vpLeft -= vpGain;
       G.logEvent(`${p.name} ${isWharf ? "用码头装" : `装船${pick.ship + 1}:`} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain}VP)`, "action");
       if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 装船#${isWharf ? "W" : (pick.ship + 1)} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain} VP)</div>`, { kind: "role" });
-      if (!window._allAIMode) await sleep(450);
+      if (!window._fastSpectator) await sleep(450);
       progress = true;
     }
   }

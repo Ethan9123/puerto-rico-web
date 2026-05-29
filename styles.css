@@ -517,3 +517,32 @@ body {
 .toast.warn { border-left-color: #ffa84a; }
 .toast .t-title { font-weight: 700; margin-bottom: 2px; }
 .toast .t-sub { font-size: 12px; color: #c6d2db; }
+
+/* ---- 全 AI 观战解说台（broadcast lower-third） ---- */
+#commentary-box {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  width: min(880px, 94vw); z-index: 9998;
+  padding: 12px 20px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(27,42,56,0.96), rgba(15,27,38,0.96));
+  color: #eaf2f8; border: 1px solid #2d4456;
+  box-shadow: 0 12px 34px rgba(0,0,0,0.5);
+  font-size: 15px; line-height: 1.55;
+  animation: castPulse 360ms ease;
+}
+#commentary-box.hidden { display: none; }
+#commentary-box .cast-head {
+  font-size: 12px; letter-spacing: 3px; color: #f3c969; font-weight: 800; margin-bottom: 5px;
+}
+#commentary-box .cast-line b { color: #ffd86b; }
+#commentary-box .cast-line .cast-hot { color: #ff8a3d; }
+#commentary-box .cast-line.cast-hit { color: #84e497; }
+#commentary-box .cast-line.cast-miss { color: #ff8585; }
+#commentary-box .cast-foot { margin-top: 7px; font-size: 12px; color: #8b9aa6; }
+#commentary-box.cast-predict { border-color: #3a5a72; }
+#commentary-box.cast-hit { border-color: #3a7a48; }
+#commentary-box.cast-near { border-color: #6a5a2a; }
+#commentary-box.cast-miss { border-color: #7a3a3a; }
+@keyframes castPulse {
+  0% { transform: translateX(-50%) scale(0.97); opacity: 0.55; }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
