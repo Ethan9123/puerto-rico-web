@@ -635,14 +635,17 @@ function startGame() {
   runMainLoop();
 }
 
-// 懒加载 AlphaZero NN（mcts_value_nn.json），首次需要时调用一次。
-// 失败时静默忽略，L6 自动回退到 L5。
+// 懒加载 AlphaZero NN，首次需要时调用一次。
+// 优先用内嵌的 window.__MCTS_VALUE_NN__（由 mcts_value_nn_data.js 提供）——双击 index.html
+// 离线运行时，file:// 下 fetch 本地 json 会被浏览器 CORS 拦截，靠内嵌权重才能让宗师离线可用；
+// 没有内嵌时再 fetch mcts_value_nn.json（线上 / 本地服务器 / Node 测试）。失败则静默回退到 L5。
 let _nnLoadPromise = null;
 function loadAlphaZeroNN() {
   if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
   if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
   if (_nnLoadPromise) return _nnLoadPromise;
-  _nnLoadPromise = PRSim.loadNetwork("mcts_value_nn.json")
+  const src = (typeof window !== "undefined" && window.__MCTS_VALUE_NN__) ? window.__MCTS_VALUE_NN__ : "mcts_value_nn.json";
+  _nnLoadPromise = PRSim.loadNetwork(src)
     .then(() => { console.log("[L6] AlphaZero NN loaded"); return true; })
     .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
   return _nnLoadPromise;
