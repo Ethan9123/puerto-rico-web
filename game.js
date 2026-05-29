@@ -682,6 +682,51 @@ const CAST_REASON = {
 };
 function castReason(role) { return castPick(CAST_REASON[role] || [""]); }
 
+// 终局热度：0 平稳 / 1 末日临近 / 2 终场哨已吹（影响解说狂热度与"控速·绝杀"桥段）
+function castEndgameHeat() {
+  if (G.endTriggered) return 2;
+  let maxUsed = 0; for (const p of G.players) maxUsed = Math.max(maxUsed, G.buildingUsedSpaces(p));
+  const signals = (G.colonistsLeft <= G.numPlayers ? 1 : 0) + (G.vpLeft <= 10 ? 1 : 0) + (maxUsed >= 10 ? 1 : 0);
+  if (signals >= 2) return 2;
+  if (signals >= 1 || gamePhase() === "late") return 1;
+  return 0;
+}
+function castCashCrops(me) { const c = []; if (me.goods.coffee > 0) c.push("咖啡"); if (me.goods.tobacco > 0) c.push("烟草"); return c; }
+
+// 波多黎各"黑话"桥段：按角色 + 阶段 + 终局热度，生成一句贴合实况的术语解说（蹭蹭/工匠恐惧/经济作物/大建/控速…）
+function castJargon(me, roleName, phase, heat) {
+  switch (roleName) {
+    case "Settler":
+      return phase === "early" ? castPick(["圈地运动开始！", "先占一块好地，地基决定上限！"])
+        : castPick(["第一个矿，就是省下的整座江山！", "多样化！多一种作物多一条活路！"]);
+    case "Mayor":
+      if (heat >= 1) return castPick(["他在数供应堆的工人——这是要踩下刹车控速！", "空工位、招聘所……他在拨弄结束游戏的倒计时！"]);
+      return castPick(["抢人！人力才是第一生产力！", "殖民船一扫而空！"]);
+    case "Builder": {
+      const canBig = me.money >= 10 && BUILDINGS.some(b => b.type === "large_violet" && G.buildingStock[b.id] > 0 && !me.buildings.some(x => x.bid === b.id));
+      if (canBig || heat >= 1) return castPick(["大建在向他招手！公会厅？堡垒？通天塔即将拔地而起！", "10 块大件争夺，这一砸可能就是满额奖励分！"]);
+      return castPick(["趁对手没钱，悄悄添置产业！", "建筑市场扫货！"]);
+    }
+    case "Craftsman":
+      return castPick(["『工匠恐惧』的阴云笼罩全场——他这是在给下家的交易和上船递刀子啊！", "他不是在生产，他是在为全场对手做嫁衣！工匠恐惧！"]);
+    case "Trader": {
+      const cc = castCashCrops(me);
+      if (cc.length) return castPick([`套现！把${cc[0]}变成白花花的金币！`, "经济作物出手，雪球要滚起来了！"]);
+      if (G.tradingHouse.length >= 3) return "贸易站只剩最后的空格，手慢无！";
+      return "套现一笔，落袋为安！";
+    }
+    case "Captain": {
+      let opc = null;
+      for (const p of G.players) { if (p === me) continue; if (p.goods.coffee > 0) { opc = "咖啡"; break; } if (p.goods.tobacco > 0) opc = "烟草"; }
+      if (opc) return castPick([`要把对手的${opc}强行掀进大西洋！`, `强制装船！谁也别想留着${opc}过夜！`]);
+      return castPick(["强制装船，谁也跑不掉！", "1 货 1 分，刷分时刻！"]);
+    }
+    case "Prospector":
+      return castPick(["带血的低保 +1，闷声发财！", "没有更香的，先把这块钱攥在手里！"]);
+  }
+  return "";
+}
+
 function commentaryPreRole(me, available) {
   const pred = commentatorPredict(me, available);
   const top = pred[0], second = pred[1];
@@ -695,8 +740,10 @@ function commentaryPreRole(me, available) {
   if (pct >= 45) lead = castPick([`我重押 ${hot}！可能性 <b>${pct}%</b>！${castReason(top.r.name)}`, `毫无悬念——${hot}！<b>${pct}%</b>！${castReason(top.r.name)}`]);
   else if (pct >= 28) lead = `我看好 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`;
   else lead = `七张牌几乎五五开——我咬牙压 ${hot}（仅 <b>${pct}%</b>），这一手太难猜了！`;
+  const heat = castEndgameHeat();
+  const opener = heat === 2 ? `🔚 生死时速！` : (heat === 1 ? `⏳ 末日临近——` : ``);
   let html = `<div class="cast-head">🎙️ 解说台</div>`;
-  html += `<div class="cast-line">轮到 ${pos}<b>${me.name}</b>（${lvl}）登场！${lead}`;
+  html += `<div class="cast-line">${opener}轮到 ${pos}<b>${me.name}</b>（${lvl}）登场！${lead}`;
   if (second && second.p > 0.18 && pct >= 28) html += `　紧追的是 <b>${ROLE_NAME_CN[second.r.name]}</b>（${Math.round(second.p * 100)}%）！`;
   html += `</div>`;
   commentarySay(html, "predict");
@@ -711,6 +758,8 @@ function commentaryPostRole(me, pred, chosenRole) {
   const cn = ROLE_NAME_CN[chosenRole];
   const a = castAnalyzeMove(me, chosenRole);
   const nm = `<b>${me.name}</b>`;
+  const phase = gamePhase();
+  const heat = castEndgameHeat();
   // 判定戏剧类型
   const isProspector = chosenRole === "Prospector"; // 金矿主无跟随动作，既不卡人也不资敌
   const isBlock = !isProspector && a.rival && a.rivalWant >= 2.0 && a.rivalRank <= 1 && a.rival !== me;
@@ -719,8 +768,20 @@ function commentaryPostRole(me, pred, chosenRole) {
   const isPower = a.myGain >= 3.0;
   const amTrailing = a.chooserRank >= a.n - 1;
   const amLeading = a.chooserRank === 0;
-  let line, kind;
-  if (isBlock && a.rivalRank === 0) {
+  let line, kind, endgameSpecial = false;
+  if (heat === 2 && chosenRole === "Builder" && me.money >= 10) {
+    kind = "power"; endgameSpecial = true;
+    line = castPick([
+      `终场哨在即，${nm} 一锤砸下大件！！这一砸可能就是惊天逆转的满额奖励分——历史在此刻拐弯！`,
+      `末日倒计时声中，${nm} 的通天塔轰然建起！！要一锤定音了吗？！全场屏住呼吸！`,
+    ]);
+  } else if (heat === 2 && (chosenRole === "Mayor" || chosenRole === "Craftsman") && !isBlock) {
+    kind = "block"; endgameSpecial = true;
+    line = castPick([
+      `控速大师！${nm} 在精算供应堆的每一个木头人，要强行吹响全场结束的哨音！这是一场关于流速的拔河！`,
+      `生死时速！${nm} 一只手按在刹车上，一只手按在油门上——他在亲手决定游戏什么时候暴毙！`,
+    ]);
+  } else if (isBlock && a.rivalRank === 0) {
     kind = "block";
     line = castPick([
       `斩断！斩——断！${nm} 一把抢走 <b>${cn}</b>，直接掐死了领头羊 <b>${a.rival.name}</b> 的命脉！！这一刀又稳又狠，<b>${a.rival.name}</b> 的引擎当场熄火！全场沸腾！`,
@@ -775,6 +836,8 @@ function commentaryPostRole(me, pred, chosenRole) {
       `合理！${nm} 的 <b>${cn}</b> 收益 <b>${a.myGain.toFixed(1)}</b> 分，按部就班推进。`,
     ]);
   }
+  // 贴合实况的"黑话"桥段（端游/控速分支自带，不重复）
+  if (!endgameSpecial) { const jg = castJargon(me, chosenRole, phase, heat); if (jg) line += ` ${jg}`; }
   // 预测核对小花絮
   let tag = "";
   if (rank === 0) tag = `　<span class="cast-hit">[解说命中✓]</span>`;
@@ -783,10 +846,11 @@ function commentaryPostRole(me, pred, chosenRole) {
   const L = a.standings[0], gap = (a.standings[0].v - (a.standings[1] ? a.standings[1].v : 0));
   const allZero = a.standings.every(s => s.v === 0);
   const standingTxt = allZero ? `比分尚未拉开，群雄逐鹿` : `<b>${L.p.name}</b> 以 ${L.v} 分领跑（领先次席 ${gap} 分）`;
+  const heatNote = heat === 2 ? `🔚 终场哨已吹响！　` : (heat === 1 ? `⏳ 末日倒计时…　` : ``);
   const acc = G._castTotal ? Math.round((G._castHits || 0) / G._castTotal * 100) : 0;
   let html = `<div class="cast-head">🎙️ 解说台</div>`;
   html += `<div class="cast-line ${kind === "miss" ? "cast-miss" : (kind === "block" || kind === "power" ? "cast-hit" : "")}">${line}${tag}</div>`;
-  html += `<div class="cast-foot">局势：${standingTxt}　·　解说命中 ${G._castHits || 0}/${G._castTotal}（${acc}%）</div>`;
+  html += `<div class="cast-foot">${heatNote}局势：${standingTxt}　·　解说命中 ${G._castHits || 0}/${G._castTotal}（${acc}%）</div>`;
   commentarySay(html, kind);
 }
 
