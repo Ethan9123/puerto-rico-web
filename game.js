@@ -558,8 +558,8 @@ window.runBattle = runBattle;
 
 // FLIP 飞行动画：把源元素从当前位置克隆飞到目标元素位置（不阻塞主循环）
 function flyToDest(source, destFn, duration = 450) {
-  // 全 AI 测试模式跳过动画
-  if (window._allAIMode || !source) {
+  // 仅无头测试/训练(_fastSpectator)跳过动画；真人观战全 AI 对战时照常播放拿取动画
+  if (window._fastSpectator || !source) {
     render();
     return;
   }
@@ -592,6 +592,268 @@ function flyToDest(source, destFn, duration = 450) {
   }, 30);
 }
 
+// ============================================================
+// 全 AI 观战「解说台」（足球解说风格）
+//   - 开牌前：用独立"行家"软评分预测每位 AI 选牌的概率，激情解说
+//   - 开牌后：核对预测命中/落空，累计本场命中率
+//   仅在真人观战全 AI 对战时启用；无头测试/训练(_fastSpectator)完全跳过。
+// ============================================================
+const CAST_PREDICT_MS = 2600; // 预测后的悬念时间
+const CAST_REACT_MS = 1800;   // 揭晓后的反应时间
+
+function spectatorOn() { return !!window._allAIMode && !window._fastSpectator; }
+
+function commentarySay(html, kind) {
+  const box = document.getElementById("commentary-box");
+  if (!box) return;
+  box.className = "cast-" + (kind || "talk"); // 同时移除 hidden
+  box.innerHTML = html;
+  box.style.animation = "none";
+  void box.offsetWidth; // 强制回流以重放脉冲动画
+  box.style.animation = "";
+}
+
+function castPick(a) { return a[Math.floor(Math.random() * a.length)]; }
+
+// 给每位 AI 选手起名（足球解说要喊名字）。全 AI 局：所有人取昵称；人机局：CPU 取昵称、人类保留自填名。
+const CAST_NAME_POOL = ["黄金手", "老狐狸", "暴风眼", "冷面杀手", "独狼", "闪电", "赌神", "铁算盘",
+  "夜枭", "疾风", "磐石", "黑马", "狂澜", "鬼才", "老枪", "天秤"];
+function assignCastNames() {
+  const pool = CAST_NAME_POOL.slice();
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  let k = 0;
+  for (const p of G.players) { if (!p.isHuman) p.name = pool[k++ % pool.length]; }
+}
+
+// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率（与具体 AI 等级无关，故会有"猜错"的戏剧性）
+function commentatorPredict(me, available) {
+  const phase = gamePhase();
+  const scored = available.map(r => ({
+    r,
+    s: roleSelfMinusOpp(me, r.name, r.money).margin + strategicRoleBias(me, r.name, phase),
+  }));
+  const mx = Math.max(...scored.map(x => x.s));
+  const T = 1.3; // softmax 温度：越小越尖锐（角色价值早期接近，过大会一片五五开）
+  let Z = 0;
+  for (const x of scored) { x.e = Math.exp((x.s - mx) / T); Z += x.e; }
+  for (const x of scored) x.p = x.e / Z;
+  scored.sort((a, b) => b.p - a.p);
+  return scored; // 概率降序 [{r,s,p}]
+}
+
+// 当前局势分（终局计分口径：VP筹码 + 建筑分 + 大紫特殊分）
+function castEstScore(p) {
+  return p.vp + p.buildings.reduce((s, b) => s + BLD_BY_ID[b.bid].vp, 0) + G.getSpecialVPs(p);
+}
+function castStandings() {
+  const arr = G.players.map(p => ({ p, v: castEstScore(p) }));
+  arr.sort((a, b) => b.v - a.v || (b.p.money - a.p.money));
+  return arr; // 降序
+}
+
+// 解说员的"局势模型"：这一手收益多大、净赚多少(资敌后)、最想抢这张牌的对手是谁(卡位判断)、当前排名
+function castAnalyzeMove(chooser, roleName) {
+  const info = roleSelfMinusOpp(chooser, roleName, 0); // {myGain, oppMax, margin}
+  let rival = null, rivalWant = -1;
+  for (const opp of G.players) {
+    if (opp === chooser) continue;
+    const want = snapshotProjectedScore(simulatePlayerSnapshot(G, opp.idx, roleName, true)) - baselineSnapScore(opp.idx);
+    if (want > rivalWant) { rivalWant = want; rival = opp; }
+  }
+  const standings = castStandings();
+  const chooserRank = standings.findIndex(s => s.p === chooser);
+  const rivalRank = rival ? standings.findIndex(s => s.p === rival) : 99;
+  return {
+    myGain: info.myGain, margin: info.margin, oppMax: info.oppMax,
+    rival, rivalWant, rivalRank, standings,
+    leader: standings[0].p, last: standings[standings.length - 1].p,
+    chooserRank, n: G.numPlayers,
+  };
+}
+
+const CAST_REASON = {
+  Captain: ["船舱在召唤，是时候装船兑换分数了！", "再不装船仓库就要爆仓啦！"],
+  Trader: ["贸易站还空着，正是套现的好时机！", "高价货在手，不卖更待何时！"],
+  Builder: ["金币鼓鼓的，该置办大产业了！", "建筑市场有好货，钱要花在刀刃上！"],
+  Mayor: ["空岗一大片，人力才是硬道理！", "殖民船满载，抢人要趁早！"],
+  Craftsman: ["生产线火力全开，工匠能榨干每一分产能！", "原料齐备，开足马力生产！"],
+  Settler: ["地盘还不够，先圈块好地再说！", "采石场和好田，拓殖者眼里全是机会！"],
+  Prospector: ["没有更香的选择，稳稳收一金也不亏！", "闷声发财，金矿主默默 +1！"],
+};
+function castReason(role) { return castPick(CAST_REASON[role] || [""]); }
+
+// 终局热度：0 平稳 / 1 末日临近 / 2 终场哨已吹（影响解说狂热度与"控速·绝杀"桥段）
+function castEndgameHeat() {
+  if (G.endTriggered) return 2;
+  let maxUsed = 0; for (const p of G.players) maxUsed = Math.max(maxUsed, G.buildingUsedSpaces(p));
+  const signals = (G.colonistsLeft <= G.numPlayers ? 1 : 0) + (G.vpLeft <= 10 ? 1 : 0) + (maxUsed >= 10 ? 1 : 0);
+  if (signals >= 2) return 2;
+  if (signals >= 1 || gamePhase() === "late") return 1;
+  return 0;
+}
+function castCashCrops(me) { const c = []; if (me.goods.coffee > 0) c.push("咖啡"); if (me.goods.tobacco > 0) c.push("烟草"); return c; }
+
+// 波多黎各"黑话"桥段：按角色 + 阶段 + 终局热度，生成一句贴合实况的术语解说（蹭蹭/工匠恐惧/经济作物/大建/控速…）
+function castJargon(me, roleName, phase, heat) {
+  switch (roleName) {
+    case "Settler":
+      return phase === "early" ? castPick(["圈地运动开始！", "先占一块好地，地基决定上限！"])
+        : castPick(["第一个矿，就是省下的整座江山！", "多样化！多一种作物多一条活路！"]);
+    case "Mayor":
+      if (heat >= 1) return castPick(["他在数供应堆的工人——这是要踩下刹车控速！", "空工位、招聘所……他在拨弄结束游戏的倒计时！"]);
+      return castPick(["抢人！人力才是第一生产力！", "殖民船一扫而空！"]);
+    case "Builder": {
+      const canBig = me.money >= 10 && BUILDINGS.some(b => b.type === "large_violet" && G.buildingStock[b.id] > 0 && !me.buildings.some(x => x.bid === b.id));
+      if (canBig || heat >= 1) return castPick(["大建在向他招手！公会厅？堡垒？通天塔即将拔地而起！", "10 块大件争夺，这一砸可能就是满额奖励分！"]);
+      return castPick(["趁对手没钱，悄悄添置产业！", "建筑市场扫货！"]);
+    }
+    case "Craftsman":
+      return castPick(["『工匠恐惧』的阴云笼罩全场——他这是在给下家的交易和上船递刀子啊！", "他不是在生产，他是在为全场对手做嫁衣！工匠恐惧！"]);
+    case "Trader": {
+      const cc = castCashCrops(me);
+      if (cc.length) return castPick([`套现！把${cc[0]}变成白花花的金币！`, "经济作物出手，雪球要滚起来了！"]);
+      if (G.tradingHouse.length >= 3) return "贸易站只剩最后的空格，手慢无！";
+      return "套现一笔，落袋为安！";
+    }
+    case "Captain": {
+      let opc = null;
+      for (const p of G.players) { if (p === me) continue; if (p.goods.coffee > 0) { opc = "咖啡"; break; } if (p.goods.tobacco > 0) opc = "烟草"; }
+      if (opc) return castPick([`要把对手的${opc}强行掀进大西洋！`, `强制装船！谁也别想留着${opc}过夜！`]);
+      return castPick(["强制装船，谁也跑不掉！", "1 货 1 分，刷分时刻！"]);
+    }
+    case "Prospector":
+      return castPick(["带血的低保 +1，闷声发财！", "没有更香的，先把这块钱攥在手里！"]);
+  }
+  return "";
+}
+
+function commentaryPreRole(me, available) {
+  const pred = commentatorPredict(me, available);
+  const top = pred[0], second = pred[1];
+  const lvl = AI_LEVEL_NAMES[me._aiLevel] ? AI_LEVEL_NAMES[me._aiLevel].cn : "";
+  const st = castStandings();
+  const myRank = st.findIndex(s => s.p === me);
+  const pos = myRank === 0 ? `领跑全场的 ` : (myRank === st.length - 1 ? `暂列末席的 ` : ``);
+  const pct = Math.round(top.p * 100);
+  const hot = `<b class="cast-hot">${ROLE_NAME_CN[top.r.name]}</b>`;
+  let lead;
+  if (pct >= 45) lead = castPick([`我重押 ${hot}！可能性 <b>${pct}%</b>！${castReason(top.r.name)}`, `毫无悬念——${hot}！<b>${pct}%</b>！${castReason(top.r.name)}`]);
+  else if (pct >= 28) lead = `我看好 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`;
+  else lead = `七张牌几乎五五开——我咬牙压 ${hot}（仅 <b>${pct}%</b>），这一手太难猜了！`;
+  const heat = castEndgameHeat();
+  const opener = heat === 2 ? `🔚 生死时速！` : (heat === 1 ? `⏳ 末日临近——` : ``);
+  let html = `<div class="cast-head">🎙️ 解说台</div>`;
+  html += `<div class="cast-line">${opener}轮到 ${pos}<b>${me.name}</b>（${lvl}）登场！${lead}`;
+  if (second && second.p > 0.18 && pct >= 28) html += `　紧追的是 <b>${ROLE_NAME_CN[second.r.name]}</b>（${Math.round(second.p * 100)}%）！`;
+  html += `</div>`;
+  commentarySay(html, "predict");
+  return pred;
+}
+
+// 揭晓：以"局势模型"判断这一手好坏/是否卡位，套用足球解说的极端情绪模板
+function commentaryPostRole(me, pred, chosenRole) {
+  G._castTotal = (G._castTotal || 0) + 1;
+  const rank = pred.findIndex(x => x.r.name === chosenRole); // 0=解说首选
+  if (rank === 0) G._castHits = (G._castHits || 0) + 1;
+  const cn = ROLE_NAME_CN[chosenRole];
+  const a = castAnalyzeMove(me, chosenRole);
+  const nm = `<b>${me.name}</b>`;
+  const phase = gamePhase();
+  const heat = castEndgameHeat();
+  // 判定戏剧类型
+  const isProspector = chosenRole === "Prospector"; // 金矿主无跟随动作，既不卡人也不资敌
+  const isBlock = !isProspector && a.rival && a.rivalWant >= 2.0 && a.rivalRank <= 1 && a.rival !== me;
+  const isWaste = !isProspector && a.myGain < 0.6 && a.oppMax >= 1.5; // 真·亏：自己几乎没赚，还把行动资敌
+  const isMeh = a.myGain < 1.0;
+  const isPower = a.myGain >= 3.0;
+  const amTrailing = a.chooserRank >= a.n - 1;
+  const amLeading = a.chooserRank === 0;
+  let line, kind, endgameSpecial = false;
+  if (heat === 2 && chosenRole === "Builder" && me.money >= 10) {
+    kind = "power"; endgameSpecial = true;
+    line = castPick([
+      `终场哨在即，${nm} 一锤砸下大件！！这一砸可能就是惊天逆转的满额奖励分——历史在此刻拐弯！`,
+      `末日倒计时声中，${nm} 的通天塔轰然建起！！要一锤定音了吗？！全场屏住呼吸！`,
+    ]);
+  } else if (heat === 2 && (chosenRole === "Mayor" || chosenRole === "Craftsman") && !isBlock) {
+    kind = "block"; endgameSpecial = true;
+    line = castPick([
+      `控速大师！${nm} 在精算供应堆的每一个木头人，要强行吹响全场结束的哨音！这是一场关于流速的拔河！`,
+      `生死时速！${nm} 一只手按在刹车上，一只手按在油门上——他在亲手决定游戏什么时候暴毙！`,
+    ]);
+  } else if (isBlock && a.rivalRank === 0) {
+    kind = "block";
+    line = castPick([
+      `斩断！斩——断！${nm} 一把抢走 <b>${cn}</b>，直接掐死了领头羊 <b>${a.rival.name}</b> 的命脉！！这一刀又稳又狠，<b>${a.rival.name}</b> 的引擎当场熄火！全场沸腾！`,
+      `不可思议！${nm} 这手 <b>${cn}</b> 根本不是为了自己——是为了把 <b>${a.rival.name}</b> 摁在地上摩擦！！教科书级别的卡位，绝了！`,
+    ]);
+  } else if (isBlock) {
+    kind = "block";
+    line = castPick([
+      `卡位！${nm} 抢下 <b>${cn}</b>，一刀切断了 <b>${a.rival.name}</b> 的财路！${a.rival.name} 脸都绿了！漂亮！`,
+      `好一记釜底抽薪！${nm} 把 <b>${a.rival.name}</b> 最想要的 <b>${cn}</b> 生生夺走！这就是高手的杀气！`,
+    ]);
+  } else if (isWaste) {
+    kind = "miss";
+    line = castPick([
+      `（停顿）……他在干什么？！${nm} 这手 <b>${cn}</b> 自己几乎没捞到，却把行动白送全场！业余！不可原谅！这一步要写进检讨书！`,
+      `灾难！纯纯的灾难！${nm} 选了 <b>${cn}</b> 颗粒无收，反倒给对手们做了嫁衣裳！看不懂，真的看不懂！`,
+    ]);
+  } else if (isProspector) {
+    kind = "talk";
+    line = castPick([
+      `没有更香的选择，${nm} 务实地摸了金矿主，闷声 +1 金——不亏，但也只是过渡。`,
+      `${nm} 选金矿主求稳，独吞一块钱。没人能蹭，安全牌一张。`,
+    ]);
+  } else if (isPower && amLeading) {
+    kind = "power";
+    line = castPick([
+      `霸气外露！领跑的 ${nm} 用一记 <b>${cn}</b> 把优势焊死，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！这是属于王者的从容！`,
+      `碾压！就是碾压！${nm} 的 <b>${cn}</b> 又是一波暴击，把分差拉到令人窒息！谁能拦住他？！`,
+    ]);
+  } else if (amTrailing && a.myGain >= 1.2) {
+    kind = "power";
+    line = castPick([
+      `但是！！！垫底的 ${nm} 没有认输！这记 <b>${cn}</b> 撕开一道口子，净赚 <b>${a.myGain.toFixed(1)}</b> 分——绝境中的怒吼，英雄不死！`,
+      `不服输！${nm} 在最艰难的时刻祭出 <b>${cn}</b>，硬生生抢回一口气！这就是冠军的心脏！`,
+    ]);
+  } else if (isPower) {
+    kind = "power";
+    line = castPick([
+      `漂亮！${nm} 这记 <b>${cn}</b> 价值连城，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！强！太强了！`,
+      `世界级的一手！${nm} 拿下 <b>${cn}</b>，收益拉满，全场起立！`,
+    ]);
+  } else if (isMeh) {
+    kind = "talk";
+    line = castPick([
+      `${nm} 选了 <b>${cn}</b>，收益平平（约 <b>${a.myGain.toFixed(1)}</b> 分），保守的一手，把节奏交还牌桌。`,
+      `不温不火，${nm} 拿下 <b>${cn}</b>，没什么火花，稳字当头。`,
+    ]);
+  } else {
+    kind = "talk";
+    line = castPick([
+      `${nm} 稳稳选下 <b>${cn}</b>，预计赚 <b>${a.myGain.toFixed(1)}</b> 分，扎实的一手。`,
+      `合理！${nm} 的 <b>${cn}</b> 收益 <b>${a.myGain.toFixed(1)}</b> 分，按部就班推进。`,
+    ]);
+  }
+  // 贴合实况的"黑话"桥段（端游/控速分支自带，不重复）
+  if (!endgameSpecial) { const jg = castJargon(me, chosenRole, phase, heat); if (jg) line += ` ${jg}`; }
+  // 预测核对小花絮
+  let tag = "";
+  if (rank === 0) tag = `　<span class="cast-hit">[解说命中✓]</span>`;
+  else if (rank > 2) tag = `　<span class="cast-miss">[爆冷·打脸✗]</span>`;
+  // 局势播报
+  const L = a.standings[0], gap = (a.standings[0].v - (a.standings[1] ? a.standings[1].v : 0));
+  const allZero = a.standings.every(s => s.v === 0);
+  const standingTxt = allZero ? `比分尚未拉开，群雄逐鹿` : `<b>${L.p.name}</b> 以 ${L.v} 分领跑（领先次席 ${gap} 分）`;
+  const heatNote = heat === 2 ? `🔚 终场哨已吹响！　` : (heat === 1 ? `⏳ 末日倒计时…　` : ``);
+  const acc = G._castTotal ? Math.round((G._castHits || 0) / G._castTotal * 100) : 0;
+  let html = `<div class="cast-head">🎙️ 解说台</div>`;
+  html += `<div class="cast-line ${kind === "miss" ? "cast-miss" : (kind === "block" || kind === "power" ? "cast-hit" : "")}">${line}${tag}</div>`;
+  html += `<div class="cast-foot">${heatNote}局势：${standingTxt}　·　解说命中 ${G._castHits || 0}/${G._castTotal}（${acc}%）</div>`;
+  commentarySay(html, kind);
+}
+
 function startGame() {
   const n = parseInt(document.getElementById("player-count").value);
   const name = document.getElementById("player-name").value || "玩家";
@@ -609,11 +871,10 @@ function startGame() {
       const lvl = sel ? parseInt(sel.value) : 4;
       p._aiLevel = lvl;
       if (lvl === 6) needsNN = true;
-      const nameMeta = AI_LEVEL_NAMES[lvl] || AI_LEVEL_NAMES[3];
-      p.name = `CPU${i + 1}·${nameMeta.cn}`;
     }
   });
   window._allAIMode = !!allAI;
+  assignCastNames(); // 给每位 AI 选手起一个昵称（解说要喊名字；难度由解说单独播报）
   // 读取 AI 思考预算。全 AI 观战模式也尊重所选预算（配合 5s/10s 节奏让观众
   // 能看清强 AI 的对局），不再强制 fast。想快速看完可自行选 fast。
   const budgetSel = document.getElementById("ai-think-budget");
@@ -629,6 +890,9 @@ function startGame() {
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
+  // 观战解说台：仅真人观战全 AI 对战时显示，新开局先清空/隐藏
+  const cbox = document.getElementById("commentary-box");
+  if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
@@ -731,7 +995,12 @@ async function runMainLoop() {
       } else {
         // 仅在有人类玩家时延时（给人类看清节奏）；全 AI 测试模式立即执行
         if (!window._allAIMode) await sleep(700);
+        // 观战解说：开牌前预测
+        let castPred = null;
+        if (spectatorOn()) { castPred = commentaryPreRole(player, available); await sleep(CAST_PREDICT_MS); }
         chosenIdx = aiPickRole(player, available);
+        // 观战解说：开牌后核对
+        if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(CAST_REACT_MS); }
       }
       const chosen = available[chosenIdx];
       chosen.taken = true;
@@ -900,8 +1169,8 @@ async function doSettler(playerIdx, isChooser) {
   flyToDest(sourceEl, () =>
     document.querySelector(`.player-board[data-player="${playerIdx}"] .plantation-grid .plantation:nth-child(${newIdx + 1})`)
   );
-  // 等动画播放（全 AI 模式短一些）
-  if (!window._allAIMode) await sleep(350);
+  // 等拿田动画播放完（真人观战也播放；仅无头测试跳过）
+  if (!window._fastSpectator) await sleep(350);
   // 庄园 Hacienda 效果：拿种植园同时从牌堆拿一张额外
   if (G.isManned(p, 8) && p.plantations.length < 12 && G.plantationDeck.length > 0) {
     const extra = G.plantationDeck.pop();
@@ -1165,7 +1434,7 @@ async function doBuilder(playerIdx, isChooser) {
   flyToDest(sourceEl, () =>
     document.querySelector(`.player-board[data-player="${playerIdx}"] .building-grid .mini-building:nth-child(${newBldIdx + 1})`)
   , 500);
-  if (!window._allAIMode) await sleep(350);
+  if (!window._fastSpectator) await sleep(350);
   // 大学：建造后+1殖民者直接上岗。优先从供应区取，没有则从船上取。
   if (G.isManned(p, 16)) {
     if (G.colonistsLeft > 0) {
@@ -1377,7 +1646,7 @@ async function doCaptain(order, chooserIdx) {
       G.vpLeft -= vpGain;
       G.logEvent(`${p.name} ${isWharf ? "用码头装" : `装船${pick.ship + 1}:`} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain}VP)`, "action");
       if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 装船#${isWharf ? "W" : (pick.ship + 1)} ${loaded}${GOOD_NAMES[pick.good]} (+${vpGain} VP)</div>`, { kind: "role" });
-      if (!window._allAIMode) await sleep(450);
+      if (!window._fastSpectator) await sleep(450);
       progress = true;
     }
   }
