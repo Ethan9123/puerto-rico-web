@@ -2,6 +2,8 @@
 
 > 浏览器单机游戏。基于 [Tony Mitton 的 Puerto Rico Evolver Excel (BGG #8766)](https://boardgamegeek.com/filepage/8766/pr-030205zip) 进化了 700+ 代的 AI + Rio Grande 2002 原版规则。
 
+🌐 **语言 / Language**：**中文** · [English](README.en.md) · [Français](README.fr.md) · [Español](README.es.md)
+
 ---
 
 ## 🌐 在线游玩
@@ -9,20 +11,19 @@
 ### 🌍 海外/翻墙用户首选
 **👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** （GitHub Pages）
 
-### 🇨🇳 国内朋友推荐：微信发离线包
+### 🇨🇳 国内朋友推荐：微信发离线包（双击即玩）
 
 GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW 干扰，每个 ISP / 时段不同）。腾讯 EdgeOne 的中国大陆节点**默认域名只有 3 小时预览**，长期访问要 ICP 备案（1-3 周）。
 
-**真正 100% 国内可用 + 0 成本 + 0 备案**：
+**真正 100% 国内可用 + 0 成本 + 0 备案 + 0 安装**：
 
 ```
-1. 仓库根目录双击 pack.bat
-   → 桌面生成 puerto-rico-web-{date}.zip (~5.6 MB)
+1. 拿到离线包 puerto-rico-web-{date}.zip (~6.8 MB)
 2. 微信 → 文件传输助手 → 拖入 zip → 转发给朋友
-3. 朋友：解压 → 双击 run.bat → 浏览器自动开 http://localhost:8765
+3. 朋友：解压 → 直接双击 index.html → 浏览器立即开玩
 ```
 
-完全离线、永久可用、不走 GFW、不需要网络。所有 AI、所有建筑、所有规则都在本地跑。
+完全离线、永久可用、不走 GFW、不需要网络、**不需要本地服务器**。所有 AI（含进化 DNA 与宗师神经网络）、所有建筑、所有规则都内嵌在本地。包里是纯网页文件（无 .exe / .bat / 安装程序），若杀软误报可放心恢复并加入信任（详见包内 `使用说明.txt`）。
 
 ### 🎲 在线尝试（可能不稳）
 
@@ -48,25 +49,26 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 - **官方规则严格实现**：起始种植园按总督顺位发放、随机首任总督、12 格 / VP 池 / 殖民者池末轮触发、Captain 满船卸货、Craftsman 特权仅限本回合产出过的种类、Mayor 选择者特权 +1 等
 - **建筑插画来自 [BGG 42234 — Anniversary Edition 插画版 (Greg May)](https://boardgamegeek.com/filepage/42234/base-game-and-expansion-buildings-illustrated)**
 
-### 🤖 5 个 AI 难度等级（每个 CPU 可独立选）
+### 🤖 6 个 AI 难度等级（每个 CPU 可独立选）
 
 | 等级 | 名称 | 特点 |
 |---|---|---|
-| **L1** | 入门 (Beginner) | 简单决策树：缺人→Mayor、货 ≥ 4→Captain、钱 ≥ 12→Builder |
-| **L2** | 进化 (DNA) | Tony Mitton VBA 进化器 700+ 代的纯 DNA AI（50 个 DNA） |
+| **L1** | 入门 (Beginner) | 凭直觉发挥强项的简单决策：缺人→Mayor、货多→Captain、钱够→Builder |
+| **L2** | 进化 (DNA) | Tony Mitton VBA 进化器 700+ 代的纯 DNA AI（5 座位池 × 各 10 条，共 50 条 DNA） |
 | **L3** | 普通 (Normal) | + 角色卡奖金意识 + 下家货物卡位 |
-| **L4** | 困难 (Hard) | + **针对人类的反制规则**（抢 Captain / Builder / Trader / Craftsman / Mayor）+ depth-1 状态快照 lookahead |
-| **L5** | 专家 (Expert) | + **2 轮深度搜索**：模拟我 chooser → 威胁 chooser → 边际最大化 + 蒙特卡洛扰动 |
+| **L4** | 困难 (Hard) | + **全场卡位反制**（抢 Captain / Builder / Trader / Craftsman / Mayor）+ 软评分策略倾向 + depth-2 快照前瞻 |
+| **L5** | 专家 (Expert) | **ISMCTS 蒙特卡洛树搜索**：信息集决定化 + UCB1 + 启发式 rollout，逐步深想 |
+| **L6** | 宗师 (Grandmaster) | **AlphaZero**：自对弈训练的神经网络制导 MCTS（NN policy/value + PUCT），最强 |
 
 ### 🧠 可调 AI 思考时间
 
-设置界面选「AI 思考时间」：
+设置界面选「AI 思考时间」（作用于专家 L5 / 宗师 L6 的搜索预算）：
 - 🚀 **快速** (0.1s) — 看 AI 互打用
 - ⚖️ **普通** (1.5s)
 - 🧠 **深度** (6s · 默认) — 2 轮 lookahead
 - 💎 **极限** (10s) — PvAI 强烈推荐
 
-困难 / 专家 AI 会**实时分析人类的威胁**（货物数、可买大紫数、最佳卖价、产能、空岗），并主动抢卡反制。
+困难 / 专家 / 宗师 AI 会**实时分析人类的威胁**（货物数、可买大紫数、最佳卖价、产能、空岗），并主动抢卡反制。
 
 ### 🎨 玩法体验细节
 
@@ -110,41 +112,40 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 
 如果想离线玩 / 改代码：
 
-### 方式一：双击 `run.bat`（Windows 推荐）
-脚本自动检测 Python 或 Node.js，启动本地 HTTP 服务器，并打开浏览器。
+### 方式一：直接双击 `index.html`（推荐）
+DNA 策略与宗师神经网络权重都已内嵌为 `<script>`，无需联网、无需服务器，双击即玩。
 
-### 方式二：手动启动
+### 方式二：本地 HTTP 服务器（改代码时方便热刷新）
 ```bash
-cd puerto_rico_game
+cd puerto-rico-web
 python -m http.server 8765
 # 或
 npx http-server -p 8765 -c-1
 ```
 浏览器打开 [http://localhost:8765](http://localhost:8765)
 
-### 方式三：直接双击 `index.html`
-注意：浏览器对 `file://` 协议有限制，部分图片可能加载不全。**推荐用方式一或二**。
-
 ---
 
 ## 📁 项目结构
 
 ```
-puerto_rico_game/
-├── index.html          ← 主入口
-├── game.js             ← 完整游戏逻辑 + 5 级 AI（约 3000 行）
-├── styles.css          ← BGA 风格 UI
-├── ai_dna.json         ← Excel 提取的 50 个进化 DNA
-├── ai_dna.js           ← DNA 数据加载入口
-├── run.bat             ← Windows 一键启动脚本
-├── LICENSE             ← MIT
-├── NOTICE.md           ← 知识产权说明
-├── tests/
-│   ├── rules.html      ← 轻量规则守恒检查
-│   ├── full.html       ← 全量端到端测试入口
-│   └── full.js         ← 90 局自动对战 + 12 项断言
+puerto-rico-web/
+├── index.html              ← 主入口
+├── game.js                 ← 完整游戏逻辑 + 6 级 AI
+├── styles.css              ← BGA 风格 UI
+├── ai_dna.json             ← Excel 提取的进化 DNA（5 座位池 × 各 10 条）
+├── ai_dna.js               ← DNA 解码器（进化 L2）
+├── sim.js                  ← 无头规则引擎 + ISMCTS（专家 L5）
+├── sim_features.js         ← 446 维特征提取（宗师 L6）
+├── sim_nn.js               ← 神经网络前向推理（宗师 L6）
+├── mcts_value_nn.json      ← AlphaZero 权重（线上 fetch；离线包内嵌）
+├── run.bat / pack.bat      ← Windows 启动 / 打包脚本（可选，已非必需）
+├── LICENSE                 ← MIT
+├── NOTICE.md               ← 知识产权说明
+├── tests/                  ← 守恒检查 + 端到端自对弈 + 场景断言
+├── tools/                  ← 胜率 / 阶梯标定 / 训练评估脚本
 └── assets/
-    └── buildings/      ← 23 张建筑插画（来自 BGG 42234）
+    └── buildings/          ← 23 张建筑插画（来自 BGG 42234）
 ```
 
 ---
@@ -152,7 +153,7 @@ puerto_rico_game/
 ## 🛠 系统要求
 
 - **任意现代浏览器**（Chrome / Edge / Firefox / Safari）
-- 本地运行需要 **Python 3** 或 **Node.js**（`run.bat` 自动检测）
+- 直接双击 `index.html` 即可离线运行，**无需** Python / Node.js（仅改代码热刷新时才需本地服务器）
 - 推荐分辨率 **1280×800+**
 
 ---
@@ -167,7 +168,7 @@ puerto_rico_game/
   - 殖民者总量守恒（3/4/5p 分别 55 / 75 / 95）
   - 货物总量守恒（玉米 10、靛蓝 11、蔗糖 11、烟草 9、咖啡 9）
   - 每位玩家最终 VP > 0
-  - **30 局混合等级**（L1~L5 同桌）平均分顺序：L5 > L4 > L3 > L2 > L1
+  - **混合等级**（L1~L6 同桌）平均分顺序单调：L6 > L5 > L4 > L3 > L2 > L1
   - 23 栋建筑至少被建造一次
   - 7 个角色至少被选择一次
   - 无 JS console error
