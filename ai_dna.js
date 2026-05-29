@@ -22,9 +22,17 @@
 //   ]  = 优先级断点
 //   种植园字符 1=corn 2=indigo 3=sugar 4=tobacco 5=coffee 6=quarry d=不同 s=有生产空间 f=任意 u=未填生产 j=任意非空 o=任意空
 
-// 加载 DNA 数据（异步从 ai_dna.json）
+// 加载 DNA 数据
+// 优先用内嵌的 window.__AI_DNA__（由 ai_dna_data.js 提供），这样双击 index.html
+// 直接以 file:// 打开也能加载（浏览器在 file:// 下会用 CORS 拦截 fetch 本地 json）；
+// 没有内嵌数据时（如开发用的本地服务器 / Node 测试）再回退到 fetch。
 let AI_POOL = null;
 async function loadAIDNA() {
+  if (typeof window !== "undefined" && window.__AI_DNA__) {
+    AI_POOL = window.__AI_DNA__;
+    console.log("AI DNA loaded (inline):", Object.keys(AI_POOL).map(k => k + ":" + AI_POOL[k].length).join(", "));
+    return;
+  }
   try {
     const resp = await fetch("ai_dna.json");
     AI_POOL = await resp.json();
