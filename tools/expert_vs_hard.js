@@ -26,6 +26,7 @@ const EPS = process.argv[5] !== undefined ? parseFloat(process.argv[5]) : null;
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
   window._allAIMode = true;
+  window._fastSpectator = true;
   window._aiThinkBudget = { L4:50, L5:100, hardIters:60, hardMs:1e9, expertIters:${ITERS}, expertMs:1e9 };
   ${C !== 1.4 ? `window._mctsC = ${C};` : ''}
   ${EPS !== null ? `window._mctsEps = ${EPS};` : ''}

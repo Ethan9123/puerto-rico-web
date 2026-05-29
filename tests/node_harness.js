@@ -59,6 +59,7 @@ const testSrc = `(async () => {
   flyToDest = function () {};
   showToast = function () {};
   window._allAIMode = true;
+  window._fastSpectator = true;
   window._aiThinkBudget = { L4: 50, L5: 100, hardIters: 60, hardMs: 1e9, expertIters: ${expertIters}, expertMs: 1e9 };
 
   await loadAIDNA();
@@ -73,6 +74,7 @@ const testSrc = `(async () => {
     G = new Game(n, 'AI');
     G.players.forEach((p, i) => { p.isHuman = false; loadDNA(p, i); p._aiLevel = levels[i % levels.length]; });
     window._allAIMode = true;
+    window._fastSpectator = true;
     await runMainLoop();
     for (const r of G.roleCards) if (r.takenBy !== null) rolesSeen.add(r.name);
     G.players.forEach(p => p.buildings.forEach(b => builtSeen.add(b.bid)));

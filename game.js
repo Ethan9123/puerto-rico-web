@@ -755,8 +755,8 @@ async function runMainLoop() {
       checkEndCondition();
       render();
 
-      // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手
-      if (window._allAIMode) await sleep(SPECTATOR_ACTION_DELAY);
+      // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手（_fastSpectator 时跳过，供无头测试用）
+      if (window._allAIMode && !window._fastSpectator) await sleep(SPECTATOR_ACTION_DELAY);
     }
 
     // 回合结束：未被选的角色卡 +1 金
@@ -769,8 +769,8 @@ async function runMainLoop() {
       break;
     }
 
-    // 全 AI 观战：一个大回合结束后、换起始玩家前停 10 秒
-    if (window._allAIMode) {
+    // 全 AI 观战：一个大回合结束后、换起始玩家前停 10 秒（_fastSpectator 时跳过，供无头测试用）
+    if (window._allAIMode && !window._fastSpectator) {
       G._currentPrompt = `本回合结束 — 即将轮换起始玩家（观战暂停 ${SPECTATOR_ROUND_DELAY / 1000}s）`;
       render();
       await sleep(SPECTATOR_ROUND_DELAY);

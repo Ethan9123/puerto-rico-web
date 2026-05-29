@@ -71,6 +71,7 @@
     assert(after <= 1, 'short toast auto-remove: ' + after);
     log('result unit=toast stacks=2 after-short=' + after);
     window._allAIMode = true;
+    window._fastSpectator = true;
   }
 
   // 工匠特权过滤断言：
@@ -79,6 +80,7 @@
   {
     G = new Game(4, 'AI');
     window._allAIMode = true;
+    window._fastSpectator = true;
     G.players.forEach(p => { p.isHuman = false; p._aiLevel = 5; });
     const goodsBefore = G.players[0].goods.corn;
     await doCraftsman(0, [0,1,2,3]);
@@ -90,6 +92,7 @@
   {
     G = new Game(4, 'AI');
     window._allAIMode = true;
+    window._fastSpectator = true;
     G.players.forEach(p => { p.isHuman = false; p._aiLevel = 5; });
     // 只让 p[0] 有 manned sugar，确保 chooser bonus 只能是 sugar
     G.players.forEach(p => { p.plantations = []; });
@@ -108,6 +111,7 @@
   {
     G = new Game(4, 'AI');
     window._allAIMode = true;
+    window._fastSpectator = true;
     G.players.forEach(p => { p.isHuman = false; p._aiLevel = 3; });
     // 直接把 vpLeft 设极低强制末轮快速触发
     G.vpLeft = 5;
@@ -124,6 +128,7 @@
     G = new Game(n, 'AI');
     G.players.forEach((p, i) => { p.isHuman = false; p._aiLevel = levels[i % levels.length]; });
     window._allAIMode = true;
+    window._fastSpectator = true;
     await runMainLoop();
 
     for (const r of G.roleCards) if (r.takenBy !== null) rolesSeen.add(r.name);
