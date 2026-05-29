@@ -1796,6 +1796,7 @@ function gamePhase() {
 
 function aiPickRole(p, available) {
   const lvl = p._aiLevel || 3;
+  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -2076,6 +2077,61 @@ function level4Reactive(me, available) {
   return bestI;
 }
 
+// ============================================================
+// 全局规划：给每个 AI 一个持久的"对局计划"，让多回合决策连贯成一条战略主线，
+// 而不是每步贪心。计划 = 阶段弧线(早:造收入引擎 → 中:转化为得分引擎 → 晚:兑现得分+控场)
+//   + 流派(运货/建筑/经济作物垄断) + 心仪大紫。依据来自 PR 公认策略与"策略先验"研究。
+// L2(进化)由 DNA 阶段基因自带规划；L5/L6 由 MCTS/NN 整局前瞻自带规划；本层主要服务 L1/L3/L4。
+// ============================================================
+function updatePlan(p) {
+  const phase = gamePhase();
+  const focus = phase === "early" ? "income" : phase === "mid" ? "engine" : "score";
+  let prodKinds = 0;
+  for (const g of GOODS) if (G.productionCapacity(p, g) > 0) prodKinds++;
+  const cashMono = ["coffee", "tobacco"].some(g => G.playerProduces(p, g) && !G.anyOpponentProduces(p, g));
+  const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+  const quarryN = p.plantations.filter(pl => pl.good === "quarry").length;
+  const shipper = G.isManned(p, 17) || G.isManned(p, 18) || G.isManned(p, 15) || prodKinds >= 3;
+  const builder = quarryN >= 1 || violetOwned >= 3 || p.money >= 8;
+  let archetype = "balanced";
+  if (cashMono) archetype = "monopoly";
+  else if (shipper && !builder) archetype = "shipping";
+  else if (builder && !shipper) archetype = "building";
+  else if (shipper) archetype = "shipping";
+  else if (builder) archetype = "building";
+  p._plan = { focus, archetype, targetLV: bestLargeViolet(p) };
+  return p._plan;
+}
+
+// 计划注入 strategicRoleBias 的权重（困难=轻推，避免盖过已校准的净收益信号；入门/普通经 level1 计划增强；进化/专家/宗师各有规划）
+function planWeight(lvl) { return lvl === 4 ? 0.5 : 0; }
+
+// 计划对某角色的偏好分（正=更契合主线）。仅作为倾向叠加，净收益等仍可压过它。
+function planRoleBias(p, roleName) {
+  const w = planWeight(p._aiLevel || 3);
+  if (w <= 0) return 0;
+  const plan = p._plan || updatePlan(p);
+  const goods = GOODS.reduce((a, g) => a + p.goods[g], 0);
+  let s = 0;
+  if (plan.focus === "income") {            // 早期：搞钱、铺产业、建便宜收入引擎
+    if (roleName === "Trader" && goods > 0) s += 2;
+    if (roleName === "Settler") s += 1.5;
+    if (roleName === "Builder") s += 1;
+    if (roleName === "Captain" && goods >= 3) s += 1;
+  } else if (plan.focus === "engine") {     // 中期：把钱变成得分引擎(港口/码头/工厂/大紫)
+    if (roleName === "Builder") s += 2;
+    if (roleName === "Captain" && goods >= 2) s += 1.5;
+  } else {                                  // 终盘：兑现得分 + 控场
+    if (roleName === "Captain") s += 2;
+    if (roleName === "Builder" && plan.targetLV) s += 2;
+    if (roleName === "Mayor") s += 1;
+  }
+  if (plan.archetype === "shipping" && roleName === "Captain") s += 1.5;
+  else if (plan.archetype === "building" && roleName === "Builder") s += 1.5;
+  else if (plan.archetype === "monopoly" && (roleName === "Trader" || roleName === "Captain")) s += 1.5;
+  return s * w;
+}
+
 // 软性策略倾向：返回对某角色的偏好分(正=更倾向 / 负=更回避)。
 // 源自 Alexfrog/jimc：终盘禁区、Mayor 少选、卡下家高价货、运船/建造时机、抢卡反制。
 function strategicRoleBias(me, roleName, phase) {
@@ -2159,7 +2215,7 @@ function strategicRoleBias(me, roleName, phase) {
       break;
     }
   }
-  return s;
+  return s + planRoleBias(me, roleName); // 叠加全局规划主线（困难档）
 }
 
 // ============================================================
@@ -2834,6 +2890,12 @@ function level1PickRole(me, available) {
   let shipSpace = 0; for (const sh of G.ships) shipSpace += (sh.capacity - sh.count);
   let prod = 0; for (const g of GOODS) prod += G.productionCapacity(me, g);
   const hasOffice = G.isManned(me, 12);
+
+  // 0) 全局规划：终盘抢下心仪的大紫块（单张，错过被人拿走）。即使入门也懂"该收的大分要收"。
+  const plan = me._plan || updatePlan(me);
+  if (plan.focus === "score" && plan.targetLV && has("Builder") && 12 - G.buildingUsedSpaces(me) >= 2) {
+    if (me.money >= G.effectiveCostWithRoleBonus(me, BLD_BY_ID[plan.targetLV.id], true)) return idxOf("Builder");
+  }
 
   // 1) 货多 + 船有空 → 船长，把产出换成分（生产多就往多运货靠）
   if (goods >= 3 && shipSpace > 0 && has("Captain")) return idxOf("Captain");
