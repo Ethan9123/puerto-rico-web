@@ -91,11 +91,18 @@
     return { policy: _softmax(policyLogits), policyLogits, value };
   }
 
-  // 加载网络。url 在浏览器是相对 / 绝对路径；Node 由调用方注入 fetch
-  async function loadNetwork(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("loadNetwork: HTTP " + res.status);
-    const net = await res.json();
+  // 加载网络。src 可以是：
+  //   (1) 已内嵌的权重对象 —— 离线双击 index.html(file://) 时用，规避 fetch 本地 json 被 CORS 拦截；
+  //   (2) url 字符串 —— 浏览器相对/绝对路径；Node 由调用方注入 fetch。
+  async function loadNetwork(src) {
+    let net;
+    if (src && typeof src === "object") {
+      net = src;
+    } else {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error("loadNetwork: HTTP " + res.status);
+      net = await res.json();
+    }
     if (!net.feature_dim || !net.layers || !Array.isArray(net.layers)) {
       throw new Error("loadNetwork: invalid network JSON");
     }

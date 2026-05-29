@@ -30,6 +30,7 @@ load('game.js');
 const src = `(async () => {
   await loadAIDNA();
   window._allAIMode = true;
+  window._fastSpectator = true;
   const results = [];
   const check = (name, pass, detail) => results.push({ name, pass, detail });
 

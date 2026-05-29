@@ -635,14 +635,17 @@ function startGame() {
   runMainLoop();
 }
 
-// 懒加载 AlphaZero NN（mcts_value_nn.json），首次需要时调用一次。
-// 失败时静默忽略，L6 自动回退到 L5。
+// 懒加载 AlphaZero NN，首次需要时调用一次。
+// 优先用内嵌的 window.__MCTS_VALUE_NN__（由 mcts_value_nn_data.js 提供）——双击 index.html
+// 离线运行时，file:// 下 fetch 本地 json 会被浏览器 CORS 拦截，靠内嵌权重才能让宗师离线可用；
+// 没有内嵌时再 fetch mcts_value_nn.json（线上 / 本地服务器 / Node 测试）。失败则静默回退到 L5。
 let _nnLoadPromise = null;
 function loadAlphaZeroNN() {
   if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
   if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
   if (_nnLoadPromise) return _nnLoadPromise;
-  _nnLoadPromise = PRSim.loadNetwork("mcts_value_nn.json")
+  const src = (typeof window !== "undefined" && window.__MCTS_VALUE_NN__) ? window.__MCTS_VALUE_NN__ : "mcts_value_nn.json";
+  _nnLoadPromise = PRSim.loadNetwork(src)
     .then(() => { console.log("[L6] AlphaZero NN loaded"); return true; })
     .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
   return _nnLoadPromise;
@@ -752,8 +755,8 @@ async function runMainLoop() {
       checkEndCondition();
       render();
 
-      // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手
-      if (window._allAIMode) await sleep(SPECTATOR_ACTION_DELAY);
+      // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手（_fastSpectator 时跳过，供无头测试用）
+      if (window._allAIMode && !window._fastSpectator) await sleep(SPECTATOR_ACTION_DELAY);
     }
 
     // 回合结束：未被选的角色卡 +1 金
@@ -766,8 +769,8 @@ async function runMainLoop() {
       break;
     }
 
-    // 全 AI 观战：一个大回合结束后、换起始玩家前停 10 秒
-    if (window._allAIMode) {
+    // 全 AI 观战：一个大回合结束后、换起始玩家前停 10 秒（_fastSpectator 时跳过，供无头测试用）
+    if (window._allAIMode && !window._fastSpectator) {
       G._currentPrompt = `本回合结束 — 即将轮换起始玩家（观战暂停 ${SPECTATOR_ROUND_DELAY / 1000}s）`;
       render();
       await sleep(SPECTATOR_ROUND_DELAY);
@@ -3000,6 +3003,12 @@ function aiPickPlantation(p, options, isChooser) {
 }
 
 function aiPickBuilding(p, options, isChooser) {
+  // 进化(L2)：忠实按建筑染色体决策（从左到右买第一个想买且买得起的）
+  if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
+    const idx = dnaPickBuilding(p, options, isChooser);
+    if (idx !== null && idx >= 0 && idx < options.length) return idx;
+    return -1; // 基因选择"不买"（无想买的）→ pass，符合 VBA
+  }
   const phase = gamePhase();
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
