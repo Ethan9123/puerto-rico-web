@@ -625,7 +625,27 @@ function assignCastNames() {
   for (const p of G.players) { if (!p.isHuman) p.name = pool[k++ % pool.length]; }
 }
 
-// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率（与具体 AI 等级无关，故会有"猜错"的戏剧性）
+// 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
+// L4 的本级逻辑≈行家软评分(argmax)，无需特判；L5/L6 是 MCTS/NN，昂贵且随机 → 不预判，保留"专家爆冷"的戏剧性。
+function predictedPickName(me, available) {
+  const lvl = me._aiLevel || 3;
+  try {
+    let idx = null;
+    if (lvl === 1) idx = level1PickRole(me, available);
+    else if (lvl === 2) {
+      if (me._dna && typeof dnaPickRole === "function") {
+        const di = dnaPickRole(me, available);
+        idx = (di !== null && di >= 0 && di < available.length && typeof dnaLookaheadRefine === "function")
+          ? dnaLookaheadRefine(me, available, di) : di;
+      } else idx = level1PickRole(me, available);
+    } else if (lvl === 3) idx = level2PickRoleNew(me, available);
+    else return null; // L4/L5/L6
+    if (idx !== null && idx >= 0 && idx < available.length) return available[idx].name;
+  } catch (e) { /* 预判失败则回退启发式 */ }
+  return null;
+}
+
+// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率；再用本级预判把确定型 AI 的真实选择顶到首位。
 function commentatorPredict(me, available) {
   const phase = gamePhase();
   const scored = available.map(r => ({
@@ -638,6 +658,20 @@ function commentatorPredict(me, available) {
   for (const x of scored) { x.e = Math.exp((x.s - mx) / T); Z += x.e; }
   for (const x of scored) x.p = x.e / Z;
   scored.sort((a, b) => b.p - a.p);
+  // 本级预判（L1/L2/L3）：把该 AI 真正会选的角色提到首位并提高置信度
+  const predName = predictedPickName(me, available);
+  if (predName) {
+    const k = scored.findIndex(x => x.r.name === predName);
+    if (k > 0) {
+      const [picked] = scored.splice(k, 1);
+      picked.p = Math.max(picked.p, scored[0].p) + 0.15;
+      scored.unshift(picked);
+    } else if (k === 0) {
+      scored[0].p = Math.min(0.95, scored[0].p + 0.12);
+    }
+    const Z2 = scored.reduce((a, x) => a + x.p, 0);
+    for (const x of scored) x.p /= Z2;
+  }
   return scored; // 概率降序 [{r,s,p}]
 }
 
