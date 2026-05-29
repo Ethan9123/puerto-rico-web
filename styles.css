@@ -542,6 +542,10 @@ body {
 #commentary-box.cast-hit { border-color: #3a7a48; }
 #commentary-box.cast-near { border-color: #6a5a2a; }
 #commentary-box.cast-miss { border-color: #7a3a3a; }
+#commentary-box.cast-talk { border-color: #2d4456; }
+#commentary-box.cast-power { border-color: #c9952a; box-shadow: 0 12px 34px rgba(201,149,42,0.28); }
+#commentary-box.cast-block { border-color: #b8492f; box-shadow: 0 12px 38px rgba(184,73,47,0.34); }
+#commentary-box .cast-hit { color: #84e497; }
 @keyframes castPulse {
   0% { transform: translateX(-50%) scale(0.97); opacity: 0.55; }
   100% { transform: translateX(-50%) scale(1); opacity: 1; }
