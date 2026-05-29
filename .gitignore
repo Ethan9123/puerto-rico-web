@@ -5,3 +5,16 @@ Thumbs.db
 node_modules/
 __pycache__/
 *.pyc
+
+# AlphaZero data/models
+data/
+train/exports/
+train/__pycache__/
+*.pt
+# 注：mcts_value_nn.json 现已纳入版本管理（部署到线上需要它）。
+# 它是 train/exports/weights-bigarch-v1.json 经 5 位小数压缩后的产物（~5MB）。
+tests/_nn_ref.json
+
+# Build artifacts
+puerto-rico-web-offline.zip
+puerto-rico-web-*.zip
