@@ -1317,6 +1317,20 @@ function estLargeVioletSpecial(p, id) {
   return 1;
 }
 
+// 玩家"心仪的大紫块"：在库存内、未拥有、有 2 格空间的大紫里，挑终局特殊分最高的那个，
+// 作为全局规划目标（攒钱去抢 / 优先选建造）。大紫是单张，抢晚就被人拿走。
+function bestLargeViolet(p) {
+  const spaceLeft = 12 - G.buildingUsedSpaces(p);
+  let best = null;
+  for (const b of BUILDINGS) {
+    if (b.type !== "large_violet") continue;
+    if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+    const special = estLargeVioletSpecial(p, b.id);
+    if (!best || special > best.special) best = { id: b.id, special };
+  }
+  return best;
+}
+
 function aiReallocate(p) {
   // 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费工人）。
   let remaining = p._unplacedMen || 0;
@@ -2092,6 +2106,20 @@ function strategicRoleBias(me, roleName, phase) {
           if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(me, b.id) || spaceLeft < b.size) continue;
           const cost = G.effectiveCostWithRoleBonus(me, b, true);
           if (me.money >= cost && (b.type === "large_violet" || (phase === "late" && spaceLeft <= 4))) { s += 8; break; }
+        }
+      }
+      // 心仪大紫的全局规划：买得起就抢（单张，错过被人拿走）；有对手也凑够 10 金 → 抢卡加急
+      const tgt = (phase === "mid" || phase === "late") ? bestLargeViolet(me) : null;
+      if (tgt && tgt.special >= 3) {
+        const cost = G.effectiveCostWithRoleBonus(me, BLD_BY_ID[tgt.id], true);
+        if (me.money >= cost) {
+          s += 10;
+          const spaceLeft = 12 - G.buildingUsedSpaces(me);
+          for (const o of G.players) {
+            if (o === me) continue;
+            if (o.money >= 10 && (12 - G.buildingUsedSpaces(o)) >= 2) { s += 6; break; } // 对手也能抢 → 加急
+          }
+          void spaceLeft;
         }
       }
       break;
@@ -3221,9 +3249,9 @@ function evalBuildingValue(p, b, phase) {
     case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break; // 港口：得分型，中期峰值；后期勿替代大建筑
     case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;  // 码头
   }
-  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）
+  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）。按"与自己面板的契合度"(终局特殊分)估值。
   if (b.type === "large_violet") {
-    v += estLargeVioletSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    v += estLargeVioletSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
   }
   return v;
 }
@@ -3279,13 +3307,22 @@ function aiPickBuilding(p, options, isChooser) {
     return -1; // 基因选择"不买"（无想买的）→ pass，符合 VBA
   }
   const phase = gamePhase();
+  // 全局规划：心仪的大紫块（单张，错过被抢）。mid/late 且契合度高才进入"规划"。
+  const tgt = bestLargeViolet(p);
+  const tgtStrong = tgt && tgt.special >= 3 && (phase === "mid" || phase === "late");
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
     score -= o.cost * 3;            // 价格高减分（机会成本）
     if (isChooser) score += 5;      // chooser 折扣略加分
+    if (tgtStrong && o.b.id === tgt.id) score += (phase === "late" ? 30 : 16); // 心仪大紫可买→抢下
     return { i, score };
   });
   scored.sort((a, b) => b.score - a.score);
+  // 攒钱抢大紫：心仪大紫还买不起但已接近（一两回合可凑齐），且当前最佳可买只是平庸小建筑 → 不买，留钱。
+  if (tgtStrong && !options.some(o => o.b.id === tgt.id)) {
+    const cost = G.effectiveCostWithRoleBonus(p, BLD_BY_ID[tgt.id], isChooser);
+    if (p.money >= cost - 4 && scored[0].score < 20) return -1;
+  }
   return scored[0].i;
 }
 
