@@ -2910,6 +2910,12 @@ function aiPickPlantation(p, options, isChooser) {
 }
 
 function aiPickBuilding(p, options, isChooser) {
+  // 进化(L2)：忠实按建筑染色体决策（从左到右买第一个想买且买得起的）
+  if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
+    const idx = dnaPickBuilding(p, options, isChooser);
+    if (idx !== null && idx >= 0 && idx < options.length) return idx;
+    return -1; // 基因选择"不买"（无想买的）→ pass，符合 VBA
+  }
   const phase = gamePhase();
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);

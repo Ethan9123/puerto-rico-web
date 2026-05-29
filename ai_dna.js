@@ -173,30 +173,60 @@ function dnaPickRole(player, available) {
   return 0;
 }
 
+// 我现在卖 1 货能拿多少金（含小/大市场加成；不含 chooser+1 与卡上奖金，与 VBA 一致）
+function dnaBestSale(player) {
+  const hasOffice = G.isManned(player, 12);
+  let best = 0;
+  for (const g of GOODS) {
+    if (player.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) {
+      let earn = GOOD_PRICE[g];
+      if (G.isManned(player, 7)) earn += 1;
+      if (G.isManned(player, 13)) earn += 2;
+      best = Math.max(best, earn);
+    }
+  }
+  return best;
+}
+// 当前能卖货的其他玩家数（贸易站非满且有可卖货）
+function dnaOtherSellers(player) {
+  if (G.tradingHouse.length >= 4) return 0;
+  let n = 0;
+  for (const p of G.players) {
+    if (p === player) continue;
+    const office = G.isManned(p, 12);
+    if (GOODS.some(g => p.goods[g] > 0 && (office || !G.tradingHouse.includes(g)))) n++;
+  }
+  return n;
+}
+
 function matchesTrigger(action, level, player) {
-  // 简化判定（按 VBA 注释）
+  // 忠实于 VBA strComputer_Selects_Role 的 Stage-2 偏好判定
   const lvl = parseInt(level);
   switch (action) {
     case "m": {
-      // mX = Mayor if has at least X more spaces than men
+      // mX = 空岗(建筑+种植园) ≥ X 时选市长；mf = 船上正好 6 或 11 人
+      if (level === "f") return G.colonistsOnShip === 6 || G.colonistsOnShip === 11;
       let openJobs = 0;
       for (const pl of player.plantations) if (!pl.manned) openJobs++;
       for (const b of player.buildings) openJobs += BLD_BY_ID[b.bid].men - b.men;
-      // 特殊 mf = 船上有 6 或 11 人
-      if (level === "f") return G.colonistsOnShip >= 6;
       return openJobs >= lvl;
     }
     case "s": {
-      // sX = Settler if plantation type X available
+      // sX = 有 X 类田可拿（1-6 指定 / d=有自己没有的类 / s=有自己加工空位可吃的类）
       if (level === "d") {
         const owned = new Set(player.plantations.map(pl => pl.good));
-        return G.plantationPool.some(g => !owned.has(g));
+        return G.plantationPool.some(g => !owned.has(g)) || (G.quarriesLeft > 0 && !owned.has("quarry"));
       }
       if (level === "s") {
-        // production space: have factory with empty plantation need
-        return G.plantationPool.length > 0;
+        // 我有某加工厂、其产能 > 已有对应田 → 池里又有该田
+        const refining = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+        for (const g of Object.keys(refining)) {
+          let cap = 0; for (const bid of refining[g]) { const bb = G.ownsBuilding(player, bid); if (bb) cap += BLD_BY_ID[bid].men; }
+          const have = player.plantations.filter(pl => pl.good === g).length;
+          if (cap > have && G.plantationPool.includes(g)) return true;
+        }
+        return false;
       }
-      // 1-5 = specific good
       const goodMap = { "1": "corn", "2": "indigo", "3": "sugar", "4": "tobacco", "5": "coffee", "6": "quarry" };
       const g = goodMap[level];
       if (!g) return G.plantationPool.length > 0;
@@ -204,45 +234,46 @@ function matchesTrigger(action, level, player) {
       return G.plantationPool.includes(g);
     }
     case "b": {
-      // bX = Builder if has at least X cash + manned quarries
+      // bX = 现金 + 已上岗采石场 ≥ X 时选建造
       let qManned = 0;
       for (const pl of player.plantations) if (pl.good === "quarry" && pl.manned) qManned++;
       return (player.money + qManned) >= lvl;
     }
     case "c": {
-      // cX = Craftsman if produce at least X goods
+      // cX = 本回合产 ≥X 货；cs=有仓库&产≥4；cw=有码头&产≥4；ce=两者之一&产≥4
       let prod = 0;
-      for (const g of GOODS) prod += G.productionCapacity(player, g);
-      if (level === "w") return G.isManned(player, 18);
-      if (level === "s") return G.isManned(player, 10) || G.isManned(player, 14);
-      if (level === "e") return prod >= 4 && (G.isManned(player, 18) || G.isManned(player, 10));
+      for (const g of GOODS) prod += Math.min(G.productionCapacity(player, g), G.supply[g]);
+      if (level === "s") return (G.isManned(player, 10) || G.isManned(player, 14)) && prod >= 4;
+      if (level === "w") return G.isManned(player, 18) && prod >= 4;
+      if (level === "e") return prod >= 4 && (G.isManned(player, 18) || G.isManned(player, 10) || G.isManned(player, 14));
       return prod >= lvl;
     }
     case "t": {
-      // tX = Trader if can earn at least X gold (rough)
-      const hasOffice = G.isManned(player, 12);
-      let best = 0;
-      for (const g of GOODS) {
-        if (player.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) {
-          best = Math.max(best, GOOD_PRICE[g]);
+      // tX = 卖货赚 ≥X 金；tf=我是唯一卖家(≥2)；tt=最多2人能卖(≥2)；tu=tt或≥4；tg=tf或≥4；tm=我赚最多(≥2)
+      const my = dnaBestSale(player);
+      if (my <= 0 || G.tradingHouse.length >= 4) return false;
+      const others = dnaOtherSellers(player);
+      switch (level) {
+        case "f": return others === 0 && my >= 2;
+        case "t": return others <= 1 && my >= 2;
+        case "u": return (others <= 1 && my >= 2) || my >= 4;
+        case "g": return (others === 0 && my >= 2) || my >= 4;
+        case "m": {
+          if (my < 2) return false;
+          for (const p of G.players) { if (p === player) continue; if (dnaBestSale(p) > my) return false; }
+          return true;
         }
+        default: return my >= lvl;
       }
-      return best >= lvl;
     }
     case "d": {
-      // dX = Captain if has at least X goods
+      // dX = 手上货 ≥X 个时选船长
       const total = GOODS.reduce((s, g) => s + player.goods[g], 0);
       return total >= lvl;
     }
-    case "p": {
-      // pX = Prospector if X gold
+    case "p":   // pX = 金矿能赚 ≥X 金（金矿恒 +1，阈值 ≤1 才触发）
+    case "g":   // gX = 最佳现金动作 ≥X 金（近似：阈值 ≤1 触发）
       return lvl <= 1;
-    }
-    case "g": {
-      // gX = take best cash option if at least X gold available
-      // approximate: take 1 (always at least 1 from role bonus or prospector)
-      return lvl <= 1;
-    }
     default:
       return false;
   }
@@ -253,31 +284,82 @@ function matchesTrigger(action, level, player) {
 // ============================================================
 const PLANT_CHAR = { "1": "corn", "2": "indigo", "3": "sugar", "4": "tobacco", "5": "coffee", "6": "quarry" };
 
+// 各货合理拥有上限（VBA intMax_Number；超过则该类降权到最后）
+const PLANT_MAX = { corn: 11, indigo: 3, sugar: 3, tobacco: 2, coffee: 1, quarry: 3 };
+const GOODS5 = ["corn", "indigo", "sugar", "tobacco", "coffee"]; // 按价格升序
+
+// 某玩家是否"拥有该种植园"(prodOrPlant=2) 或 "能产该货"(prodOrPlant=1)
+function dnaNeighborHas(p, good, prodOrPlant) {
+  if (prodOrPlant === 2) return p.plantations.some(pl => pl.good === good);
+  // 产能：有该田 且 (玉米 或 有对应加工厂)
+  if (!p.plantations.some(pl => pl.good === good)) return false;
+  if (good === "corn") return true;
+  const ref = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] }[good];
+  return ref && ref.some(bid => G.ownsBuilding(p, bid));
+}
+
 function dnaPickPlantation(player, options, isChooser) {
   if (!player._dna) return null;
   const phase = detectPhase(player._dna.triggers, {
     colonistsLeft: G.colonistsLeft, vpLeft: G.vpLeft, minSpaces: calcMinSpaces()
   });
   const order = phase === 1 ? player._dna.plantEarly : phase === 2 ? player._dna.plantMid : player._dna.plantLate;
-  // order is 9 chars, walking left-to-right
+  const n = G.numPlayers;
+  const owned = {}; for (const pl of player.plantations) owned[pl.good] = (owned[pl.good] || 0) + 1;
+  // 候选 good（按 VBA：已达该类上限的排到最后再考虑）
+  const availGoods = GOODS5.filter(g => options.some(o => o.kind === "plant" && o.good === g));
+  const underCap = availGoods.filter(g => (owned[g] || 0) <= (PLANT_MAX[g] || 0));
+  const overCap = availGoods.filter(g => (owned[g] || 0) > (PLANT_MAX[g] || 0));
+  const ranked = underCap.concat(overCap); // 优先未超上限的
+  const idxOf = g => options.findIndex(o => o.kind === "plant" && o.good === g);
+  // 我有加工空位可吃的货（s 用）
+  const hasProdSpace = (g) => {
+    if (g === "corn") return false;
+    const ref = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] }[g];
+    let cap = 0; if (ref) for (const bid of ref) { const bb = G.ownsBuilding(player, bid); if (bb) cap += BLD_BY_ID[bid].men; }
+    return cap > (owned[g] || 0);
+  };
+  const byPriceDesc = arr => arr.slice().sort((a, b) => GOOD_PRICE[b] - GOOD_PRICE[a]);
+  const byPriceAsc = arr => arr.slice().sort((a, b) => GOOD_PRICE[a] - GOOD_PRICE[b]);
+
   for (const ch of order) {
-    if (ch === "1" || ch === "2" || ch === "3" || ch === "4" || ch === "5") {
-      const g = PLANT_CHAR[ch];
-      const idx = options.findIndex(o => o.kind === "plant" && o.good === g);
-      if (idx >= 0) return idx;
-    } else if (ch === "6") {
-      // quarry
-      const idx = options.findIndex(o => o.kind === "quarry");
-      if (idx >= 0) return idx;
-    } else if (ch === "d") {
-      // different from owned
-      const owned = new Set(player.plantations.map(pl => pl.good));
-      const idx = options.findIndex(o => o.kind === "plant" && !owned.has(o.good));
-      if (idx >= 0) return idx;
-    } else if (ch === "s" || ch === "f" || ch === "u" || ch === "j") {
-      // s=有生产空间, f=任意, u=未填生产, j=任意
-      const idx = options.findIndex(o => o.kind === "plant");
-      if (idx >= 0) return idx;
+    // 指定货 1-5 / 采石场 6
+    if (ch >= "1" && ch <= "5") { const i = idxOf(PLANT_CHAR[ch]); if (i >= 0) return i; continue; }
+    if (ch === "6") { const i = options.findIndex(o => o.kind === "quarry"); if (i >= 0) return i; continue; }
+    // u = 最贵且没人(别的玩家)拥有的种植园；t = 最贵且没人能产的产能型
+    if (ch === "u" || ch === "t") {
+      const por = ch === "u" ? 2 : 1;
+      for (const g of byPriceDesc(ranked)) {
+        const someoneElse = G.players.some(p => p !== player && dnaNeighborHas(p, g, por));
+        if (!someoneElse) { const i = idxOf(g); if (i >= 0) return i; }
+      }
+      continue;
+    }
+    // f = 我未拥有/未支撑的最贵种植园
+    if (ch === "f") {
+      for (const g of byPriceDesc(ranked)) if (!(owned[g] > 0)) { const i = idxOf(g); if (i >= 0) return i; }
+      continue;
+    }
+    // s = 我有加工空位可吃的最贵种植园
+    if (ch === "s") {
+      for (const g of byPriceDesc(ranked)) if (hasProdSpace(g)) { const i = idxOf(g); if (i >= 0) return i; }
+      continue;
+    }
+    // d = 与已有不同里最便宜的
+    if (ch === "d") {
+      for (const g of byPriceAsc(ranked)) if (!(owned[g] > 0)) { const i = idxOf(g); if (i >= 0) return i; }
+      continue;
+    }
+    // 邻座卡位：l r k q j p i o（方向×种植园或产能×抢他有的/避开他有的）
+    if ("lrkqjpio".includes(ch)) {
+      const dir = ("lkji".includes(ch)) ? 1 : (n - 1);          // 左 / 右
+      const por = ("lrjp".includes(ch)) ? 2 : 1;                 // 看种植园 / 产能
+      const wantHas = !("lrkq".includes(ch));                    // true=抢他有的, false=避开他有的
+      const nb = G.players[(player.idx + dir) % n];
+      for (const g of byPriceDesc(ranked)) {
+        if (dnaNeighborHas(nb, g, por) === wantHas) { const i = idxOf(g); if (i >= 0) return i; }
+      }
+      continue;
     }
   }
   return 0;
