@@ -75,6 +75,9 @@ body {
 .rules-link { margin-top: 24px; text-align: left; }
 .rules-link summary { cursor: pointer; color: #f3c969; }
 #rules-text { background: #34495e; padding: 16px; border-radius: 4px; line-height: 1.6; }
+.lang-links { margin-top: 18px; text-align: center; font-size: 13px; color: #8b9aa6; }
+.lang-links a { color: #b5c2cc; text-decoration: none; }
+.lang-links a:hover { color: #f3c969; text-decoration: underline; }
 
 /* ---- Topbar ---- */
 #topbar {
