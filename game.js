@@ -625,7 +625,27 @@ function assignCastNames() {
   for (const p of G.players) { if (!p.isHuman) p.name = pool[k++ % pool.length]; }
 }
 
-// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率（与具体 AI 等级无关，故会有"猜错"的戏剧性）
+// 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
+// L4 的本级逻辑≈行家软评分(argmax)，无需特判；L5/L6 是 MCTS/NN，昂贵且随机 → 不预判，保留"专家爆冷"的戏剧性。
+function predictedPickName(me, available) {
+  const lvl = me._aiLevel || 3;
+  try {
+    let idx = null;
+    if (lvl === 1) idx = level1PickRole(me, available);
+    else if (lvl === 2) {
+      if (me._dna && typeof dnaPickRole === "function") {
+        const di = dnaPickRole(me, available);
+        idx = (di !== null && di >= 0 && di < available.length && typeof dnaLookaheadRefine === "function")
+          ? dnaLookaheadRefine(me, available, di) : di;
+      } else idx = level1PickRole(me, available);
+    } else if (lvl === 3) idx = level2PickRoleNew(me, available);
+    else return null; // L4/L5/L6
+    if (idx !== null && idx >= 0 && idx < available.length) return available[idx].name;
+  } catch (e) { /* 预判失败则回退启发式 */ }
+  return null;
+}
+
+// 解说员的"行家评分"：自身收益−资敌 + 策略倾向 → softmax 成概率；再用本级预判把确定型 AI 的真实选择顶到首位。
 function commentatorPredict(me, available) {
   const phase = gamePhase();
   const scored = available.map(r => ({
@@ -638,6 +658,20 @@ function commentatorPredict(me, available) {
   for (const x of scored) { x.e = Math.exp((x.s - mx) / T); Z += x.e; }
   for (const x of scored) x.p = x.e / Z;
   scored.sort((a, b) => b.p - a.p);
+  // 本级预判（L1/L2/L3）：把该 AI 真正会选的角色提到首位并提高置信度
+  const predName = predictedPickName(me, available);
+  if (predName) {
+    const k = scored.findIndex(x => x.r.name === predName);
+    if (k > 0) {
+      const [picked] = scored.splice(k, 1);
+      picked.p = Math.max(picked.p, scored[0].p) + 0.15;
+      scored.unshift(picked);
+    } else if (k === 0) {
+      scored[0].p = Math.min(0.95, scored[0].p + 0.12);
+    }
+    const Z2 = scored.reduce((a, x) => a + x.p, 0);
+    for (const x of scored) x.p /= Z2;
+  }
   return scored; // 概率降序 [{r,s,p}]
 }
 
@@ -1317,6 +1351,20 @@ function estLargeVioletSpecial(p, id) {
   return 1;
 }
 
+// 玩家"心仪的大紫块"：在库存内、未拥有、有 2 格空间的大紫里，挑终局特殊分最高的那个，
+// 作为全局规划目标（攒钱去抢 / 优先选建造）。大紫是单张，抢晚就被人拿走。
+function bestLargeViolet(p) {
+  const spaceLeft = 12 - G.buildingUsedSpaces(p);
+  let best = null;
+  for (const b of BUILDINGS) {
+    if (b.type !== "large_violet") continue;
+    if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+    const special = estLargeVioletSpecial(p, b.id);
+    if (!best || special > best.special) best = { id: b.id, special };
+  }
+  return best;
+}
+
 function aiReallocate(p) {
   // 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费工人）。
   let remaining = p._unplacedMen || 0;
@@ -1748,6 +1796,7 @@ function gamePhase() {
 
 function aiPickRole(p, available) {
   const lvl = p._aiLevel || 3;
+  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -1758,7 +1807,7 @@ function aiPickRole(p, available) {
     return level1PickRole(p, available);
   }
   if (lvl === 3) return level2PickRoleNew(p, available);        // 普通=邻座感知启发式
-  if (lvl === 4) return level5Reactive(p, available);           // 困难=全场卡位+2轮前瞻(即时)
+  if (lvl === 4) return ismctsPickRole(p, available, "hard");   // 困难=轻量ISMCTS(截断前瞻+手写经济评估)统筹全局
   if (lvl === 5) return ismctsPickRole(p, available, "expert"); // 专家=MCTS 深搜·逐步深想
   if (lvl === 6) return alphazeroPickRole(p, available);        // 宗师=AlphaZero NN+MCTS
   return level2PickRoleNew(p, available);
@@ -1804,7 +1853,11 @@ function ismctsPickRole(p, available, tier) {
     const ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
     // 专家档若已加载训练好的价值函数则启用价值制导（否则纯 rollout）
     const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
-    const ri = PRSim.ismctsPickRoleIdx(st, { maxIters: iters, budgetMs: ms, valueW, truncate: 8 });
+    // 困难档(两者结合)：截断 rollout 前瞻若干回合 + 手写"经济评估"做叶节点评估
+    //   → 自然实现"统筹全局/未来 N 回合收益最大/买 vs 攒/最优卖货/对手会怎么走(确定化搜索)"。
+    const opts = { maxIters: iters, budgetMs: ms, valueW, truncate: 8 };
+    if (tier === "hard" && PRSim.econReward) opts.evalLeafFn = (s2, persp) => PRSim.econReward(s2, persp);
+    const ri = PRSim.ismctsPickRoleIdx(st, opts);
     if (ri == null || ri < 0) return level5Reactive(p, available);
     const name = st.roleCards[ri].name;
     const idx = available.findIndex(r => r.name === name);
@@ -2028,6 +2081,20 @@ function level4Reactive(me, available) {
   return bestI;
 }
 
+// ============================================================
+// 全局规划：给每个 AI 一个持久的"对局计划"，让多回合决策连贯成一条战略主线，而不是每步贪心。
+// 计划 = 阶段弧线(早:造收入引擎 → 中:转化为得分引擎 → 晚:兑现得分+控场，PR 公认主线)
+//   + 心仪大紫(按"与自己面板的终局契合度"estLargeVioletSpecial 选定，即"按想要的大紫终局计分来规划")。
+// 用途：level1PickRole 终盘抢大紫(入门/普通)；各级 aiPickBuilding 经 bestLargeViolet 攒钱抢卡。
+// 困难(净收益+卡位+大紫规划)/进化(DNA阶段基因)/专家·宗师(MCTS/NN 整局前瞻)各自已有规划，不在此重复。
+// ============================================================
+function updatePlan(p) {
+  const phase = gamePhase();
+  const focus = phase === "early" ? "income" : phase === "mid" ? "engine" : "score";
+  p._plan = { focus, targetLV: bestLargeViolet(p) };
+  return p._plan;
+}
+
 // 软性策略倾向：返回对某角色的偏好分(正=更倾向 / 负=更回避)。
 // 源自 Alexfrog/jimc：终盘禁区、Mayor 少选、卡下家高价货、运船/建造时机、抢卡反制。
 function strategicRoleBias(me, roleName, phase) {
@@ -2092,6 +2159,20 @@ function strategicRoleBias(me, roleName, phase) {
           if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(me, b.id) || spaceLeft < b.size) continue;
           const cost = G.effectiveCostWithRoleBonus(me, b, true);
           if (me.money >= cost && (b.type === "large_violet" || (phase === "late" && spaceLeft <= 4))) { s += 8; break; }
+        }
+      }
+      // 心仪大紫的全局规划：买得起就抢（单张，错过被人拿走）；有对手也凑够 10 金 → 抢卡加急
+      const tgt = (phase === "mid" || phase === "late") ? bestLargeViolet(me) : null;
+      if (tgt && tgt.special >= 3) {
+        const cost = G.effectiveCostWithRoleBonus(me, BLD_BY_ID[tgt.id], true);
+        if (me.money >= cost) {
+          s += 10;
+          const spaceLeft = 12 - G.buildingUsedSpaces(me);
+          for (const o of G.players) {
+            if (o === me) continue;
+            if (o.money >= 10 && (12 - G.buildingUsedSpaces(o)) >= 2) { s += 6; break; } // 对手也能抢 → 加急
+          }
+          void spaceLeft;
         }
       }
       break;
@@ -2773,6 +2854,12 @@ function level1PickRole(me, available) {
   let prod = 0; for (const g of GOODS) prod += G.productionCapacity(me, g);
   const hasOffice = G.isManned(me, 12);
 
+  // 0) 全局规划：终盘抢下心仪的大紫块（按终局契合度选定、单张错过被抢）。即使入门也懂"该收的大分要收"。
+  const plan = me._plan || updatePlan(me);
+  if (plan.focus === "score" && plan.targetLV && has("Builder") && 12 - G.buildingUsedSpaces(me) >= 2) {
+    if (me.money >= G.effectiveCostWithRoleBonus(me, BLD_BY_ID[plan.targetLV.id], true)) return idxOf("Builder");
+  }
+
   // 1) 货多 + 船有空 → 船长，把产出换成分（生产多就往多运货靠）
   if (goods >= 3 && shipSpace > 0 && has("Captain")) return idxOf("Captain");
   // 2) 有高价货(咖啡/烟草)能卖 → 商人赚钱（有咖啡就往咖啡赚钱靠）
@@ -3221,9 +3308,9 @@ function evalBuildingValue(p, b, phase) {
     case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break; // 港口：得分型，中期峰值；后期勿替代大建筑
     case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;  // 码头
   }
-  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）
+  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）。按"与自己面板的契合度"(终局特殊分)估值。
   if (b.type === "large_violet") {
-    v += estLargeVioletSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    v += estLargeVioletSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
   }
   return v;
 }
@@ -3279,13 +3366,22 @@ function aiPickBuilding(p, options, isChooser) {
     return -1; // 基因选择"不买"（无想买的）→ pass，符合 VBA
   }
   const phase = gamePhase();
+  // 全局规划：心仪的大紫块（单张，错过被抢）。mid/late 且契合度高才进入"规划"。
+  const tgt = bestLargeViolet(p);
+  const tgtStrong = tgt && tgt.special >= 3 && (phase === "mid" || phase === "late");
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
     score -= o.cost * 3;            // 价格高减分（机会成本）
     if (isChooser) score += 5;      // chooser 折扣略加分
+    if (tgtStrong && o.b.id === tgt.id) score += (phase === "late" ? 30 : 16); // 心仪大紫可买→抢下
     return { i, score };
   });
   scored.sort((a, b) => b.score - a.score);
+  // 攒钱抢大紫：心仪大紫还买不起但已接近（一两回合可凑齐），且当前最佳可买只是平庸小建筑 → 不买，留钱。
+  if (tgtStrong && !options.some(o => o.b.id === tgt.id)) {
+    const cost = G.effectiveCostWithRoleBonus(p, BLD_BY_ID[tgt.id], isChooser);
+    if (p.money >= cost - 4 && scored[0].score < 20) return -1;
+  }
   return scored[0].i;
 }
 
