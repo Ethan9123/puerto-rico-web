@@ -302,8 +302,8 @@
       case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break;
       case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;
     }
-    // 大紫用快照估值(早期低=正确鼓励晚买)；combo 在生产分支已处理
-    if (b.type === "large_violet") v += estLVSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    // 大紫快照估值(早期低=鼓励晚买正确)；combo 在生产分支处理。与 game.js 同步(*5/28/14, PR#22)
+    if (b.type === "large_violet") v += estLVSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
     return v;
   }
 
@@ -618,6 +618,34 @@
     return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
   }
 
+  // ---------- 手写"经济评估"：一个面板的前瞻性经济价值（供 MCTS 叶节点评估，给困难档统筹全局）----------
+  // 不止看已实现 VP，还看"未来变现潜力"：收入引擎(产能×货价)=未来每回合的钱/分、
+  // 手上货=可立即卖钱/运分、钱=未来买建筑的潜力。MCTS 的截断 rollout 提供"未来若干回合"的前瞻，
+  // 本函数给"走到那一步后的经济局面"打分 → 合起来即"这一手在未来 N 回合的收益最大化"。
+  function econEval(st, seat) {
+    const me = st.players[seat];
+    const phase = phaseOf(st);
+    let v = finalScore(me); // 已实现 VP（含建筑分+大紫终局特殊分）
+    let income = 0, goodsVal = 0;
+    for (const g of GOODS_) {
+      income += productionCapacity(me, g) * (1 + PRICE[g]); // 收入引擎：玉米1 靛2 糖3 烟4 咖5
+      goodsVal += me.goods[g] * (1 + PRICE[g]);             // 手上货的变现价值
+    }
+    // 阶段权重：早/中期看重收入引擎与钱(为未来买建筑/运货铺路)；终盘已没时间发酵，看重已实现分
+    const wIncome = phase === "late" ? 0.25 : 0.8;
+    const wMoney = phase === "late" ? 0.15 : 0.4;
+    v += income * wIncome + me.money * wMoney + goodsVal * 0.35;
+    return v;
+  }
+  // 经济叶评估的奖励：我的经济价值 − 最强对手的经济价值，归一化到 [-1,1]
+  function econReward(st, perspective) {
+    const my = econEval(st, perspective);
+    let bestOpp = -Infinity;
+    for (let i = 0; i < st.numPlayers; i++) if (i !== perspective) { const e = econEval(st, i); if (e > bestOpp) bestOpp = e; }
+    if (!isFinite(bestOpp)) bestOpp = 0;
+    return Math.max(-1, Math.min(1, (my - bestOpp) / 30));
+  }
+
   // ---------- 价值函数（自对弈训练的逻辑回归，指导 MCTS 叶子评估）----------
   // 从 perspective 玩家视角抽取状态特征（与对手相对）。第 0 维为偏置。
   function extractFeatures(st, idx) {
@@ -790,7 +818,7 @@
 
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
-    finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward,
+    finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
     ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },

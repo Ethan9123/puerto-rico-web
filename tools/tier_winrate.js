@@ -24,6 +24,7 @@ const MATCHUPS = [[2,1],[3,2],[4,3]];
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
   window._allAIMode = true;
+  window._fastSpectator = true;
   window._aiThinkBudget = { L4:50, L5:100, hardIters:60, hardMs:1e9, expertIters:400, expertMs:1e9 };
   await loadAIDNA();
   const N = 4;

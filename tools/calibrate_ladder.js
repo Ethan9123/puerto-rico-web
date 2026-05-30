@@ -32,6 +32,7 @@ const EXPERT = parseInt(process.argv[4] || '200');
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
   window._allAIMode = true;
+  window._fastSpectator = true;
   window._aiThinkBudget = { L4:50, L5:100, hardIters:${HARD}, hardMs:1e9, expertIters:${EXPERT}, expertMs:1e9 };
   await loadAIDNA();
   const sums = {1:0,2:0,3:0,4:0,5:0}, cnts = {1:0,2:0,3:0,4:0,5:0};
