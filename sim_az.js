@@ -146,6 +146,117 @@
     return { policy, value: out.value, policyVec: probs };
   }
 
+  // ---------- Gumbel AlphaZero 搜索（因子化博弈树 + ISMCTS 确定化 + value 向量 maxn backup）----------
+  // determinize：重排未翻开的种植园牌堆(隐藏信息)，公开 pool 不动。
+  function determinize(st, rng) {
+    const c = PRSim.clone(st);
+    const d = c.plantationDeck;
+    for (let i = d.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const t = d[i]; d[i] = d[j]; d[j] = t; }
+    return c;
+  }
+  function _gumbel(rng) { return -Math.log(-Math.log(rng() + 1e-12) + 1e-12); }
+
+  // 一次模拟：从 root 应用候选动作 rootAct 后，沿 PUCT 下行到叶，NN 评估 + 回传。
+  // 返回 rootChooser 视角的叶 value。同时回填路径上各边统计。
+  function _simulate(rootState, rootAct, rootChild, rootChooser, np, evalFn, C, rng) {
+    const st = determinize(rootState, rng);
+    PRSim.azApply(st, rootAct);
+    const path = []; // {node, action, chooser}
+    let node = rootChild;
+    let leafVal = null; // (chooser) => value
+    let guard = 0;
+    while (guard++ < 600) {
+      const dec = PRSim.azDecision(st);
+      if (!dec) { leafVal = (ch) => PRSim.reward(st, ch); break; } // 终局
+      if (!node.expanded) {
+        const ev = evalFn(st, dec);
+        const probs = _softmaxMasked(ev.policyLogits, legalMask(dec));
+        node.expanded = true; node.chooser = dec.chooser; node.acts = dec.actions.slice(); node.type = dec.type;
+        node.P = {}; node.eN = {}; node.eW = {}; node.children = {}; node.N = 0;
+        for (const a of dec.actions) { node.P[a] = probs[toGlobal(dec.type, a)]; node.eN[a] = 0; node.eW[a] = 0; }
+        const lc = dec.chooser, V = ev.value;
+        leafVal = (ch) => V[(((ch - lc) % np) + np) % np]; // value 向量按座次偏移取该玩家视角
+        break;
+      }
+      // PUCT 选边
+      let bestA = node.acts[0], bestU = -Infinity;
+      for (const a of node.acts) {
+        const q = node.eN[a] > 0 ? node.eW[a] / node.eN[a] : 0;
+        const u = q + C * node.P[a] * Math.sqrt(node.N + 1) / (1 + node.eN[a]);
+        if (u > bestU) { bestU = u; bestA = a; }
+      }
+      path.push({ node, action: bestA, chooser: node.chooser });
+      PRSim.azApply(st, bestA);
+      if (!node.children[bestA]) node.children[bestA] = { expanded: false };
+      node = node.children[bestA];
+    }
+    for (const s of path) { s.node.eN[s.action]++; s.node.eW[s.action] += leafVal(s.chooser); s.node.N++; }
+    return leafVal(rootChooser);
+  }
+
+  // Gumbel 根选择 + sequential halving。返回 { action, policyTarget:[69], rootValue, visits }
+  function azGumbelSearch(rootState, opts) {
+    opts = opts || {};
+    const evalFn = opts.evalFn || ((s, d) => { const out = azForward(AZ_NET, azFeatures(s, d)); return { policyLogits: out.policyLogits, value: out.value }; });
+    const numSims = opts.numSims || 64;
+    const mCand = opts.numConsidered || 16;
+    const C = opts.C || 1.25;
+    const cVisit = opts.cVisit || 50, cScale = opts.cScale || 0.1;
+    const rng = opts.rng || rootState.rnd || Math.random;
+    const np = rootState.numPlayers;
+
+    const probe = PRSim.clone(rootState);
+    const rootDec = PRSim.azDecision(probe);
+    if (!rootDec) return null;
+    const rootChooser = rootDec.chooser;
+    const legal = rootDec.actions.slice();
+    const target = new Float32Array(AZ_ACTION_DIM);
+    if (legal.length === 1) { target[toGlobal(rootDec.type, legal[0])] = 1; return { action: legal[0], policyTarget: target, rootValue: 0, visits: { [legal[0]]: 1 } }; }
+
+    const rootEv = evalFn(rootState, rootDec);
+    const rootProbs = _softmaxMasked(rootEv.policyLogits, legalMask(rootDec));
+    const rootValSelf = rootEv.value[0]; // 当前决策者视角的 NN value
+    const logit = (a) => rootEv.policyLogits[toGlobal(rootDec.type, a)];
+    const gum = {}; for (const a of legal) gum[a] = _gumbel(rng);
+
+    // Gumbel top-m 候选
+    let surv = legal.slice().sort((a, b) => (logit(b) + gum[b]) - (logit(a) + gum[a])).slice(0, Math.min(mCand, legal.length));
+    const rN = {}, rW = {}, rootChildren = {};
+    for (const a of legal) { rN[a] = 0; rW[a] = 0; }
+    for (const a of surv) rootChildren[a] = { expanded: false };
+
+    const rounds = Math.max(1, Math.ceil(Math.log2(surv.length)));
+    let simsLeft = numSims;
+    for (let r = 0; r < rounds && simsLeft > 0; r++) {
+      const perCand = Math.max(1, Math.floor(numSims / (rounds * surv.length)));
+      for (const a of surv) {
+        for (let s = 0; s < perCand && simsLeft > 0; s++) {
+          simsLeft--;
+          const v = _simulate(rootState, a, rootChildren[a], rootChooser, np, evalFn, C, rng);
+          rN[a]++; rW[a] += v;
+        }
+      }
+      // sigma 变换后按 (logit + gumbel + sigma(qhat)) 砍掉一半
+      let maxN = 0; for (const a of surv) if (rN[a] > maxN) maxN = rN[a];
+      const sigma = (q) => (cVisit + maxN) * cScale * q;
+      const score = (a) => logit(a) + gum[a] + sigma(rN[a] > 0 ? rW[a] / rN[a] : rootValSelf);
+      surv = surv.sort((a, b) => score(b) - score(a)).slice(0, Math.max(1, Math.ceil(surv.length / 2)));
+    }
+    // 最终动作 = 幸存者(按 score 排序后第一)
+    let maxN = 0; for (const a of legal) if (rN[a] > maxN) maxN = rN[a];
+    const sigma = (q) => (cVisit + maxN) * cScale * q;
+    const best = surv[0];
+
+    // 训练用改进策略 pi' = softmax over legal of (logit + sigma(completedQ))
+    const completedQ = (a) => rN[a] > 0 ? rW[a] / rN[a] : rootValSelf;
+    let mx = -Infinity; for (const a of legal) { const z = logit(a) + sigma(completedQ(a)); if (z > mx) mx = z; }
+    let sum = 0; const ez = {};
+    for (const a of legal) { ez[a] = Math.exp(logit(a) + sigma(completedQ(a)) - mx); sum += ez[a]; }
+    for (const a of legal) target[toGlobal(rootDec.type, a)] = ez[a] / sum;
+    const visits = {}; for (const a of legal) visits[a] = rN[a];
+    return { action: best, policyTarget: target, rootValue: rootValSelf, visits };
+  }
+
   Object.assign(PRSim, {
     azActionToGlobal: toGlobal,
     azGlobalToAction: toLocal,
@@ -155,12 +266,13 @@
     azLoadNetwork,
     azIsLoaded,
     azEval,
+    azGumbelSearch,
     AZ_ACTION_DIM,
     AZ_FEATURE_DIM,
     AZ_DEC_TYPES: DEC_TYPES,
   });
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { toGlobal, toLocal, legalMask, azFeatures, azForward, azLoadNetwork, azIsLoaded, azEval, AZ_ACTION_DIM, AZ_FEATURE_DIM, DEC_TYPES };
+    module.exports = { toGlobal, toLocal, legalMask, azFeatures, azForward, azLoadNetwork, azIsLoaded, azEval, azGumbelSearch, AZ_ACTION_DIM, AZ_FEATURE_DIM, DEC_TYPES };
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));
