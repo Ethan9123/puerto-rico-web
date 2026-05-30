@@ -1045,6 +1045,20 @@ function estLargeVioletSpecial(p, id) {
   return 1;
 }
 
+// 终局预测版：早/中期大紫的特殊 VP 还会增长（公会大厅会再添生产建筑、官邸种植园趋向 12、
+// 城堡殖民者增长、海关持续装船、市政厅再添紫建筑），用 blend 把当前快照向"典型终局值"插值。
+// 修正快照式低估，让 AI 在"该出手时"正确高估大型功能建筑（专家：公会大厅几乎稳拿 7-8 分）。
+function estLargeVioletSpecialProj(p, id, phase) {
+  const grow = phase === "early" ? 0.7 : phase === "mid" ? 0.4 : 0.0; // 剩余可增长比例，late=快照
+  const blend = (cur, target) => Math.max(cur, cur + (target - cur) * grow);
+  if (id === 19) { let cur = 0; for (const b of p.buildings) { const bd = BLD_BY_ID[b.bid]; if (bd.type === "production") cur += (bd.men === 1 ? 1 : 2); } return blend(cur, 6); }
+  if (id === 20) { const n = Math.round(blend(p.plantations.length, 12)); return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
+  if (id === 21) return Math.floor(blend(G.totalColonists(p), 12) / 3);
+  if (id === 22) return Math.floor(blend(p.shippingVP, 12) / 4);
+  if (id === 23) { const cur = 1 + p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length; return blend(cur, 6); } // +1=市政厅自身
+  return 1;
+}
+
 function aiReallocate(p) {
   // 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费工人）。
   let remaining = p._unplacedMen || 0;
@@ -1056,7 +1070,7 @@ function aiReallocate(p) {
 
   const violetManValue = (b) => {
     const bd = BLD_BY_ID[b.bid];
-    if (bd.type === "large_violet") return Math.max(8, estLargeVioletSpecial(p, bd.id) * 4); // 激活终局重分
+    if (bd.type === "large_violet") return Math.max(8, estLargeVioletSpecialProj(p, bd.id, gamePhase()) * 5); // 激活终局重分(终局预测+对齐VP权重)
     switch (bd.id) {
       case 17: return 12; // 港口（每次装船+1VP）
       case 18: return 10; // 码头
@@ -2928,6 +2942,8 @@ function evalBuildingValue(p, b, phase) {
       if (!G.anyOpponentProduces(p, good)) v += 8;                              // 独家高价货 → 稳定卖钱+卡船
       else if (G.playerProduces(G.players[(p.idx - 1 + n) % n], good)) v -= 6;  // 右手(先卖/先运)已做 → 别撞
     }
+    // combo：已有公会大厅(19) → 每个生产建筑额外终局 VP（小型+1/大型+2），鼓励"建筑得分"流派囤产
+    if (G.ownsBuilding(p, 19)) v += (b.men === 1 ? 1 : 2) * 5;
     return v;
   }
   // ② 紫色建筑：按文章的"位"与时机
@@ -2940,18 +2956,23 @@ function evalBuildingValue(p, b, phase) {
     case 12: v += 5; break;                                                 // 办公室：很少好
     case 13: v += phase === "mid" ? 16 : 8; break;                          // 大市场
     case 14: v += 3; break;                                                 // 大仓库：避免(伪两倍效果)
-    case 15: {                                                              // 工厂：收入引擎+时序扰乱，早中很强
-      const kinds = GOODS.filter(g => G.productionCapacity(p, g) > 0).length;
-      v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4);
+    case 15: {                                                              // 工厂：真实非线性收益 {2种=1,3=2,4=3,5=5金}，看潜在货种(有田+有厂即可产)
+      let pot = 0;
+      for (const g of GOODS) {
+        if (g === "corn") { if (p.plantations.some(pl => pl.good === "corn")) pot++; }
+        else if (p.plantations.some(pl => pl.good === g) && p.buildings.some(bb => BLD_BY_ID[bb.bid].type === "production" && BLD_BY_ID[bb.bid].good === g)) pot++;
+      }
+      const fb = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
+      v += fb[Math.min(5, pot)] * 9 + (phase === "early" ? 12 : phase === "mid" ? 8 : -4);
       break;
     }
     case 16: v += 1; break;                                                 // 大学：烂建筑(文章判决)
     case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break; // 港口：得分型，中期峰值；后期勿替代大建筑
     case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;  // 码头
   }
-  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）
+  // ③ 大紫(19-23)：终盘最强（即时兑现）。用终局预测估值 + 特殊VP权重 *5(对齐普通VP)
   if (b.type === "large_violet") {
-    v += estLargeVioletSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    v += estLargeVioletSpecialProj(p, id, phase) * 5 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
   }
   return v;
 }

@@ -261,6 +261,18 @@
     if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     return 1;
   }
+  // 终局预测版（与 game.js estLargeVioletSpecialProj 同步）：早/中期大紫特殊 VP 仍会增长，
+  // 把当前快照向"典型终局值"插值，修正快照低估，让 AI 在该出手时正确高估大型功能建筑。
+  function estLVSpecialProj(p, id, phase) {
+    const grow = phase === "early" ? 0.7 : phase === "mid" ? 0.4 : 0.0;
+    const blend = (cur, target) => Math.max(cur, cur + (target - cur) * grow);
+    if (id === 19) { let cur = 0; for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") cur += (bd.men === 1 ? 1 : 2); } return blend(cur, 6); }
+    if (id === 20) { const n = Math.round(blend(p.plantations.length, 12)); return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
+    if (id === 21) return Math.floor(blend(totalColonists(p), 12) / 3);
+    if (id === 22) return Math.floor(blend(p.shippingVP, 12) / 4);
+    if (id === 23) { const cur = 1 + p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length; return blend(cur, 6); }
+    return 1;
+  }
   // 收入引擎早→得分建筑中→大紫晚（与 game.js evalBuildingValue 同步）
   function evalBuilding(st, p, b, phase) {
     let v = b.vp * 5;
@@ -279,6 +291,7 @@
         if (!anyOppProduces(st, p, good)) v += 8;
         else if (simProduces(st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers], good)) v -= 6;
       }
+      if (ownsBuilding(p, 19)) v += (b.men === 1 ? 1 : 2) * 5; // combo：已有公会大厅 → 每个生产建筑额外终局 VP
       return v;
     }
     switch (id) {
@@ -290,12 +303,21 @@
       case 12: v += 5; break;
       case 13: v += phase === "mid" ? 16 : 8; break;
       case 14: v += 3; break;
-      case 15: { const kinds = GOODS_.filter(g => productionCapacity(p, g) > 0).length; v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4); break; }
+      case 15: { // 工厂：真实非线性收益 {2种=1,3=2,4=3,5=5金} + 潜在货种
+        let pot = 0;
+        for (const g of GOODS_) {
+          if (g === "corn") { if (p.plantations.some(pl => pl.good === "corn")) pot++; }
+          else if (p.plantations.some(pl => pl.good === g) && p.buildings.some(bb => BLD[bb.bid].type === "production" && BLD[bb.bid].good === g)) pot++;
+        }
+        const fb = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
+        v += fb[Math.min(5, pot)] * 9 + (phase === "early" ? 12 : phase === "mid" ? 8 : -4);
+        break;
+      }
       case 16: v += 1; break;
       case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break;
       case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;
     }
-    if (b.type === "large_violet") v += estLVSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    if (b.type === "large_violet") v += estLVSpecialProj(p, id, phase) * 5 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
     return v;
   }
 
