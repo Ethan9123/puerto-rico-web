@@ -171,21 +171,26 @@
       if (!node.expanded) {
         const ev = evalFn(st, dec);
         const probs = _softmaxMasked(ev.policyLogits, legalMask(dec));
-        node.expanded = true; node.chooser = dec.chooser; node.acts = dec.actions.slice(); node.type = dec.type;
+        node.expanded = true;
         node.P = {}; node.eN = {}; node.eW = {}; node.children = {}; node.N = 0;
         for (const a of dec.actions) { node.P[a] = probs[toGlobal(dec.type, a)]; node.eN[a] = 0; node.eW[a] = 0; }
         const lc = dec.chooser, V = ev.value;
         leafVal = (ch) => V[(((ch - lc) % np) + np) % np]; // value 向量按座次偏移取该玩家视角
         break;
       }
-      // PUCT 选边
-      let bestA = node.acts[0], bestU = -Infinity;
-      for (const a of node.acts) {
-        const q = node.eN[a] > 0 ? node.eW[a] / node.eN[a] : 0;
-        const u = q + C * node.P[a] * Math.sqrt(node.N + 1) / (1 + node.eN[a]);
+      // PUCT 选边 —— 用 live dec.actions(当前确定化下的合法动作), 而非缓存。
+      // ISMCTS 关键: 不同确定化下 settle 等动作内容会变, 必须用当前状态的合法动作, 否则 azApply 收到非法动作崩溃/串味。
+      let bestA = dec.actions[0], bestU = -Infinity;
+      const sN = node.N;
+      for (const a of dec.actions) {
+        const P = (node.P[a] != null) ? node.P[a] : (1 / dec.actions.length);
+        const eN = node.eN[a] || 0, eW = node.eW[a] || 0;
+        const q = eN > 0 ? eW / eN : 0;
+        const u = q + C * P * Math.sqrt(sN + 1) / (1 + eN);
         if (u > bestU) { bestU = u; bestA = a; }
       }
-      path.push({ node, action: bestA, chooser: node.chooser });
+      if (node.eN[bestA] == null) { node.eN[bestA] = 0; node.eW[bestA] = 0; if (node.P[bestA] == null) node.P[bestA] = 1 / dec.actions.length; }
+      path.push({ node, action: bestA, chooser: dec.chooser });
       PRSim.azApply(st, bestA);
       if (!node.children[bestA]) node.children[bestA] = { expanded: false };
       node = node.children[bestA];
