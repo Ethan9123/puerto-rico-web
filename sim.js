@@ -816,11 +816,159 @@
     return ri != null ? ri : rootLegal[0];
   }
 
+  // ============================================================
+  // 因子化决策层 (AlphaZero) — additive，不改 applyRole/do*。
+  // 把"一回合内的链式子决策"逐个暴露为决策点，供 Gumbel-AlphaZero 搜索/训练。
+  // 设计：st.az 游标记录当前所处 factored 阶段及进度；未 factored 的阶段
+  //   回退到现成启发式 do*（保证始终能打完整局，可逐阶段 factored 化 + 验证）。
+  // 当前已 factored：role（选角色）、builder（建造）。其余阶段走 do* 回退。
+  // 决策表示：{ type, chooser, actions:[int...] }；动作 id 含义随 type：
+  //   role  → roleIdx (legalRoleIdxs)
+  //   build → bid (1..23) 或 -1=pass
+  // ============================================================
+  const AZ_PASS = -1;
+
+  function azEnsure(st) { if (!st.az) st.az = { phase: "role" }; return st.az; }
+
+  // 列出某玩家在建造阶段的可建选项（与 doBuilder 同口径）
+  function azBuildOptions(st, i) {
+    const p = st.players[i];
+    if (buildingUsedSpaces(p) >= 12) return [];
+    const opts = [];
+    for (const b of BUILDINGS_) {
+      if (st.buildingStock[b.id] <= 0) continue;
+      if (ownsBuilding(p, b.id)) continue;
+      if (12 - buildingUsedSpaces(p) < b.size) continue;
+      const cost = effectiveCostBonus(p, b, i === st.az.chooser);
+      if (p.money < cost) continue;
+      opts.push(b.id);
+    }
+    return opts;
+  }
+
+  // 推进 builder 游标到"下一个有可建选项的玩家"，没有则结束建造阶段
+  function azBuilderSkipToDecision(st) {
+    const az = st.az;
+    while (az.oi < az.ord.length) {
+      const i = az.ord[az.oi];
+      if (azBuildOptions(st, i).length > 0) return true; // 该玩家有决策
+      az.oi++; // 无可建 → 跳过
+    }
+    return false; // 全部处理完
+  }
+
+  // 角色阶段收尾（与 applyRole 末段同逻辑）：picksThisTurn++ + 回合/终局推进
+  function azFinishRole(st) {
+    checkEnd(st);
+    st.picksThisTurn++;
+    if (st.picksThisTurn >= st.numPlayers || legalRoleIdxs(st).length === 0) {
+      for (const r of st.roleCards) if (!r.taken) r.money += 1;
+      if (st.endTriggered) { st.gameOver = true; }
+      else {
+        st.governor = (st.governor + 1) % st.numPlayers;
+        st.turnNumber++;
+        flipPlantations(st);
+        for (const r of st.roleCards) { r.taken = false; r.takenBy = null; }
+        st.picksThisTurn = 0;
+      }
+    }
+    st.az.phase = "role";
+  }
+
+  // 当前决策点（null = 终局）
+  function azDecision(st) {
+    azEnsure(st);
+    if (isTerminal(st)) return null;
+    const az = st.az;
+    if (az.phase === "builder") {
+      if (!azBuilderSkipToDecision(st)) { azFinishRole(st); return azDecision(st); }
+      const i = az.ord[az.oi];
+      const actions = azBuildOptions(st, i).concat([AZ_PASS]);
+      return { type: "build", chooser: i, actions };
+    }
+    // 默认：角色决策
+    const ch = currentChooser(st);
+    if (ch < 0) return null;
+    const legal = legalRoleIdxs(st);
+    if (legal.length === 0) return null;
+    return { type: "role", chooser: ch, actions: legal.slice() };
+  }
+
+  // 应用一个决策动作，推进到下一个决策点
+  function azApply(st, action) {
+    azEnsure(st);
+    const az = st.az;
+    if (az.phase === "builder") {
+      const i = az.ord[az.oi];
+      const p = st.players[i];
+      if (action !== AZ_PASS) {
+        const b = BLD[action];
+        const cost = effectiveCostBonus(p, b, i === az.chooser);
+        p.money -= cost; st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
+        if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
+      }
+      az.oi++; // 该玩家决策完，下一个
+      return st;
+    }
+    // 角色决策
+    const chooser = currentChooser(st);
+    const card = st.roleCards[action];
+    card.taken = true; card.takenBy = chooser;
+    st.players[chooser].money += card.money; card.money = 0;
+    if (card.name === "Builder") {
+      // 进入 factored 建造阶段
+      az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0;
+      return st;
+    }
+    // 其余阶段：回退到启发式 do*（逐阶段 factored 化的过渡）
+    switch (card.name) {
+      case "Settler": doSettler(st, chooser); break;
+      case "Mayor": doMayor(st, chooser); break;
+      case "Craftsman": doCraftsman(st, chooser); break;
+      case "Trader": doTrader(st, chooser); break;
+      case "Captain": doCaptain(st, chooser); break;
+      case "Prospector": st.players[chooser].money += 1; break;
+    }
+    azFinishRole(st);
+    return st;
+  }
+
+  // 启发式驱动 azDecision/azApply（用于验证：应与 applyRole 路径产出一致）
+  function azHeuristicAction(st, dec) {
+    if (dec.type === "role") return heuristicPickRole(st, dec.chooser, dec.actions);
+    if (dec.type === "build") {
+      // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
+      const i = dec.chooser, p = st.players[i];
+      const phase = st.az._bphase || (st.az._bphase = phaseOf(st)); // builder 阶段内 phase 固定
+      let best = AZ_PASS, bestS = 0; // 阈值同 doBuilder：bestS<=0 → pass
+      for (const a of dec.actions) {
+        if (a === AZ_PASS) continue;
+        const b = BLD[a];
+        const cost = effectiveCostBonus(p, b, i === st.az.chooser);
+        const s = evalBuilding(st, p, b, phase) - cost * 3 + (i === st.az.chooser ? 5 : 0);
+        if (s > bestS) { bestS = s; best = a; }
+      }
+      return best;
+    }
+    return dec.actions[0];
+  }
+  function azPlayHeuristic(st) {
+    let guard = 0;
+    while (guard++ < 5000) {
+      const dec = azDecision(st);
+      if (!dec) break;
+      if (dec.type !== "build") st.az._bphase = null; // 离开 builder 清掉缓存
+      azApply(st, azHeuristicAction(st, dec));
+    }
+    return st;
+  }
+
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
     ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
+    azDecision, azApply, azPlayHeuristic, AZ_PASS,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
