@@ -3287,6 +3287,8 @@ function evalBuildingValue(p, b, phase) {
       if (!G.anyOpponentProduces(p, good)) v += 8;                              // 独家高价货 → 稳定卖钱+卡船
       else if (G.playerProduces(G.players[(p.idx - 1 + n) % n], good)) v -= 6;  // 右手(先卖/先运)已做 → 别撞
     }
+    // combo：已有公会大厅(19) → 每个生产建筑额外终局 VP（小型+1/大型+2），鼓励"建筑得分"流派囤产
+    if (G.ownsBuilding(p, 19)) v += (b.men === 1 ? 1 : 2) * 5;
     return v;
   }
   // ② 紫色建筑：按文章的"位"与时机
@@ -3299,16 +3301,18 @@ function evalBuildingValue(p, b, phase) {
     case 12: v += 5; break;                                                 // 办公室：很少好
     case 13: v += phase === "mid" ? 16 : 8; break;                          // 大市场
     case 14: v += 3; break;                                                 // 大仓库：避免(伪两倍效果)
-    case 15: {                                                              // 工厂：收入引擎+时序扰乱，早中很强
-      const kinds = GOODS.filter(g => G.productionCapacity(p, g) > 0).length;
-      v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4);
+    case 15: {                                                              // 工厂：多样性收入引擎(早中很强)。kinds 用"已产或有田"前瞻计数 + 高多样非线性奖励
+      let kinds = 0;
+      for (const g of GOODS) if (G.productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++;
+      const fb = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
+      v += kinds * 6 + fb[Math.min(5, kinds)] * 4 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4);
       break;
     }
     case 16: v += 1; break;                                                 // 大学：烂建筑(文章判决)
     case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break; // 港口：得分型，中期峰值；后期勿替代大建筑
     case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;  // 码头
   }
-  // ③ 大紫(19-23)：终盘最强（即时兑现，无需时间发酵）。按"与自己面板的契合度"(终局特殊分)估值。
+  // ③ 大紫(19-23)：终盘最强（即时兑现）。快照估值(早期天然低=鼓励晚买正确)；combo 在生产分支处理
   if (b.type === "large_violet") {
     v += estLargeVioletSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
   }

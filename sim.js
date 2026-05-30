@@ -279,6 +279,7 @@
         if (!anyOppProduces(st, p, good)) v += 8;
         else if (simProduces(st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers], good)) v -= 6;
       }
+      if (ownsBuilding(p, 19)) v += (b.men === 1 ? 1 : 2) * 5; // combo：已有公会大厅 → 每个生产建筑额外终局 VP
       return v;
     }
     switch (id) {
@@ -290,12 +291,19 @@
       case 12: v += 5; break;
       case 13: v += phase === "mid" ? 16 : 8; break;
       case 14: v += 3; break;
-      case 15: { const kinds = GOODS_.filter(g => productionCapacity(p, g) > 0).length; v += kinds * 8 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4); break; }
+      case 15: { // 工厂：多样性收入引擎(早中很强)。kinds 用"已产或有田"前瞻计数 + 高多样非线性奖励
+        let kinds = 0;
+        for (const g of GOODS_) if (productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++;
+        const fb = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
+        v += kinds * 6 + fb[Math.min(5, kinds)] * 4 + (phase === "early" ? 16 : phase === "mid" ? 10 : -4);
+        break;
+      }
       case 16: v += 1; break;
       case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break;
       case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;
     }
-    if (b.type === "large_violet") v += estLVSpecial(p, id) * 4 + (phase === "late" ? 20 : phase === "mid" ? 8 : 0);
+    // 大紫快照估值(早期低=鼓励晚买正确)；combo 在生产分支处理。与 game.js 同步(*5/28/14, PR#22)
+    if (b.type === "large_violet") v += estLVSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
     return v;
   }
 
