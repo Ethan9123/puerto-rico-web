@@ -376,7 +376,9 @@
     }
   }
 
-  function doCraftsman(st, chooser) {
+  // 工匠自动生产 + 工厂奖励（不含 chooser 额外取货）。返回已生产货种集合。
+  // 抽出为独立函数，供 doCraftsman 与因子化层共用，保证两路逻辑一致。
+  function craftsmanProduce(st, chooser) {
     const produced = new Set();
     const perKinds = st.players.map(() => new Set());
     for (const g of GOODS_) {
@@ -390,6 +392,10 @@
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
     for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }
+    return produced;
+  }
+  function doCraftsman(st, chooser) {
+    const produced = craftsmanProduce(st, chooser);
     const ch = st.players[chooser];
     const avail = GOODS_.filter(g => st.supply[g] > 0 && produced.has(g));
     if (avail.length > 0) { const g = avail.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b); ch.goods[g]++; st.supply[g]--; }
@@ -877,6 +883,24 @@
     return false; // 全部处理完
   }
 
+  // trader：当前玩家可卖货种(GOODS_ 索引；office 可卖与贸易站重复的)
+  function azTraderSellable(st, i) {
+    const p = st.players[i]; const office = isManned(p, 12);
+    const out = [];
+    for (let k = 0; k < GOODS_.length; k++) { const g = GOODS_[k]; if (p.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) out.push(k); }
+    return out;
+  }
+  function azTraderSkipToDecision(st) {
+    const az = st.az;
+    while (az.oi < az.ord.length) {
+      if (st.tradingHouse.length >= 4) return false; // 贸易站满 → 停(同 doTrader 的 break)
+      if (azTraderSellable(st, az.ord[az.oi]).length > 0) return true;
+      az.oi++;
+    }
+    return false;
+  }
+  function azTraderEnd(st) { if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; } }
+
   // 角色阶段收尾（与 applyRole 末段同逻辑）：picksThisTurn++ + 回合/终局推进
   function azFinishRole(st) {
     checkEnd(st);
@@ -912,6 +936,18 @@
       const o = azSettlerOptions(st, i);
       const actions = o.goods.slice(); if (o.quarry) actions.push(AZ_QUARRY);
       return { type: "settle", chooser: i, actions };
+    }
+    if (az.phase === "trader") {
+      if (!azTraderSkipToDecision(st)) { azTraderEnd(st); azFinishRole(st); return azDecision(st); }
+      const i = az.ord[az.oi];
+      const actions = azTraderSellable(st, i).concat([AZ_PASS]);
+      return { type: "trade", chooser: i, actions };
+    }
+    if (az.phase === "craftbonus") {
+      const avail = [];
+      for (let k = 0; k < GOODS_.length; k++) if (st.supply[GOODS_[k]] > 0 && az.produced.indexOf(GOODS_[k]) >= 0) avail.push(k);
+      if (avail.length === 0) { azFinishRole(st); return azDecision(st); }
+      return { type: "craftbonus", chooser: az.chooser, actions: avail };
     }
     // 默认：角色决策
     const ch = currentChooser(st);
@@ -949,6 +985,22 @@
       az.oi++;
       return st;
     }
+    if (az.phase === "trader") {
+      const i = az.ord[az.oi], p = st.players[i];
+      if (action !== AZ_PASS) {
+        const g = GOODS_[action];
+        p.goods[g]--; st.tradingHouse.push(g);
+        let earn = PRICE[g]; if (i === az.chooser) earn += 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2;
+        p.money += earn;
+      }
+      az.oi++;
+      return st;
+    }
+    if (az.phase === "craftbonus") {
+      if (action !== AZ_PASS && action >= 0) { const g = GOODS_[action]; st.players[az.chooser].goods[g]++; st.supply[g]--; }
+      azFinishRole(st);
+      return st;
+    }
     // 角色决策
     const chooser = currentChooser(st);
     const card = st.roleCards[action];
@@ -956,11 +1008,11 @@
     st.players[chooser].money += card.money; card.money = 0;
     if (card.name === "Builder") { az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
+    if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
+    if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
     // 其余阶段：回退到启发式 do*（逐阶段 factored 化的过渡）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
-      case "Craftsman": doCraftsman(st, chooser); break;
-      case "Trader": doTrader(st, chooser); break;
       case "Captain": doCaptain(st, chooser); break;
       case "Prospector": st.players[chooser].money += 1; break;
     }
@@ -980,6 +1032,16 @@
       if (st.quarriesLeft > 0 && (i === st.az.chooser || hut)) opts.push({ kind: "quarry" });
       const pick = opts[pickPlantation(st, p, opts, i === st.az.chooser)];
       return pick.kind === "quarry" ? AZ_QUARRY : GOODS_.indexOf(pick.good);
+    }
+    if (dec.type === "trade") {
+      // doTrader: 卖最高价可卖货，从不 pass；并列时取 GOODS_ 在前者
+      const sell = dec.actions.filter(a => a !== AZ_PASS);
+      if (sell.length === 0) return AZ_PASS;
+      return sell.reduce((a, b) => PRICE[GOODS_[a]] >= PRICE[GOODS_[b]] ? a : b);
+    }
+    if (dec.type === "craftbonus") {
+      // doCraftsman: chooser 取最高价 available
+      return dec.actions.reduce((a, b) => PRICE[GOODS_[a]] >= PRICE[GOODS_[b]] ? a : b);
     }
     if (dec.type === "build") {
       // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
