@@ -21,3 +21,4 @@ puerto-rico-web-*.zip
 
 # 模型备份(本地)
 mcts_value_nn-*.json
+tests/_az_ref.json

@@ -84,17 +84,83 @@
     return out;
   }
 
+  // ---------- ResNet JS 推理 ----------
+  function _dense(input, W, b) {
+    const outDim = W.length, inDim = W[0].length;
+    const out = new Float32Array(outDim);
+    for (let i = 0; i < outDim; i++) { const Wi = W[i]; let s = b[i]; for (let j = 0; j < inDim; j++) s += Wi[j] * input[j]; out[i] = s; }
+    return out;
+  }
+  function _relu(x) { const o = new Float32Array(x.length); for (let i = 0; i < x.length; i++) o[i] = x[i] > 0 ? x[i] : 0; return o; }
+  function _softmaxMasked(logits, mask) {
+    // 只在 mask=1 的位置 softmax，其余置 0
+    let m = -Infinity; for (let i = 0; i < logits.length; i++) if (mask[i] && logits[i] > m) m = logits[i];
+    const e = new Float32Array(logits.length); let s = 0;
+    for (let i = 0; i < logits.length; i++) { if (mask[i]) { e[i] = Math.exp(logits[i] - m); s += e[i]; } }
+    if (s <= 0) { // 退化：均匀分布在 legal 上
+      let n = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) n++;
+      for (let i = 0; i < e.length; i++) e[i] = mask[i] ? 1 / n : 0;
+      return e;
+    }
+    for (let i = 0; i < e.length; i++) e[i] = e[i] / s;
+    return e;
+  }
+  // 一次 ResNet 前向，返回 { policyLogits:[69], value:[n_value] }。value[0]=当前决策者视角。
+  function azForward(net, features) {
+    if (features.length !== net.feature_dim) throw new Error(`azForward: feature dim ${features.length} vs ${net.feature_dim}`);
+    let h = _relu(_dense(features, net.stem.W, net.stem.b));
+    for (const blk of net.blocks) {
+      const r = h;
+      let x = _relu(_dense(h, blk.l1.W, blk.l1.b));
+      x = _dense(x, blk.l2.W, blk.l2.b);
+      const nh = new Float32Array(x.length);
+      for (let i = 0; i < x.length; i++) { const v = x[i] + r[i]; nh[i] = v > 0 ? v : 0; } // 残差 + relu
+      h = nh;
+    }
+    const policyLogits = _dense(h, net.policy_head.W, net.policy_head.b);
+    const vraw = _dense(h, net.value_head.W, net.value_head.b);
+    const value = new Float32Array(vraw.length);
+    for (let i = 0; i < vraw.length; i++) value[i] = Math.tanh(vraw[i]);
+    return { policyLogits, value };
+  }
+  let AZ_NET = null;
+  async function azLoadNetwork(src) {
+    let net;
+    if (src && typeof src === "object") net = src;
+    else { const res = await fetch(src); if (!res.ok) throw new Error("azLoadNetwork HTTP " + res.status); net = await res.json(); }
+    if (net.arch !== "resnet" || !net.blocks) throw new Error("azLoadNetwork: not a resnet az model");
+    AZ_NET = net;
+    if (typeof console !== "undefined") console.log(`[sim_az] loaded resnet: feature=${net.feature_dim} action=${net.action_dim} value=${net.n_value} blocks=${net.blocks.length} hidden=${net.hidden} val_loss=${(net.val_loss || 0).toFixed(4)}`);
+    return net;
+  }
+  function azIsLoaded() { return AZ_NET !== null; }
+  // 在某决策点评估：返回 { policy:{[legal action]→prob}, value:[n_value], policyVec:[69] }
+  function azEval(state, dec) {
+    if (!AZ_NET) return null;
+    const f = azFeatures(state, dec);
+    const out = azForward(AZ_NET, f);
+    const mask = legalMask(dec);
+    const probs = _softmaxMasked(out.policyLogits, mask);
+    const policy = {}; // 局部动作 → 概率
+    for (const a of dec.actions) { const gi = toGlobal(dec.type, a); policy[a] = probs[gi]; }
+    return { policy, value: out.value, policyVec: probs };
+  }
+
   Object.assign(PRSim, {
     azActionToGlobal: toGlobal,
     azGlobalToAction: toLocal,
     azLegalMask: legalMask,
     azFeatures,
+    azForward,
+    azLoadNetwork,
+    azIsLoaded,
+    azEval,
     AZ_ACTION_DIM,
     AZ_FEATURE_DIM,
     AZ_DEC_TYPES: DEC_TYPES,
   });
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { toGlobal, toLocal, legalMask, azFeatures, AZ_ACTION_DIM, AZ_FEATURE_DIM, DEC_TYPES };
+    module.exports = { toGlobal, toLocal, legalMask, azFeatures, azForward, azLoadNetwork, azIsLoaded, azEval, AZ_ACTION_DIM, AZ_FEATURE_DIM, DEC_TYPES };
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));
