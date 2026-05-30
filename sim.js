@@ -827,8 +827,28 @@
   //   build → bid (1..23) 或 -1=pass
   // ============================================================
   const AZ_PASS = -1;
+  const AZ_QUARRY = -2; // settler 选采石场的动作 id
 
   function azEnsure(st) { if (!st.az) st.az = { phase: "role" }; return st.az; }
+
+  // settler 选项：当前玩家可拿的"货种"(GOODS_ 索引去重) + 是否可拿采石场
+  function azSettlerOptions(st, i) {
+    const p = st.players[i];
+    if (p.plantations.length >= 12) return { goods: [], quarry: false };
+    const goods = [];
+    for (let k = 0; k < GOODS_.length; k++) if (st.plantationPool.includes(GOODS_[k])) goods.push(k);
+    const hut = isManned(p, 9);
+    const quarry = st.quarriesLeft > 0 && (i === st.az.chooser || hut);
+    return { goods, quarry };
+  }
+  function azSettlerHasDecision(st, i) { const o = azSettlerOptions(st, i); return o.goods.length > 0 || o.quarry; }
+  function azSettlerSkipToDecision(st) {
+    const az = st.az;
+    while (az.oi < az.ord.length) { if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
+    // 全部处理完 → 弃掉剩余明牌种植园(与 doSettler 末段一致)
+    if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
+    return false;
+  }
 
   // 列出某玩家在建造阶段的可建选项（与 doBuilder 同口径）
   function azBuildOptions(st, i) {
@@ -886,6 +906,13 @@
       const actions = azBuildOptions(st, i).concat([AZ_PASS]);
       return { type: "build", chooser: i, actions };
     }
+    if (az.phase === "settler") {
+      if (!azSettlerSkipToDecision(st)) { azFinishRole(st); return azDecision(st); }
+      const i = az.ord[az.oi];
+      const o = azSettlerOptions(st, i);
+      const actions = o.goods.slice(); if (o.quarry) actions.push(AZ_QUARRY);
+      return { type: "settle", chooser: i, actions };
+    }
     // 默认：角色决策
     const ch = currentChooser(st);
     if (ch < 0) return null;
@@ -910,19 +937,27 @@
       az.oi++; // 该玩家决策完，下一个
       return st;
     }
+    if (az.phase === "settler") {
+      const i = az.ord[az.oi];
+      const p = st.players[i];
+      let pl;
+      if (action === AZ_QUARRY) { st.quarriesLeft--; pl = { good: "quarry", manned: false }; }
+      else { const good = GOODS_[action]; const idx = st.plantationPool.indexOf(good); pl = { good, manned: false }; st.plantationPool.splice(idx, 1); }
+      p.plantations.push(pl);
+      if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false }); // Hacienda
+      if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } } // Hospice
+      az.oi++;
+      return st;
+    }
     // 角色决策
     const chooser = currentChooser(st);
     const card = st.roleCards[action];
     card.taken = true; card.takenBy = chooser;
     st.players[chooser].money += card.money; card.money = 0;
-    if (card.name === "Builder") {
-      // 进入 factored 建造阶段
-      az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0;
-      return st;
-    }
+    if (card.name === "Builder") { az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
+    if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     // 其余阶段：回退到启发式 do*（逐阶段 factored 化的过渡）
     switch (card.name) {
-      case "Settler": doSettler(st, chooser); break;
       case "Mayor": doMayor(st, chooser); break;
       case "Craftsman": doCraftsman(st, chooser); break;
       case "Trader": doTrader(st, chooser); break;
@@ -936,6 +971,16 @@
   // 启发式驱动 azDecision/azApply（用于验证：应与 applyRole 路径产出一致）
   function azHeuristicAction(st, dec) {
     if (dec.type === "role") return heuristicPickRole(st, dec.chooser, dec.actions);
+    if (dec.type === "settle") {
+      // 重建 doSettler 的 opts 并用 pickPlantation 选择，映射回 good 索引 / 采石场
+      const i = dec.chooser, p = st.players[i];
+      const opts = [];
+      for (let k = 0; k < st.plantationPool.length; k++) opts.push({ kind: "plant", good: st.plantationPool[k], idx: k });
+      const hut = isManned(p, 9);
+      if (st.quarriesLeft > 0 && (i === st.az.chooser || hut)) opts.push({ kind: "quarry" });
+      const pick = opts[pickPlantation(st, p, opts, i === st.az.chooser)];
+      return pick.kind === "quarry" ? AZ_QUARRY : GOODS_.indexOf(pick.good);
+    }
     if (dec.type === "build") {
       // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
       const i = dec.chooser, p = st.players[i];
