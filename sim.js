@@ -1132,7 +1132,7 @@
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
     ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
-    azDecision, azApply, azPlayHeuristic, AZ_PASS,
+    azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
