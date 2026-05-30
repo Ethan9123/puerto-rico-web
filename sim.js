@@ -162,6 +162,11 @@
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
       })),
     };
+    // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
+    if (st.az) c.az = Object.assign({}, st.az, {
+      ord: st.az.ord ? st.az.ord.slice() : undefined,
+      produced: st.az.produced ? st.az.produced.slice() : undefined,
+    });
     return c;
   }
 
@@ -426,35 +431,32 @@
     };
     return cands.slice().sort((a, b) => score(b) - score(a));
   }
-  function doCaptain(st, chooser) {
-    const phase = phaseOf(st);
-    const ord = order(st, chooser);
-    const bonusUsed = new Set();
-    let progress = true;
-    while (progress) {
-      progress = false;
-      for (const i of ord) {
-        const p = st.players[i];
-        const cands = [];
-        for (let s = 0; s < st.ships.length; s++) {
-          const ship = st.ships[s]; if (ship.count >= ship.capacity) continue;
-          if (ship.good === null) {
-            for (const g of GOODS_) { if (p.goods[g] <= 0) continue; if (st.ships.some((sh, idx) => idx !== s && sh.good === g)) continue; cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }); }
-          } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
-        }
-        if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "wharf", good: g, amount: p.goods[g] });
-        if (cands.length === 0) continue;
-        const pick = rankCaptain(cands, st.ships, phase)[0];
-        let loaded;
-        if (pick.ship === "wharf") { p.goods[pick.good] -= pick.amount; loaded = pick.amount; p.wharfUsed = true; st.supply[pick.good] += pick.amount; }
-        else { const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good; loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded; }
-        let vp = loaded;
-        if (i === chooser && !bonusUsed.has(i)) { vp += 1; bonusUsed.add(i); }
-        if (isManned(p, 17)) vp += 1;
-        const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
-        progress = true;
-      }
+  // 某玩家本轮可装船的候选 {ship(0..2 或 "wharf"), good, amount}。抽出供 doCaptain 与因子化层共用。
+  function captainCands(st, p) {
+    const cands = [];
+    for (let s = 0; s < st.ships.length; s++) {
+      const ship = st.ships[s]; if (ship.count >= ship.capacity) continue;
+      if (ship.good === null) {
+        for (const g of GOODS_) { if (p.goods[g] <= 0) continue; if (st.ships.some((sh, idx) => idx !== s && sh.good === g)) continue; cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }); }
+      } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
     }
+    if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "wharf", good: g, amount: p.goods[g] });
+    return cands;
+  }
+  // 装船一次（修改 st，给 i 加 shippingVP），返回 loaded
+  function captainLoad(st, i, chooser, bonusUsed, pick) {
+    const p = st.players[i];
+    let loaded;
+    if (pick.ship === "wharf") { p.goods[pick.good] -= pick.amount; loaded = pick.amount; p.wharfUsed = true; st.supply[pick.good] += pick.amount; }
+    else { const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good; loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded; }
+    let vp = loaded;
+    if (i === chooser && !bonusUsed.has(i)) { vp += 1; bonusUsed.add(i); }
+    if (isManned(p, 17)) vp += 1;
+    const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
+    return loaded;
+  }
+  // 装船阶段末：满船清空 + 各玩家留货(storageKinds 满 + 1)。抽出供两路共用。
+  function captainCleanupKeep(st) {
     for (const ship of st.ships) if (ship.count >= ship.capacity) { st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
     for (const p of st.players) {
       const total = GOODS_.reduce((s, g) => s + p.goods[g], 0);
@@ -468,6 +470,22 @@
       }
       p.wharfUsed = false;
     }
+  }
+  function doCaptain(st, chooser) {
+    const phase = phaseOf(st);
+    const ord = order(st, chooser);
+    const bonusUsed = new Set();
+    let progress = true;
+    while (progress) {
+      progress = false;
+      for (const i of ord) {
+        const cands = captainCands(st, st.players[i]);
+        if (cands.length === 0) continue;
+        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase)[0]);
+        progress = true;
+      }
+    }
+    captainCleanupKeep(st);
   }
 
   function checkEnd(st) {
@@ -901,6 +919,22 @@
   }
   function azTraderEnd(st) { if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; } }
 
+  // captain：把候选编码为动作 int = shipSlot*10 + goodIdx（shipSlot 0..2=船, 3=码头wharf）
+  function azCaptainEncode(c) { return (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS_.indexOf(c.good); }
+  // 推进到下一个可装船的玩家；整轮无人可装 → 返回 false(装船结束)。轮次用 az.progressed 标记(同 doCaptain 的 while progress)。
+  function azCaptainSkipToDecision(st) {
+    const az = st.az; let guard = 0;
+    while (guard++ < 2000) {
+      if (az.oi >= az.ord.length) {
+        if (az.progressed) { az.oi = 0; az.progressed = false; continue; } // 新一轮
+        return false; // 整轮无装 → 结束
+      }
+      if (captainCands(st, st.players[az.ord[az.oi]]).length > 0) return true;
+      az.oi++;
+    }
+    return false;
+  }
+
   // 角色阶段收尾（与 applyRole 末段同逻辑）：picksThisTurn++ + 回合/终局推进
   function azFinishRole(st) {
     checkEnd(st);
@@ -948,6 +982,12 @@
       for (let k = 0; k < GOODS_.length; k++) if (st.supply[GOODS_[k]] > 0 && az.produced.indexOf(GOODS_[k]) >= 0) avail.push(k);
       if (avail.length === 0) { azFinishRole(st); return azDecision(st); }
       return { type: "craftbonus", chooser: az.chooser, actions: avail };
+    }
+    if (az.phase === "captain") {
+      if (!azCaptainSkipToDecision(st)) { captainCleanupKeep(st); azFinishRole(st); return azDecision(st); }
+      const i = az.ord[az.oi];
+      const actions = captainCands(st, st.players[i]).map(azCaptainEncode);
+      return { type: "captain", chooser: i, actions };
     }
     // 默认：角色决策
     const ch = currentChooser(st);
@@ -1001,6 +1041,18 @@
       azFinishRole(st);
       return st;
     }
+    if (az.phase === "captain") {
+      const i = az.ord[az.oi], p = st.players[i];
+      const shipSlot = Math.floor(action / 10), gi = action % 10, g = GOODS_[gi];
+      let pick;
+      if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: p.goods[g] };
+      else { const ship = st.ships[shipSlot]; pick = { ship: shipSlot, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }; }
+      const bset = new Set(); if (az.chooserBonusUsed) bset.add(az.chooser);
+      captainLoad(st, i, az.chooser, bset, pick);
+      az.chooserBonusUsed = bset.has(az.chooser);
+      az.progressed = true; az.oi++;
+      return st;
+    }
     // 角色决策
     const chooser = currentChooser(st);
     const card = st.roleCards[action];
@@ -1010,10 +1062,10 @@
     if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
-    // 其余阶段：回退到启发式 do*（逐阶段 factored 化的过渡）
+    if (card.name === "Captain") { az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
+    // 其余阶段：回退到启发式 do*（Mayor 派工保留贪心）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
-      case "Captain": doCaptain(st, chooser); break;
       case "Prospector": st.players[chooser].money += 1; break;
     }
     azFinishRole(st);
@@ -1042,6 +1094,11 @@
     if (dec.type === "craftbonus") {
       // doCraftsman: chooser 取最高价 available
       return dec.actions.reduce((a, b) => PRICE[GOODS_[a]] >= PRICE[GOODS_[b]] ? a : b);
+    }
+    if (dec.type === "captain") {
+      // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)
+      const cands = captainCands(st, st.players[dec.chooser]);
+      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase)[0]);
     }
     if (dec.type === "build") {
       // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
