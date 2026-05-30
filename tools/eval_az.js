@@ -35,6 +35,9 @@ const GAMES = parseInt(process.argv[2] || '24');
 const OPP = process.argv[3] || 'l5';
 const NN_PATH = process.argv[4] || 'mcts_value_az.json';
 const NUMSIMS = parseInt(process.argv[5] || '64');
+const SEARCH_TYPES = process.argv[6] || 'all';
+const searchSet = SEARCH_TYPES === 'all' ? null : new Set(SEARCH_TYPES.split(','));
+const doSearchType = t => searchSet === null ? true : searchSet.has(t);
 const L5_ITERS = 300, L5_MS = 1500;
 
 (async () => {
@@ -53,7 +56,7 @@ const L5_ITERS = 300, L5_MS = 1500;
       if (!dec) break;
       let action;
       if (dec.chooser === seat) {
-        action = S.azGumbelSearch(st, { numSims: NUMSIMS, numConsidered: Math.min(16, dec.actions.length), rng }).action;
+        action = doSearchType(dec.type) ? S.azGumbelSearch(st, { numSims: NUMSIMS, numConsidered: Math.min(16, dec.actions.length), rng }).action : S.azHeuristicAction(st, dec);
       } else if (OPP === 'l5' && dec.type === 'role') {
         const ri = S.ismctsPickRoleIdx(st, { maxIters: L5_ITERS, budgetMs: L5_MS });
         action = (ri != null && dec.actions.includes(ri)) ? ri : S.azHeuristicAction(st, dec);

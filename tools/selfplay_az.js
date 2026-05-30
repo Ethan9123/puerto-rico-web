@@ -48,16 +48,31 @@ const NP = parseInt(process.argv[4] || '4');
 const MODE = process.argv[5] || 'heuristic';
 const NN_PATH = process.argv[6] || null;
 const NUMSIMS = parseInt(process.argv[7] || '64');
+// 第8参数: 集中搜索的决策类型(逗号分隔), 默认 all(全决策)。例: "role,build" 只在高价值决策上搜索
+const SEARCH_TYPES = process.argv[8] || 'all';
+const searchSet = SEARCH_TYPES === 'all' ? null : new Set(SEARCH_TYPES.split(','));
+function doSearchType(t) { return searchSet === null ? true : searchSet.has(t); }
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 const fd = fs.openSync(OUT, 'w');
 
 (async () => {
-  if (MODE === 'nn') {
-    if (!NN_PATH) { console.error('nn mode needs NN_PATH'); process.exit(1); }
-    await S.azLoadNetwork(NN_PATH);
+  let NET = null;
+  if (MODE === 'nn' || MODE === 'hybrid') {
+    if (!NN_PATH) { console.error(MODE + ' mode needs NN_PATH'); process.exit(1); }
+    NET = await S.azLoadNetwork(NN_PATH);
   }
-  console.log(`SelfPlay AZ: games=${GAMES} out=${OUT} np=${NP} mode=${MODE} ${MODE==='nn'?'sims='+NUMSIMS:''}`);
+  // hybrid evalFn: NN 策略先验 + 启发式 rollout 价值(强引导, 突破启发式持平)
+  function hybridEval(state, dec) {
+    const out = S.azForward(NET, S.azFeatures(state, dec));
+    const c = S.clone(state); S.azPlayHeuristic(c);
+    const sc = c.players.map(p => S.finalScore(p)); const np = state.numPlayers, lc = dec.chooser;
+    const value = new Float32Array(4);
+    for (let k = 0; k < np; k++) { const me = (lc + k) % np; let opp = 0, cnt = 0; for (let j = 0; j < np; j++) if (j !== me) { opp += sc[j]; cnt++; } value[k] = Math.max(-1, Math.min(1, (sc[me] - opp / cnt) / 50)); }
+    return { policyLogits: out.policyLogits, value };
+  }
+  const searchEvalFn = MODE === 'hybrid' ? hybridEval : undefined; // undefined → azGumbelSearch 默认用 NN
+  console.log(`SelfPlay AZ: games=${GAMES} out=${OUT} np=${NP} mode=${MODE} ${MODE!=='heuristic'?'sims='+NUMSIMS:''}`);
   console.log(`  feature_dim=${S.AZ_FEATURE_DIM} action_dim=${S.AZ_ACTION_DIM}`);
 
   let totalSamples = 0, totalGames = 0, startMs = Date.now(), tick = 0;
@@ -70,20 +85,24 @@ const fd = fs.openSync(OUT, 'w');
     while (!S.isTerminal(st) && steps++ < 600) {
       const dec = S.azDecision(st);
       if (!dec) break;
-      const f = S.azFeatures(st, dec);
-      let action, piSparse;
-      if (MODE === 'nn') {
-        const res = S.azGumbelSearch(st, { numSims: NUMSIMS, numConsidered: Math.min(16, dec.actions.length), rng });
+      const useSearch = (MODE === 'nn' || MODE === 'hybrid') && doSearchType(dec.type);
+      let action, piSparse = null;
+      if (useSearch) {
+        const res = S.azGumbelSearch(st, { numSims: NUMSIMS, numConsidered: Math.min(16, dec.actions.length), rng, evalFn: searchEvalFn });
         action = res.action;
         piSparse = [];
         for (const a of dec.actions) { const gi = S.azActionToGlobal(dec.type, a); const p = res.policyTarget[gi]; if (p > 1e-6) piSparse.push([gi, Math.round(p * 10000) / 10000]); }
       } else {
+        // heuristic 模式 或 nn/hybrid 的非搜索决策(集中模式): 用启发式 + one-hot 克隆目标(仍记录, 保留全决策数据+value泛化)
         action = S.azHeuristicAction(st, dec);
-        piSparse = [[S.azActionToGlobal(dec.type, action), 1]]; // 行为克隆 one-hot
+        piSparse = [[S.azActionToGlobal(dec.type, action), 1]];
       }
-      const legal = dec.actions.map(a => S.azActionToGlobal(dec.type, a));
-      const fr = new Array(f.length); for (let i = 0; i < f.length; i++) fr[i] = Math.round(f[i] * 10000) / 10000;
-      samples.push({ f: fr, pi: piSparse, legal, chooser: dec.chooser });
+      if (piSparse) { // 只记录有(搜索/克隆)策略目标的决策
+        const f = S.azFeatures(st, dec);
+        const legal = dec.actions.map(a => S.azActionToGlobal(dec.type, a));
+        const fr = new Array(f.length); for (let i = 0; i < f.length; i++) fr[i] = Math.round(f[i] * 10000) / 10000;
+        samples.push({ f: fr, pi: piSparse, legal, chooser: dec.chooser });
+      }
       S.azApply(st, action);
     }
     // 终局回填 value 向量(chooser 视角座次序)
