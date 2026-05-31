@@ -26,12 +26,14 @@ for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) 
 const GAMES = parseInt(process.argv[2] || '40');
 const LOWS = process.argv[3] ? process.argv[3].split(',').map(Number) : [5,4,3,2,1];
 const MATCHUPS = LOWS.map(lo => [6, lo]);
+const NN_OVERRIDE = process.argv[4] || null; // 候选 NN json 路径(A/B 用); 不传则用部署的 mcts_value_nn.json
 
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
   window._allAIMode = true; window._fastSpectator = true;
   // 方法学对齐 tier_winrate.js(iter-bounded, ms=1e9 → 可复现); 增补 L6 的 alpha 预算
   window._aiThinkBudget = { L4:50, L5:100, hardIters:60, hardMs:1e9, expertIters:400, expertMs:1e9, alphaIters:400, alphaMs:1e9 };
+  ${NN_OVERRIDE ? `window.__MCTS_VALUE_NN__ = ${JSON.stringify(NN_OVERRIDE)};` : ''}
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');
@@ -62,7 +64,7 @@ const src = `(async () => {
 
 const NM = {1:'入门',2:'进化',3:'普通',4:'困难',5:'专家',6:'宗师'};
 const t0 = Date.now();
-console.log(`宗师(L6) vs 3×低档 胜率（每组 ${GAMES} 局，座位轮转，alphaIters=400/expertIters=400）`);
+console.log(`宗师(L6) vs 3×低档 胜率（每组 ${GAMES} 局，座位轮转，alphaIters=400/expertIters=400）NN=${NN_OVERRIDE||'mcts_value_nn.json(部署)'}`);
 vm.runInContext(src, sandbox).then(rows => {
   console.log(`\n=== 结果 / ${((Date.now()-t0)/1000).toFixed(0)}s ===`);
   let allPass = true;
