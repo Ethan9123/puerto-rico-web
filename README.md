@@ -60,6 +60,10 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 | **L5** | 专家 (Expert) | **ISMCTS 蒙特卡洛树搜索**：信息集决定化 + UCB1 + 启发式 rollout，逐步深想 |
 | **L6** | 宗师 (Grandmaster) | **AlphaZero**：自对弈训练的神经网络制导 MCTS（NN policy/value + PUCT），最强 |
 
+> 📊 **实测强度与天梯基准** 见 [AI_STRENGTH.md](AI_STRENGTH.md)：宗师头对头胜过所有其他档位
+> (横扫 L1–L3，险胜 L4/L5)，以及为何对近似同强的顶端档难破 60%(4 人对称局的结构性上限)、
+> AlphaZero 全决策探索的结论。
+
 ### 🧠 可调 AI 思考时间
 
 设置界面选「AI 思考时间」（作用于专家 L5 / 宗师 L6 的搜索预算）：
