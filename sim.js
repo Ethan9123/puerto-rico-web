@@ -1074,6 +1074,9 @@
 
   // 启发式驱动 azDecision/azApply（用于验证：应与 applyRole 路径产出一致）
   function azHeuristicAction(st, dec) {
+    // 离开 builder 阶段即清掉 phase 缓存——直接调用(selfplay_az/eval_az)时也安全,
+    // 不再依赖 azPlayHeuristic 外部清理(否则中后期 builder 复用过期 phase, 选错建筑)。
+    if (dec.type !== "build") st.az._bphase = null;
     if (dec.type === "role") return heuristicPickRole(st, dec.chooser, dec.actions);
     if (dec.type === "settle") {
       // 重建 doSettler 的 opts 并用 pickPlantation 选择，映射回 good 索引 / 采石场
@@ -1121,8 +1124,7 @@
     while (guard++ < 5000) {
       const dec = azDecision(st);
       if (!dec) break;
-      if (dec.type !== "build") st.az._bphase = null; // 离开 builder 清掉缓存
-      azApply(st, azHeuristicAction(st, dec));
+      azApply(st, azHeuristicAction(st, dec)); // _bphase 现由 azHeuristicAction 自清
     }
     return st;
   }

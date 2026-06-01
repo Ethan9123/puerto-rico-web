@@ -209,6 +209,9 @@
     const cVisit = opts.cVisit || 50, cScale = opts.cScale || 0.1;
     const rng = opts.rng || rootState.rnd || Math.random;
     const np = rootState.numPlayers;
+    // value 向量固定 4 维(AZ_VALUE/模型 value 头=4)。np>4 时 leafVal 会取到 V[4]=undefined → NaN 回传。
+    // 显式拒绝(5 人 AZ 需训练/导出 5 维 value 才支持)。
+    if (np > 4) throw new Error(`azGumbelSearch 不支持 ${np} 人(value 向量仅 4 维); 5 人 AZ 需 5 维 value 模型`);
 
     const probe = PRSim.clone(rootState);
     const rootDec = PRSim.azDecision(probe);
