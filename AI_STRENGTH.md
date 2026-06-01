@@ -26,19 +26,21 @@ L4/L5/L6 的**子决策**(选地/建造/贸易/船长/工匠)都用同一套强�
 
 ## 2. 宗师(L6) 能力地图 — 实测
 
-`node tools/tier_winrate_top.js 40`（1×宗师 vs 3×低档，每组 40 局，座位轮转，
-alphaIters=400 / expertIters=400，iter-bounded 可复现；方法学对齐既有 `tools/tier_winrate.js`）
+`node tools/tier_winrate_top.js <N>`（1×宗师 vs 3×低档，座位轮转，alphaIters=400 /
+expertIters=400，iter-bounded 可复现；方法学对齐既有 `tools/tier_winrate.js`）
 
-| 宗师 vs 3× | 胜率 | 宗师均分 / 对手均分 | ≥60% |
+| 宗师 vs 3× | 胜率(最可靠样本, 200局) | 跨样本范围(40/100/200局) | ≥60% |
 |---|---|---|---|
-| 专家 (L5) | **30.0%** | 28.7 / 27.9 | ✗ |
-| 困难 (L4) | **54.6%** | 27.2 / 22.1 | ✗ |
-| 普通 (L3) | 78.8% | 41.7 / 32.1 | ✓ |
-| 进化 (L2) | 92.5% | 43.5 / 25.9 | ✓ |
-| 入门 (L1) | 91.3% | 44.7 / 31.6 | ✓ |
+| 专家 (L5) | **31%** | 28–42%(高方差) | ✗ |
+| 困难 (L4) | **56%** | 55–63%(紧贴, 方差内) | ✗ |
+| 普通 (L3) | ~80% | 79–88% | ✓ |
+| 进化 (L2) | ~91% | 90–93% | ✓ |
+| 入门 (L1) | ~92% | 91–93% | ✓ |
 
 - 4 人局公平份额 = 25%。宗师对每一档的胜率与均分都 **> 公平**，即头对头是最强。
-- 对 L1–L3 远超 60%；对 L4/L5(接近同强)落在 30–55%。
+- 对 L1–L3 远超 60%；对 L4/L5(接近同强)落在 ~31–56%，对 L4 紧贴 60% 但方差内未稳定达成。
+- **⚠ 高方差告警**：顶端档(L4/L5)对局方差极大——同一模型 vs L5 在 40/100/200 局分别得到
+  30%/42%/31%。**≤40 局的天梯数字只能作趋势参考，部署级判定需 ≥200 局**(本表已用 200 局)。
 
 ---
 
@@ -77,12 +79,41 @@ alphaIters=400 / expertIters=400，iter-bounded 可复现；方法学对齐既�
 
 ---
 
-## 5. 复现
+## 5. 迷你联赛(多样化对手池)自对弈 — 负结果
+
+研究背书的反停滞方向(PSRO / league training / population-based self-play): 既有
+`selfplay_dump.js` 让 4 座位全是同质 NN-ISMCTS → 策略单一陷局部最优。`selfplay_league.js`
+让学习者对阵多样化对手池 {ismcts≈L5, lowsim≈L4, heur≈L3, rand弱}, 同管线(`train/train.py`)
+训练候选 value 模型, 与部署 55% 模型做**同种子 200 局配对 A/B**(数据量刻意匹配 → 多样性是唯一变量)。
+
+| vs 3× (200局) | 候选 league | 现役 55% |
+|---|---|---|
+| 专家 L5 | 28.2% | 31.2% |
+| 困难 L4 | 58.2% | 55.7% |
+
+- **统计上平局**(差异在 ±7% 方差内, 互有胜负) → 多样化训练**无提升**, 保留现役 55%。
+- **为何无效(分布匹配)**: 真正要打赢的评测是 vs **3×强对手**; 部署模型的同质强自对弈训练分布
+  恰好匹配这个"全强"评测; 而联赛池偏向较弱/多样对手, 把价值网络优化到了**另一个对手分布**上,
+  在"全强"评测里反而不占优。研究的"多样性破局部最优"适用于**开放式**(对抗未知对手降低可利用性);
+  本目标狭窄已知(打赢强档), 同质强自对弈已近最优。
+- 这是继 AlphaZero / 强价值之后**第三个被排除的方向**——共同指向同一结论: 本游戏在此算力下,
+  增益来自更强的启发式, 而非更花哨的自对弈/网络。
+
+---
+
+## 6. 复现
 
 ```bash
-# 宗师 vs 各低档天梯(最强档能力地图)
+# 宗师 vs 各低档天梯(最强档能力地图; 顶端档高方差, 用 ≥200 局)
+node tools/tier_winrate_top.js 200 5,4       # 部署模型 vs L5/L4(可靠)
+node tools/tier_winrate_top.js 200 5,4 mcts_value_nn_league.json  # A/B 候选(需先训练导出)
+
+# 迷你联赛数据生成 + 训练候选(负结果复现)
+node tools/selfplay_league.js 2400 80 data/selfplay-league.jsonl mcts_value_nn.json
+# (cd train && python train.py ../data/selfplay-league.jsonl --epochs 30 --batch 256 --out exports/weights-league.pt && python export_weights.py exports/weights-league.pt ../mcts_value_nn_league.json)
+
+# 宗师 vs 各低档天梯(快速趋势参考, 注意 ≤40 局方差大)
 node tools/tier_winrate_top.js 40            # 全部: vs L5..L1
-node tools/tier_winrate_top.js 80 5          # 只测最难: 宗师 vs 3×专家, 80 局
 
 # 相邻档位天梯(项目原有 ≥60% 校验)
 node tools/tier_winrate.js 60
