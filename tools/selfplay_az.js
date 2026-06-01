@@ -53,6 +53,10 @@ const SEARCH_TYPES = process.argv[8] || 'all';
 const searchSet = SEARCH_TYPES === 'all' ? null : new Set(SEARCH_TYPES.split(','));
 function doSearchType(t) { return searchSet === null ? true : searchSet.has(t); }
 
+// AZ value 向量固定 4 维(模型 value 头 / load_data_az 的 N_VALUE=4)。NP>4 会写出
+// 5 元 value(终局回填 v[k] 循环)且与 train_az.py 的 4 维 vpred 不兼容 → 直接拒绝。
+if (NP > 4) { console.error(`selfplay_az.js 不支持 NP=${NP}: AZ value 向量仅 4 维(5 人需 5 维 value 模型/loader)`); process.exit(1); }
+
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 const fd = fs.openSync(OUT, 'w');
 
