@@ -15,15 +15,23 @@
   const REFINE = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
 
   // ---------- 建表 ----------
-  const COL_TOTAL = { 3: 55, 4: 75, 5: 95 };
-  const VP_TOTAL = { 3: 75, 4: 100, 5: 122 };
-  const START_MONEY = (n) => n - 1;
+  const COL_TOTAL = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 };
+  const VP_TOTAL = { 1: 50, 2: 65, 3: 75, 4: 100, 5: 122 };
+  const START_MONEY = (n) => ({ 1: 2, 2: 3 })[n] ?? (n - 1);
+  // 每轮选角色次数：1p=3, 2p=6（官方变体每人 3 次），3-5p=玩家数
+  const picksPerRound = (n) => ({ 1: 3, 2: 6 })[n] || n;
+  const ROLE_COUNT = { 1: 7, 2: 7, 3: 6, 4: 7, 5: 8 };
+  const SUPPLY_BY_N = { 2: { corn: 8, indigo: 9, sugar: 9, tobacco: 7, coffee: 7 } };
   const PLANT_COUNTS = {
+    1: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 },
+    2: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 },
     3: { corn: 9, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
     4: { corn: 8, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
     5: { corn: 8, indigo: 9, sugar: 11, tobacco: 9, coffee: 8 },
   };
   const START_PLANT = {
+    1: ["indigo"],
+    2: ["indigo", "corn"],
     3: ["indigo", "indigo", "corn"],
     4: ["indigo", "indigo", "corn", "corn"],
     5: ["indigo", "indigo", "indigo", "corn", "corn"],
@@ -68,11 +76,13 @@
     return false;
   }
   function effectiveCost(p, bld) {
-    const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4 }[bld.id];
+    const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
+      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4 }[bld.id] || 1; // 含扩展 24-37
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
-    return Math.max(0, bld.cost - Math.min(q, maxQ));
+    const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
+    return Math.max(0, bld.cost - Math.min(q, maxQ) - forest);
   }
-  function effectiveCostBonus(p, bld, chooser) { let c = effectiveCost(p, bld); if (chooser) c = Math.max(0, c - 1); return c; }
+  function effectiveCostBonus(p, bld, chooser) { let c = effectiveCost(p, bld); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
 
   function specialVPs(p) {
     let v = 0;
@@ -81,6 +91,13 @@
     if (isManned(p, 21)) v += Math.floor(totalColonists(p) / 3);
     if (isManned(p, 22)) v += Math.floor(p.shippingVP / 4);
     if (isManned(p, 23)) for (const b of p.buildings) { const t = BLD[b.bid].type; if (t === "violet" || t === "large_violet") v += 1; }
+    // 扩展：Statue(37) 直接 +8（无需镇守）；Cloister(36) 每 3 张同类种植园成套 1/3/6/10（需镇守）
+    if (ownsBuilding(p, 37)) v += 8;
+    if (isManned(p, 36)) {
+      const cnt = {}; for (const pl of p.plantations) if (pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1;
+      let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3);
+      v += [0, 1, 3, 6, 10][Math.min(sets, 4)];
+    }
     return v;
   }
   function finalScore(p) {
@@ -111,15 +128,16 @@
       turnNumber: 1, gameOver: false, endTriggered: false,
       colonistsLeft: COL_TOTAL[numPlayers] - numPlayers, colonistsOnShip: numPlayers,
       vpLeft: VP_TOTAL[numPlayers],
-      supply: { corn: 10, indigo: 11, sugar: 11, tobacco: 9, coffee: 9 },
-      buildingStock: {}, quarriesLeft: 8,
+      supply: Object.assign({}, SUPPLY_BY_N[numPlayers] || { corn: 10, indigo: 11, sugar: 11, tobacco: 9, coffee: 9 }),
+      buildingStock: {}, quarriesLeft: (numPlayers === 2) ? 5 : 8,
       plantationDeck: deck, plantationDiscard: [], plantationPool: [],
       ships: [], tradingHouse: [], roleCards: [],
       picksThisTurn: 0, players, rnd: rnd || Math.random,
     };
-    BUILDINGS_.forEach(b => st.buildingStock[b.id] = b.qty);
-    for (let i = 0; i < 3; i++) st.ships.push({ capacity: numPlayers + 1 + i, good: null, count: 0 });
-    const roleCount = numPlayers + 3;
+    BUILDINGS_.forEach(b => st.buildingStock[b.id] = (numPlayers === 2) ? (BLD[b.id].type === "production" ? 2 : 1) : b.qty);
+    if (numPlayers <= 2) { for (const cap of [4, 6]) st.ships.push({ capacity: cap, good: null, count: 0 }); }
+    else { for (let i = 0; i < 3; i++) st.ships.push({ capacity: numPlayers + 1 + i, good: null, count: 0 }); }
+    const roleCount = ROLE_COUNT[numPlayers];
     const used = ROLES_.slice(); if (roleCount === 8) used.push("Prospector");
     st.roleCards = used.slice(0, roleCount).map(n => ({ name: n, money: 0, taken: false, takenBy: null }));
     flipPlantations(st);
@@ -173,7 +191,7 @@
   // ---------- 决策点 ----------
   function currentChooser(st) {
     if (st.gameOver) return -1;
-    if (st.picksThisTurn >= st.numPlayers) return -1;
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers)) return -1;
     return (st.governor + st.picksThisTurn) % st.numPlayers;
   }
   function legalRoleIdxs(st) {
@@ -227,7 +245,9 @@
     const violetVal = (b) => {
       const bd = BLD[b.bid];
       if (bd.type === "large_violet") return Math.max(8, estLV(bd.id) * 4);
-      return ({ 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4 })[bd.id] || 5;
+      return ({ 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4,
+        // 新建筑扩展先验
+        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5 })[bd.id] || 5;
     };
     while (rem > 0) {
       const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fT = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
@@ -264,6 +284,9 @@
     if (id === 21) return Math.floor(totalColonists(p) / 3);
     if (id === 22) return Math.floor(p.shippingVP / 4);
     if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
+    // 扩展：Cloister(36) 估成套；Statue(37) 的 8VP 已在 vp 字段
+    if (id === 36) { const cnt = {}; for (const pl of p.plantations) if (pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1; let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3); return [0, 1, 3, 6, 10][Math.min(sets, 4)]; }
+    if (id === 37) return 0;
     return 1;
   }
   // 收入引擎早→得分建筑中→大紫晚（与 game.js evalBuildingValue 同步）
@@ -306,6 +329,19 @@
       case 16: v += 1; break;
       case 17: v += phase === "mid" ? 28 : phase === "early" ? 14 : 8; break;
       case 18: v += phase === "mid" ? 22 : phase === "early" ? 8 : 6; break;
+      // 新建筑扩展（与 game.js evalBuildingValue 同步）
+      case 24: { const u = ownsBuilding(p, 3) || ownsBuilding(p, 4); v += u ? (phase === "late" ? 4 : 12) : 1; break; }
+      case 25: v += phase === "early" ? 5 : 3; break;
+      case 26: { const vio = p.buildings.filter(bb => { const t = BLD[bb.bid].type; return t === "violet" || t === "large_violet"; }).length; v += vio >= 2 ? (phase === "late" ? 3 : 8) : 2; break; }
+      case 27: { let prod = 0; for (const g of GOODS_) prod += productionCapacity(p, g); v += Math.min(14, prod * 3) + (phase === "early" ? 2 : 4); break; }
+      case 28: v += phase === "late" ? 4 : 12; break;
+      case 29: v += phase === "mid" ? 16 : phase === "early" ? 12 : 8; break;
+      case 30: { const sl = 12 - buildingUsedSpaces(p); v += (phase === "early" ? 22 : phase === "mid" ? 12 : 2) * Math.min(1, sl / 3); break; }
+      case 31: v += phase === "mid" ? 20 : phase === "early" ? 10 : 12; break;
+      case 32: v += phase === "mid" ? 22 : phase === "early" ? 12 : 12; break;
+      case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;
+      case 34: { let best = 0; for (const g of GOODS_) if (g !== "corn") best = Math.max(best, productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; }
+      case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break;
     }
     // 大紫快照估值(早期低=鼓励晚买正确)；combo 在生产分支处理。与 game.js 同步(*5/28/14, PR#22)
     if (b.type === "large_violet") v += estLVSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
@@ -344,7 +380,8 @@
 
   function doMayor(st, chooser) {
     const ord = order(st, chooser);
-    if (st.colonistsLeft > 0) { st.colonistsLeft--; st.players[chooser].unplaced = (st.players[chooser].unplaced || 0) + 1; }
+    { const p = st.players[chooser]; let take = isManned(p, 33) ? 2 : 1; while (take-- > 0 && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 图书馆翻倍
+    for (const i of ord) { const p = st.players[i]; if (isManned(p, 28) && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 招待所(简化)
     let safety = 0;
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
@@ -368,7 +405,8 @@
         if (ownsBuilding(p, b.id)) continue;
         if (12 - buildingUsedSpaces(p) < b.size) continue;
         const cost = effectiveCostBonus(p, b, i === chooser);
-        if (p.money < cost) continue;
+        const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
+        if (p.money + bm < cost) continue;
         opts.push({ b, cost });
       }
       if (opts.length === 0) continue;
@@ -376,7 +414,16 @@
       for (let k = 0; k < opts.length; k++) { let s = evalBuilding(st, p, opts[k].b, phase) - opts[k].cost * 3 + (i === chooser ? 5 : 0); if (s > bestS) { bestS = s; bestI = k; } }
       if (bestI < 0 || bestS <= 0) continue; // 没有正收益建筑就不建
       const { b, cost } = opts[bestI];
-      p.money -= cost; st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
+      if (cost > p.money && isManned(p, 25)) { // 扩展：黑市付费（还货+岸边工人抵差额，用尽余钱）
+        let gap = cost - p.money;
+        const g = GOODS_.slice().sort((a, bb) => PRICE[a] - PRICE[bb]).find(gg => p.goods[gg] > 0);
+        if (gap > 0 && g) { p.goods[g]--; st.supply[g]++; gap--; }
+        if (gap > 0 && (p.unplaced || 0) > 0) { p.unplaced--; st.colonistsLeft++; gap--; }
+        p.money = 0;
+      } else p.money -= cost;
+      st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
+      // 扩展：教堂(30) 按建造列得 VP（建教堂本身不得分）
+      if (b.id !== 30 && isManned(p, 30)) { const tier = b.cost <= 3 ? 1 : b.cost <= 6 ? 2 : b.cost <= 9 ? 3 : 4; const cv = tier >= 4 ? 2 : tier >= 2 ? 1 : 0; if (cv > 0 && st.vpLeft > 0) { const got = Math.min(cv, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
       if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
     }
   }
@@ -386,14 +433,24 @@
   function craftsmanProduce(st, chooser) {
     const produced = new Set();
     const perKinds = st.players.map(() => new Set());
+    const perCount = st.players.map(() => ({ corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }));
     for (const g of GOODS_) {
       for (const i of order(st, chooser)) {
         if (st.supply[g] <= 0) break;
         const p = st.players[i];
         let cap = productionCapacity(p, g), did = false;
-        while (cap > 0 && st.supply[g] > 0) { p.goods[g]++; st.supply[g]--; cap--; produced.add(g); did = true; }
+        while (cap > 0 && st.supply[g] > 0) { p.goods[g]++; st.supply[g]--; cap--; produced.add(g); did = true; perCount[i][g]++; }
         if (did) perKinds[i].add(g);
       }
+    }
+    // 扩展：引水渠(24) 大靛蓝/糖厂 +1；专业工厂(34) 最多单货(非玉米)-1 得金
+    for (let i = 0; i < st.players.length; i++) {
+      const p = st.players[i];
+      if (isManned(p, 24)) {
+        if (isManned(p, 3) && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; produced.add("indigo"); }
+        if (isManned(p, 4) && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; produced.add("sugar"); }
+      }
+      if (isManned(p, 34)) { let best = 0; for (const g of GOODS_) if (g !== "corn") best = Math.max(best, perCount[i][g]); const gain = Math.max(0, best - 1); if (gain > 0) p.money += gain; }
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
     for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }
@@ -403,7 +460,10 @@
     const produced = craftsmanProduce(st, chooser);
     const ch = st.players[chooser];
     const avail = GOODS_.filter(g => st.supply[g] > 0 && produced.has(g));
-    if (avail.length > 0) { const g = avail.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b); ch.goods[g]++; st.supply[g]--; }
+    if (avail.length > 0) {
+      const g = avail.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b); ch.goods[g]++; st.supply[g]--;
+      if (isManned(ch, 33)) { const g2 = avail.find(x => x !== g && st.supply[x] > 0); if (g2) { ch.goods[g2]++; st.supply[g2]--; } } // 图书馆：再拿1种
+    }
   }
 
   function doTrader(st, chooser) {
@@ -415,7 +475,7 @@
       if (sellable.length === 0) continue;
       const g = sellable.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b);
       p.goods[g]--; st.tradingHouse.push(g);
-      let earn = PRICE[g]; if (i === chooser) earn += 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2;
+      let earn = PRICE[g]; if (i === chooser) earn += isManned(p, 33) ? 2 : 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2; // 图书馆翻倍
       p.money += earn;
     }
     if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; }
@@ -450,8 +510,9 @@
     if (pick.ship === "wharf") { p.goods[pick.good] -= pick.amount; loaded = pick.amount; p.wharfUsed = true; st.supply[pick.good] += pick.amount; }
     else { const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good; loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded; }
     let vp = loaded;
-    if (i === chooser && !bonusUsed.has(i)) { vp += 1; bonusUsed.add(i); }
+    if (i === chooser && !bonusUsed.has(i)) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍
     if (isManned(p, 17)) vp += 1;
+    if (pick.ship !== "wharf" && isManned(p, 32)) p.money += 1 + (i === chooser ? 1 : 0); // 扩展：灯塔装货船给金
     const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
     return loaded;
   }
@@ -465,7 +526,8 @@
         const sorted = GOODS_.filter(g => p.goods[g] > 0).sort((a, b) => PRICE[b] - PRICE[a]);
         const keep = {}; const full = sorted.slice(0, kinds);
         for (const g of full) keep[g] = p.goods[g];
-        const rest = sorted.filter(g => !full.includes(g)); if (rest.length > 0) keep[rest[0]] = 1;
+        let singleSlots = 1 + (isManned(p, 27) ? 3 : 0); // 扩展：储藏库 +3 单货槽
+        for (const g of sorted) { if (singleSlots <= 0) break; if (full.includes(g)) continue; const take = Math.min(p.goods[g], singleSlots); keep[g] = (keep[g] || 0) + take; singleSlots -= take; }
         for (const g of GOODS_) { const disc = p.goods[g] - (keep[g] || 0); if (disc > 0) st.supply[g] += disc; p.goods[g] = keep[g] || 0; }
       }
       p.wharfUsed = false;
@@ -475,6 +537,8 @@
     const phase = phaseOf(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
+    // 扩展：工会大厅(35) 装船前，手上每 2 个同货 +1 VP
+    for (const i of ord) { const p = st.players[i]; if (!isManned(p, 35)) continue; let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2); if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
     let progress = true;
     while (progress) {
       progress = false;
@@ -508,12 +572,12 @@
       case "Craftsman": doCraftsman(st, chooser); break;
       case "Trader": doTrader(st, chooser); break;
       case "Captain": doCaptain(st, chooser); break;
-      case "Prospector": st.players[chooser].money += 1; break;
+      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
     }
     checkEnd(st);
     st.picksThisTurn++;
-    // 本回合所有人选完(或无牌可选) → 回合结束
-    if (st.picksThisTurn >= st.numPlayers || legalRoleIdxs(st).length === 0) {
+    // 本回合选满(或无牌可选) → 回合结束
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1066,7 +1130,7 @@
     // 其余阶段：回退到启发式 do*（Mayor 派工保留贪心）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
-      case "Prospector": st.players[chooser].money += 1; break;
+      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
     }
     azFinishRole(st);
     return st;

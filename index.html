@@ -13,12 +13,15 @@
     <div class="setup-box">
       <label>玩家数量：
         <select id="player-count">
+          <option value="1">1 人（单人闯关·刷分）</option>
+          <option value="2">2 人（官方双人变体）</option>
           <option value="3">3 人局</option>
           <option value="4" selected>4 人局</option>
           <option value="5">5 人局</option>
         </select>
       </label>
       <label>你的名字：<input id="player-name" value="玩家" maxlength="10"></label>
+      <div id="mode-note" class="mode-note hidden"></div>
       <div id="cpu-levels"></div>
       <div class="quick-set">
         <span>快速设定：</span>
@@ -29,6 +32,12 @@
         <button type="button" class="qs-btn" data-set="mixed">混合难度</button>
       </div>
       <label><input type="checkbox" id="all-ai"> 全部 AI 对战（看 AI 互打）</label>
+      <label>🏛️ 扩展：
+        <select id="expansion-select">
+          <option value="none" selected>无扩展（基础游戏）</option>
+          <option value="newbuildings">新建筑扩展（14 个新建筑）</option>
+        </select>
+      </label>
       <label>AI 思考时间（L5/L6）：
         <select id="ai-think-budget">
           <option value="fast">快速（0.1s · 看 AI 互打）</option>
@@ -108,5 +117,6 @@
 <script src="sim.js"></script>
 <script src="sim_features.js"></script>
 <script src="sim_nn.js"></script>
+<script src="trace.js"></script>
 </body>
 </html>
