@@ -52,6 +52,24 @@ const NUMSIMS = parseInt(process.argv[7] || '64');
 const SEARCH_TYPES = process.argv[8] || 'all';
 const searchSet = SEARCH_TYPES === 'all' ? null : new Set(SEARCH_TYPES.split(','));
 function doSearchType(t) { return searchSet === null ? true : searchSet.has(t); }
+// value 目标口径（环境变量）：margin(默认/原行为) | rank(名次→±1，抢第一) | vsbest(对最强对手分差/30)
+const VALUE_MODE = process.env.VALUE_MODE || 'margin';
+function seatValue(sc, me, np) {
+  if (VALUE_MODE === 'rank') {
+    let better = 0, equal = 0;
+    for (let j = 0; j < np; j++) { if (j === me) continue; if (sc[j] > sc[me]) better++; else if (sc[j] === sc[me]) equal++; }
+    const rank = better + equal / 2;
+    return np > 1 ? Math.max(-1, Math.min(1, 1 - 2 * rank / (np - 1))) : 0;
+  }
+  if (VALUE_MODE === 'vsbest') {
+    let best = -Infinity;
+    for (let j = 0; j < np; j++) if (j !== me && sc[j] > best) best = sc[j];
+    return Math.max(-1, Math.min(1, (sc[me] - best) / 30));
+  }
+  let opp = 0, c = 0; for (let j = 0; j < np; j++) if (j !== me) { opp += sc[j]; c++; }
+  return Math.max(-1, Math.min(1, (sc[me] - opp / c) / 50));
+}
+console.log(`  value mode   : ${VALUE_MODE}`);
 
 // AZ value 向量固定 4 维(模型 value 头 / load_data_az 的 N_VALUE=4)。NP>4 会写出
 // 5 元 value(终局回填 v[k] 循环)且与 train_az.py 的 4 维 vpred 不兼容 → 直接拒绝。
@@ -72,7 +90,7 @@ const fd = fs.openSync(OUT, 'w');
     const c = S.clone(state); S.azPlayHeuristic(c);
     const sc = c.players.map(p => S.finalScore(p)); const np = state.numPlayers, lc = dec.chooser;
     const value = new Float32Array(4);
-    for (let k = 0; k < np; k++) { const me = (lc + k) % np; let opp = 0, cnt = 0; for (let j = 0; j < np; j++) if (j !== me) { opp += sc[j]; cnt++; } value[k] = Math.max(-1, Math.min(1, (sc[me] - opp / cnt) / 50)); }
+    for (let k = 0; k < np; k++) value[k] = seatValue(sc, (lc + k) % np, np);
     return { policyLogits: out.policyLogits, value };
   }
   const searchEvalFn = MODE === 'hybrid' ? hybridEval : undefined; // undefined → azGumbelSearch 默认用 NN
@@ -114,9 +132,7 @@ const fd = fs.openSync(OUT, 'w');
     for (const s of samples) {
       const v = [0, 0, 0, 0];
       for (let k = 0; k < NP; k++) {
-        const me = (s.chooser + k) % NP;
-        let opp = 0, c = 0; for (let j = 0; j < NP; j++) if (j !== me) { opp += sc[j]; c++; }
-        v[k] = Math.max(-1, Math.min(1, Math.round(((sc[me] - opp / c) / 50) * 10000) / 10000));
+        v[k] = Math.round(seatValue(sc, (s.chooser + k) % NP, NP) * 10000) / 10000;
       }
       fs.writeSync(fd, JSON.stringify({ f: s.f, pi: s.pi, legal: s.legal, v, n: NP }) + '\n');
       totalSamples++;
