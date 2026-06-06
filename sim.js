@@ -94,7 +94,7 @@
     // 扩展：Statue(37) 直接 +8（无需镇守）；Cloister(36) 每 3 张同类种植园成套 1/3/6/10（需镇守）
     if (ownsBuilding(p, 37)) v += 8;
     if (isManned(p, 36)) {
-      const cnt = {}; for (const pl of p.plantations) if (pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1;
+      const cnt = {}; for (const pl of p.plantations) cnt[pl.good] = (cnt[pl.good] || 0) + 1; // 官方：全部岛屿地块成套
       let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3);
       v += [0, 1, 3, 6, 10][Math.min(sets, 4)];
     }
@@ -285,7 +285,7 @@
     if (id === 22) return Math.floor(p.shippingVP / 4);
     if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     // 扩展：Cloister(36) 估成套；Statue(37) 的 8VP 已在 vp 字段
-    if (id === 36) { const cnt = {}; for (const pl of p.plantations) if (pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1; let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3); return [0, 1, 3, 6, 10][Math.min(sets, 4)]; }
+    if (id === 36) { const cnt = {}; for (const pl of p.plantations) cnt[pl.good] = (cnt[pl.good] || 0) + 1; let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3); return [0, 1, 3, 6, 10][Math.min(sets, 4)]; } // 修道院:全部岛屿地块成套
     if (id === 37) return 0;
     return 1;
   }
@@ -334,7 +334,7 @@
       case 25: v += phase === "early" ? 5 : 3; break;
       case 26: { const vio = p.buildings.filter(bb => { const t = BLD[bb.bid].type; return t === "violet" || t === "large_violet"; }).length; v += vio >= 2 ? (phase === "late" ? 3 : 8) : 2; break; }
       case 27: { let prod = 0; for (const g of GOODS_) prod += productionCapacity(p, g); v += Math.min(14, prod * 3) + (phase === "early" ? 2 : 4); break; }
-      case 28: v += phase === "late" ? 4 : 12; break;
+      case 28: v += phase === "early" ? 7 : phase === "mid" ? 5 : 1; break;
       case 29: v += phase === "mid" ? 16 : phase === "early" ? 12 : 8; break;
       case 30: { const sl = 12 - buildingUsedSpaces(p); v += (phase === "early" ? 22 : phase === "mid" ? 12 : 2) * Math.min(1, sl / 3); break; }
       case 31: v += phase === "mid" ? 20 : phase === "early" ? 10 : 12; break;
@@ -375,13 +375,19 @@
       if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
       if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } }
     }
+    // 扩展：图书馆(33) 拓殖翻倍 — chooser 再从剩余明牌池拿 1 张种植园
+    const sc = st.players[chooser];
+    if (isManned(sc, 33) && sc.plantations.length < 12 && st.plantationPool.length > 0) {
+      const opts = st.plantationPool.map((g, k) => ({ kind: "plant", good: g, idx: k }));
+      const pi = pickPlantation(st, sc, opts, false);
+      if (pi != null && opts[pi]) { sc.plantations.push({ good: opts[pi].good, manned: false }); st.plantationPool.splice(opts[pi].idx, 1); }
+    }
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
   }
 
   function doMayor(st, chooser) {
     const ord = order(st, chooser);
     { const p = st.players[chooser]; let take = isManned(p, 33) ? 2 : 1; while (take-- > 0 && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 图书馆翻倍
-    for (const i of ord) { const p = st.players[i]; if (isManned(p, 28) && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 招待所(简化)
     let safety = 0;
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
@@ -457,6 +463,21 @@
     return produced;
   }
   function doCraftsman(st, chooser) {
+    // 扩展：招待所(28) — 工匠前把客工(gh.men)部署到能立刻提升生产的空位
+    for (const p of st.players) {
+      const gh = ownsBuilding(p, 28); if (!gh || gh.men <= 0) continue;
+      const ref = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+      const fc = g => (ref[g] || []).reduce((s, fb) => { const bb = ownsBuilding(p, fb); return s + (bb ? bb.men : 0); }, 0);
+      const mp = g => p.plantations.filter(x => x.good === g && x.manned).length;
+      let guard = 0;
+      while (gh.men > 0 && guard++ < 12) {
+        let placed = false;
+        for (const bid of [3, 4, 5, 6, 1, 2]) { const b = ownsBuilding(p, bid); if (!b) continue; const bd = BLD[bid]; if (b.men >= bd.men) continue; if (mp(bd.good) > fc(bd.good)) { b.men++; gh.men--; placed = true; break; } }
+        if (placed) continue;
+        for (const pl of p.plantations) { if (pl.manned || pl.good === "quarry" || pl.good === "forest") continue; if (pl.good === "corn" || fc(pl.good) > mp(pl.good)) { pl.manned = true; gh.men--; placed = true; break; } }
+        if (!placed) break;
+      }
+    }
     const produced = craftsmanProduce(st, chooser);
     const ch = st.players[chooser];
     const avail = GOODS_.filter(g => st.supply[g] > 0 && produced.has(g));
@@ -501,18 +522,29 @@
       } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
     }
     if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "wharf", good: g, amount: p.goods[g] });
+    // 扩展：小码头(31) — 自有船，可装任意货，每 2 货 = 1VP
+    if (isManned(p, 31) && !p.smallWharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "smallwharf", good: g, amount: p.goods[g] });
     return cands;
   }
   // 装船一次（修改 st，给 i 加 shippingVP），返回 loaded
   function captainLoad(st, i, chooser, bonusUsed, pick) {
     const p = st.players[i];
     let loaded;
-    if (pick.ship === "wharf") { p.goods[pick.good] -= pick.amount; loaded = pick.amount; p.wharfUsed = true; st.supply[pick.good] += pick.amount; }
-    else { const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good; loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded; }
-    let vp = loaded;
+    const isSmallWharf = pick.ship === "smallwharf";
+    if (pick.ship === "wharf" || isSmallWharf) {
+      p.goods[pick.good] -= pick.amount; loaded = pick.amount;
+      if (pick.ship === "wharf") p.wharfUsed = true; else p.smallWharfUsed = true;
+      st.supply[pick.good] += pick.amount;
+    } else {
+      const ship = st.ships[pick.ship]; if (ship.good === null) ship.good = pick.good;
+      loaded = Math.min(pick.amount, ship.capacity - ship.count); ship.count += loaded; p.goods[pick.good] -= loaded;
+    }
+    // 小码头：每 2 货 = 1VP
+    let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
     if (i === chooser && !bonusUsed.has(i)) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍
     if (isManned(p, 17)) vp += 1;
-    if (pick.ship !== "wharf" && isManned(p, 32)) p.money += 1 + (i === chooser ? 1 : 0); // 扩展：灯塔装货船给金
+    // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
+    if (pick.ship !== "wharf" && !isSmallWharf && isManned(p, 32)) p.money += 1;
     const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
     return loaded;
   }
@@ -531,6 +563,7 @@
         for (const g of GOODS_) { const disc = p.goods[g] - (keep[g] || 0); if (disc > 0) st.supply[g] += disc; p.goods[g] = keep[g] || 0; }
       }
       p.wharfUsed = false;
+      p.smallWharfUsed = false;
     }
   }
   function doCaptain(st, chooser) {
@@ -539,6 +572,8 @@
     const bonusUsed = new Set();
     // 扩展：工会大厅(35) 装船前，手上每 2 个同货 +1 VP
     for (const i of ord) { const p = st.players[i]; if (!isManned(p, 35)) continue; let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2); if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
+    // 扩展：灯塔(32) — 船长 chooser 不论是否装货都 +1 金
+    if (isManned(st.players[chooser], 32)) st.players[chooser].money += 1;
     let progress = true;
     while (progress) {
       progress = false;
