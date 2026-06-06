@@ -380,7 +380,16 @@
     if (isManned(sc, 33) && sc.plantations.length < 12 && st.plantationPool.length > 0) {
       const opts = st.plantationPool.map((g, k) => ({ kind: "plant", good: g, idx: k }));
       const pi = pickPlantation(st, sc, opts, false);
-      if (pi != null && opts[pi]) { sc.plantations.push({ good: opts[pi].good, manned: false }); st.plantationPool.splice(opts[pi].idx, 1); }
+      if (pi != null && opts[pi]) {
+        const libPl = { good: opts[pi].good, manned: false };
+        sc.plantations.push(libPl);
+        st.plantationPool.splice(opts[pi].idx, 1);
+        // 济贫院(11)：图书馆额外地块也触发
+        if (isManned(sc, 11)) {
+          if (st.colonistsLeft > 0) { libPl.manned = true; st.colonistsLeft--; }
+          else if (st.colonistsOnShip > 0) { libPl.manned = true; st.colonistsOnShip--; }
+        }
+      }
     }
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
   }
@@ -456,7 +465,12 @@
         if (isManned(p, 3) && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; produced.add("indigo"); }
         if (isManned(p, 4) && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; produced.add("sugar"); }
       }
-      if (isManned(p, 34)) { let best = 0; for (const g of GOODS_) if (g !== "corn") best = Math.max(best, perCount[i][g]); const gain = Math.max(0, best - 1); if (gain > 0) p.money += gain; }
+      if (isManned(p, 34)) {
+        // 专业工厂：最多单货(非玉米) - 第二多；只有一种时全部计入
+        const sfc = GOODS_.filter(g => g !== "corn").map(g => perCount[i][g]).sort((a, b) => b - a);
+        const gain = Math.max(0, sfc[0] - (sfc[1] || 0));
+        if (gain > 0) p.money += gain;
+      }
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
     for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }

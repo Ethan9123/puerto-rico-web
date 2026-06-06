@@ -156,9 +156,9 @@ Object.assign(BUILDING_EFFECT_TEXT, {
   29:"商人阶段：可把 1 个货物卖给【自己的】贸易站（任意货、含重复、即使公共站满），按价得金，货入供应区（市场不加成）。",
   30:"建造阶段：建造时按建筑列额外 +0/1/2 VP。",
   31:"船长阶段：自有船；装运货物每 2 个 = 1 VP（货入供应区）。",
-  32:"船长阶段：每次装船 +1 金；自己是船长再 +1 金。",
+  32:"船长阶段：每次装货船 +1 金；选择船长角色者，阶段开始时额外 +1 金（不论是否装货）。",
   33:"各阶段：你选到角色的【特权翻倍】（工匠+2货、建造-2金、商人/船长/金矿主/市长特权×2）。",
-  34:"工匠阶段：按你产量最多的单一货物（玉米除外）数量 -1 得金。",
+  34:"工匠阶段：得金 = 最多单货(非玉米)产量 − 第二多单货产量；只有一种非玉米货时全部产量得金。",
   35:"船长阶段：首次装船前，手上每 2 个同种货物 +1 VP。",
   36:"终局：每 3 张同类【种植园】成套 → 1/2/3/4 套得 1/3/6/10 VP（需镇守）。占 2 格。",
   37:"终局：直接 +8 VP；不可放工人。占 2 格。",
@@ -1326,10 +1326,16 @@ async function runRolePhase(roleName, chooserIdx) {
             else pi = aiPickPlantation(sc, G.plantationPool.map((g, k) => ({ kind: "plant", good: g, idx: k })), false);
             if (pi !== null && pi >= 0 && pi < G.plantationPool.length) {
               const g2 = G.plantationPool.splice(pi, 1)[0];
-              sc.plantations.push({ good: g2, manned: false });
+              const libPlant = { good: g2, manned: false };
+              sc.plantations.push(libPlant);
               G.logEvent(`${sc.name} 图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田`, "action");
               if (!sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+拓殖 再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "role" });
               if (sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "gain" });
+              // 济贫院(11)：图书馆额外地块也触发（官方规则：拓殖阶段拿田即触发）
+              if (G.isManned(sc, 11)) {
+                if (G.colonistsLeft > 0) { libPlant.manned = true; G.colonistsLeft--; G.logEvent(`${sc.name} 济贫院：图书馆额外地块上岗(供应区)`, "action"); }
+                else if (G.colonistsOnShip > 0) { libPlant.manned = true; G.colonistsOnShip--; G.logEvent(`${sc.name} 济贫院：图书馆额外地块上岗(船上)`, "action"); }
+              }
             }
           }
         }
@@ -1866,9 +1872,9 @@ async function doCraftsman(chooserIdx, order) {
       }
     }
     if (G.isManned(p, 34)) {
-      let best = 0;
-      for (const g of GOODS) if (g !== "corn" && perPlayerProducedCount[i][g] > best) best = perPlayerProducedCount[i][g];
-      const gain = Math.max(0, best - 1);
+      // 专业工厂：得分 = 最多单货(非玉米) - 第二多单货(非玉米)；只有一种时全部计入
+      const sfCounts = GOODS.filter(g => g !== "corn").map(g => perPlayerProducedCount[i][g]).sort((a, b) => b - a);
+      const gain = Math.max(0, sfCounts[0] - (sfCounts[1] || 0));
       if (gain > 0) {
         p.money += gain;
         G.logEvent(`${p.name} 专业工厂：+${gain}金`, "action");
