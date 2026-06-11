@@ -151,7 +151,7 @@ const NOBLE_BUILDINGS = [
   { id:41, name:"Zoning Office",   cn:"规划办公室", img:"",  type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" },
   { id:42, name:"Royal Supplier",  cn:"皇家供应商", img:"",  type:"violet",       cost:6,  men:1, vp:2, size:1, qty:2, tier:2, effect:"royal_supplier" },
   { id:43, name:"Villa",           cn:"别墅",       img:"",  type:"violet",       cost:7,  men:1, vp:3, size:1, qty:2, tier:3, effect:"villa" },
-  { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"",  type:"violet",       cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 公会大厅按大型生产建筑计 2VP（特判）
+  { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"",  type:"production",   cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 官方定位=生产建筑：市政厅不计入、公会大厅按大型生产建筑计 2VP（特判）、2p 库存 2 栋
   { id:45, name:"Royal Garden",    cn:"皇家花园",   img:"",  type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"royal_garden" },
 ];
 Object.assign(BLD_BY_ID, Object.fromEntries(NOBLE_BUILDINGS.map(b => [b.id, b])));
@@ -189,6 +189,12 @@ Object.assign(BUILDING_EFFECT_TEXT, {
   36:"终局：每 3 张同类【岛屿地块】(含采石场/森林)成套 → 1/2/3/4 套得 1/3/6/10 VP（需镇守）。占 2 格。",
   37:"终局：建筑本身即 8 VP（计入建筑分）；不可放工人。占 2 格。",
 });
+
+// 无美术资源的建筑（贵族扩展 38+）用文字占位卡面，避免 404 / 裂图
+function bldImgHtml(b) {
+  if (b.img) return `<img src="assets/buildings/${b.img}" alt="${b.cn}">`;
+  return `<div class="img-placeholder" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;min-height:48px;background:linear-gradient(135deg,#6b5b8e,#4a3f63);color:#f0e6d2;font-size:12px;text-align:center;border-radius:4px;">🏛️<span>${b.cn}</span></div>`;
+}
 
 function buildBuildingTooltip(b) {
   return `
@@ -1664,7 +1670,7 @@ async function doMayor(chooserIdx, order) {
   // FIX #30 & #31: 先让玩家分配（强制满岗），再补船
   for (const i of order) {
     const p = G.players[i];
-    if (!p._unplacedMen) continue;
+    if (!p._unplacedMen && !p._unplacedNobles) continue; // 只有贵族也要进入分配
     if (p.isHuman) {
       await humanReallocate(p);
     } else {
@@ -4508,7 +4514,7 @@ function render() {
       div.classList.add("disabled");
     }
     div.innerHTML = `
-      <img src="assets/buildings/${b.img}" alt="${b.cn}">
+      ${bldImgHtml(b)}
       <div class="badge">×${left}</div>
       <div class="info"><span>${b.cn}</span><span>${b.cost}💰 ${b.vp}⭐${costNote}</span></div>
     `;
@@ -4554,13 +4560,13 @@ function render() {
         <span class="player-stats">
           <span class="stat">💰${p.money}</span>
           <span class="stat">⭐${totalVP}</span>
-          <span class="stat">👷${G.totalColonists(p)}</span>
+          <span class="stat">👷${G.totalColonists(p) - G.nobleCount(p)}</span>${G.expansionNobles ? `<span class="stat">🎩${G.nobleCount(p)}</span>` : ""}
         </span>
       </div>
       <div class="player-section">
         <h5>种植园 (${p.plantations.length}/12)</h5>
         <div class="plantation-grid">
-          ${p.plantations.map(pl => `<div class="plantation plant-${pl.good}" title="${pl.manned ? '已上人' : '空岗'}">${pl.manned ? "👷" : ""}</div>`).join("")}
+          ${p.plantations.map(pl => `<div class="plantation plant-${pl.good}" title="${pl.manned ? '已上人' : '空岗'}">${pl.manned ? (pl.noble ? "🎩" : "👷") : ""}</div>`).join("")}
         </div>
       </div>
       <div class="player-section">
@@ -4568,9 +4574,10 @@ function render() {
         <div class="building-grid">
           ${p.buildings.map(b => {
             const bd = BLD_BY_ID[b.bid];
+            const nb = b.nobles || 0;
             return `<div class="mini-building" data-tooltip-html="${buildBuildingTooltip(bd).replace(/"/g, "&quot;")}">
-              <img src="assets/buildings/${bd.img}">
-              <div class="men">${"👷".repeat(b.men)}${"⚪".repeat(bd.men - b.men)}</div>
+              ${bldImgHtml(bd)}
+              <div class="men">${"🎩".repeat(nb)}${"👷".repeat(b.men - nb)}${"⚪".repeat(bd.men - b.men)}</div>
             </div>`;
           }).join("")}
         </div>
@@ -4648,8 +4655,8 @@ Game.prototype.getSpecialVPs = function (p) {
   if (this.isManned(p, 19)) {
     for (const b of p.buildings) {
       const bd = BLD_BY_ID[b.bid];
-      if (bd.type === "production") v += (bd.men === 1 ? 1 : 2);
-      else if (b.bid === 44) v += 2; // 扩展II：珠宝匠按大型生产建筑计
+      if (b.bid === 44) v += 2; // 扩展II：珠宝匠按大型生产建筑计 2VP
+      else if (bd.type === "production") v += (bd.men === 1 ? 1 : 2);
     }
   }
   // Residence (20)
