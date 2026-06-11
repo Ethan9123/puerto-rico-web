@@ -21,10 +21,10 @@
   // 每轮选角色次数：1p=3, 2p=6（官方变体每人 3 次），3-5p=玩家数
   const picksPerRound = (n) => ({ 1: 3, 2: 6 })[n] || n;
   const ROLE_COUNT = { 1: 7, 2: 7, 3: 6, 4: 7, 5: 8 };
-  const SUPPLY_BY_N = { 2: { corn: 8, indigo: 9, sugar: 9, tobacco: 7, coffee: 7 } };
+  const SUPPLY_BY_N = { 2: { corn: 8, indigo: 10, sugar: 9, tobacco: 7, coffee: 6 } };
   const PLANT_COUNTS = {
     1: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 },
-    2: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 },
+    2: { corn: 6, indigo: 8, sugar: 8, tobacco: 6, coffee: 5 }, // -3/种 再扣起始田(1玉米+1靛蓝)
     3: { corn: 9, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
     4: { corn: 8, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
     5: { corn: 8, indigo: 9, sugar: 11, tobacco: 9, coffee: 8 },
@@ -89,10 +89,10 @@
     if (isManned(p, 19)) for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") v += (bd.men === 1 ? 1 : 2); }
     if (isManned(p, 20)) { const n = p.plantations.length; v += (n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7); }
     if (isManned(p, 21)) v += Math.floor(totalColonists(p) / 3);
-    if (isManned(p, 22)) v += Math.floor(p.shippingVP / 4);
+    if (isManned(p, 22)) v += Math.floor(p.vp / 4) /* 海关：按全部 VP 筹码（与 game.js 同口径） */;
     if (isManned(p, 23)) for (const b of p.buildings) { const t = BLD[b.bid].type; if (t === "violet" || t === "large_violet") v += 1; }
     // 扩展：Statue(37) 直接 +8（无需镇守）；Cloister(36) 每 3 张同类种植园成套 1/3/6/10（需镇守）
-    if (ownsBuilding(p, 37)) v += 8;
+    // Statue(37)：印刷 VP 即 8，已计入建筑分，这里不再加（避免双重计分）
     if (isManned(p, 36)) {
       const cnt = {}; for (const pl of p.plantations) cnt[pl.good] = (cnt[pl.good] || 0) + 1; // 官方：全部岛屿地块成套
       let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3);
@@ -128,7 +128,7 @@
       turnNumber: 1, gameOver: false, endTriggered: false,
       colonistsLeft: COL_TOTAL[numPlayers] - numPlayers, colonistsOnShip: numPlayers,
       vpLeft: VP_TOTAL[numPlayers],
-      supply: Object.assign({}, SUPPLY_BY_N[numPlayers] || { corn: 10, indigo: 11, sugar: 11, tobacco: 9, coffee: 9 }),
+      supply: Object.assign({}, SUPPLY_BY_N[numPlayers] || { corn: 10, indigo: 12, sugar: 11, tobacco: 9, coffee: 8 }),
       buildingStock: {}, quarriesLeft: (numPlayers === 2) ? 5 : 8,
       plantationDeck: deck, plantationDiscard: [], plantationPool: [],
       ships: [], tradingHouse: [], roleCards: [],
@@ -238,7 +238,7 @@
       if (id === 19) { let s = 0; for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") s += (bd.men === 1 ? 1 : 2); } return s; }
       if (id === 20) { const n = p.plantations.length; return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
       if (id === 21) return Math.floor(totalColonists(p) / 3);
-      if (id === 22) return Math.floor(p.shippingVP / 4);
+      if (id === 22) return Math.floor(p.vp / 4) /* 海关：按全部 VP 筹码（与 game.js 同口径） */;
       if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
       return 1;
     };
@@ -271,7 +271,14 @@
         else gain = (b.men === 0) ? violetVal(b) : 0;
         if (gain > bestGain) { bestGain = gain; best = { k: "b", r: b }; }
       }
-      if (!best) break;
+      if (!best) {
+        // 规则：只要面板上还有空位就必须放置，不能主动留在岸边（森林不可上工人）
+        const pl = p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest");
+        if (pl) { pl.manned = true; rem--; continue; }
+        const bb = p.buildings.find(x => x.men < BLD[x.bid].men);
+        if (bb) { bb.men++; rem--; continue; }
+        break;
+      }
       if (best.k === "p") best.r.manned = true; else best.r.men++;
       rem--;
     }
@@ -282,7 +289,7 @@
     if (id === 19) { let s = 0; for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") s += (bd.men === 1 ? 1 : 2); } return s; }
     if (id === 20) { const n = p.plantations.length; return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
     if (id === 21) return Math.floor(totalColonists(p) / 3);
-    if (id === 22) return Math.floor(p.shippingVP / 4);
+    if (id === 22) return Math.floor(p.vp / 4) /* 海关：按全部 VP 筹码（与 game.js 同口径） */;
     if (id === 23) return p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     // 扩展：Cloister(36) 估成套；Statue(37) 的 8VP 已在 vp 字段
     if (id === 36) { const cnt = {}; for (const pl of p.plantations) cnt[pl.good] = (cnt[pl.good] || 0) + 1; let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3); return [0, 1, 3, 6, 10][Math.min(sets, 4)]; } // 修道院:全部岛屿地块成套
@@ -384,11 +391,7 @@
         const libPl = { good: opts[pi].good, manned: false };
         sc.plantations.push(libPl);
         st.plantationPool.splice(opts[pi].idx, 1);
-        // 济贫院(11)：图书馆额外地块也触发
-        if (isManned(sc, 11)) {
-          if (st.colonistsLeft > 0) { libPl.manned = true; st.colonistsLeft--; }
-          else if (st.colonistsOnShip > 0) { libPl.manned = true; st.colonistsOnShip--; }
-        }
+        // 规则书：济贫院只对第一张地块给殖民者，图书馆的第二张地块不触发
       }
     }
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
@@ -462,19 +465,20 @@
     for (let i = 0; i < st.players.length; i++) {
       const p = st.players[i];
       if (isManned(p, 24)) {
-        if (isManned(p, 3) && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; produced.add("indigo"); }
-        if (isManned(p, 4) && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; produced.add("sugar"); }
+        const big3 = ownsBuilding(p, 3), big4 = ownsBuilding(p, 4); // 规则：大厂有人参与生产即可，不要求满员
+        if (big3 && big3.men > 0 && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; perKinds[i].add("indigo"); }
+        if (big4 && big4.men > 0 && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; perKinds[i].add("sugar"); }
       }
       if (isManned(p, 34)) {
         // 专业工厂：最多单货(非玉米) - 第二多；只有一种时全部计入
         const sfc = GOODS_.filter(g => g !== "corn").map(g => perCount[i][g]).sort((a, b) => b - a);
-        const gain = Math.max(0, sfc[0] - (sfc[1] || 0));
+        const gain = Math.max(0, (sfc[0] || 0) - 1); // 规则书：最多单货(非玉米)产量 - 1
         if (gain > 0) p.money += gain;
       }
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
     for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }
-    return produced;
+    return perKinds[chooser]; // 规则：工匠特权只能拿"自己本回合产出"的种类
   }
   function doCraftsman(st, chooser) {
     // 扩展：招待所(28) — 工匠前把客工(gh.men)部署到能立刻提升生产的空位
@@ -497,7 +501,7 @@
     const avail = GOODS_.filter(g => st.supply[g] > 0 && produced.has(g));
     if (avail.length > 0) {
       const g = avail.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b); ch.goods[g]++; st.supply[g]--;
-      if (isManned(ch, 33)) { const g2 = avail.find(x => x !== g && st.supply[x] > 0); if (g2) { ch.goods[g2]++; st.supply[g2]--; } } // 图书馆：再拿1种
+      if (isManned(ch, 33)) { const a2 = GOODS_.filter(x => produced.has(x) && st.supply[x] > 0); if (a2.length) { const g2 = a2.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b); ch.goods[g2]++; st.supply[g2]--; } } // 图书馆：再拿1个(可同种)
     }
   }
 
@@ -535,10 +539,15 @@
         for (const g of GOODS_) { if (p.goods[g] <= 0) continue; if (st.ships.some((sh, idx) => idx !== s && sh.good === g)) continue; cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }); }
       } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
     }
-    if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "wharf", good: g, amount: p.goods[g] });
+    // 规则：选定一种货后必须装"尽可能多" — 同种货有多艘可选船时只能选装载量最大的
+    const maxByGood = {};
+    for (const c of cands) maxByGood[c.good] = Math.max(maxByGood[c.good] || 0, c.amount);
+    const legal = cands.filter(c => c.amount === maxByGood[c.good]);
+    // 码头：私人船，容量 11，不受上述约束
+    if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) legal.push({ ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) });
     // 扩展：小码头(31) — 自有船，可装任意货，每 2 货 = 1VP
-    if (isManned(p, 31) && !p.smallWharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) cands.push({ ship: "smallwharf", good: g, amount: p.goods[g] });
-    return cands;
+    if (isManned(p, 31) && !p.smallWharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) legal.push({ ship: "smallwharf", good: g, amount: p.goods[g] });
+    return legal;
   }
   // 装船一次（修改 st，给 i 加 shippingVP），返回 loaded
   function captainLoad(st, i, chooser, bonusUsed, pick) {
@@ -558,7 +567,7 @@
     if (i === chooser && !bonusUsed.has(i)) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍
     if (isManned(p, 17)) vp += 1;
     // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
-    if (pick.ship !== "wharf" && !isSmallWharf && isManned(p, 32)) p.money += 1;
+    if (isManned(p, 32)) p.money += 1; // 灯塔：与港口同理，每次装运（含码头/小码头）+1金
     const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
     return loaded;
   }
@@ -1158,7 +1167,7 @@
       const i = az.ord[az.oi], p = st.players[i];
       const shipSlot = Math.floor(action / 10), gi = action % 10, g = GOODS_[gi];
       let pick;
-      if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: p.goods[g] };
+      if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) };
       else { const ship = st.ships[shipSlot]; pick = { ship: shipSlot, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }; }
       const bset = new Set(); if (az.chooserBonusUsed) bset.add(az.chooser);
       captainLoad(st, i, az.chooser, bset, pick);

@@ -142,6 +142,32 @@ const EXPANSION_BUILDINGS = [
   { id:36, name:"Cloister",          cn:"修道院",   img:"36_cloister.png",          type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"cloister" },
   { id:37, name:"Statue",            cn:"雕像",     img:"37_statue.png",            type:"large_violet", cost:10, men:0, vp:8, size:2, qty:1, tier:4, effect:"statue" },
 ];
+// 贵族扩展 (官方 Expansion II — The Nobles)：7 紫色 + 1 生产(珠宝匠) + 20 贵族
+// 数值取自周年版图鉴：地产办2/1 礼拜堂3/1 狩猎小屋4/2 规划办5/2 皇家供应商6/2 别墅7/3 珠宝匠8/3 皇家花园10/4(大)
+const NOBLE_BUILDINGS = [
+  { id:38, name:"Land Office",     cn:"地产办公室", img:"",  type:"violet",       cost:2,  men:1, vp:1, size:1, qty:2, tier:1, effect:"land_office" },
+  { id:39, name:"Chapel",          cn:"礼拜堂",     img:"",  type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:1, effect:"chapel" },
+  { id:40, name:"Hunting Lodge",   cn:"狩猎小屋",   img:"",  type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"hunting_lodge" },
+  { id:41, name:"Zoning Office",   cn:"规划办公室", img:"",  type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" },
+  { id:42, name:"Royal Supplier",  cn:"皇家供应商", img:"",  type:"violet",       cost:6,  men:1, vp:2, size:1, qty:2, tier:2, effect:"royal_supplier" },
+  { id:43, name:"Villa",           cn:"别墅",       img:"",  type:"violet",       cost:7,  men:1, vp:3, size:1, qty:2, tier:3, effect:"villa" },
+  { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"",  type:"violet",       cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 公会大厅按大型生产建筑计 2VP（特判）
+  { id:45, name:"Royal Garden",    cn:"皇家花园",   img:"",  type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"royal_garden" },
+];
+Object.assign(BLD_BY_ID, Object.fromEntries(NOBLE_BUILDINGS.map(b => [b.id, b])));
+Object.assign(TIER_BY_BID, { 38:1, 39:1, 40:2, 41:2, 42:2, 43:3, 44:3, 45:4 });
+Object.assign(BUILDING_EN, { 38:"Land Office", 39:"Chapel", 40:"Hunting Lodge", 41:"Zoning Office", 42:"Royal Supplier", 43:"Villa", 44:"Jeweler", 45:"Royal Garden" });
+Object.assign(BUILDING_EFFECT_TEXT, {
+  38:"商人阶段（可在卖货之外额外使用）：殖民者驻守→付 1 金从暗牌堆抽 1 张种植园放上岛；贵族驻守→弃 1 张种植园/森林（非采石场）得 1 金。",
+  39:"工匠阶段：殖民者驻守→+1 金；贵族驻守→+1 VP。",
+  40:"拓殖阶段末：殖民者驻守→可弃 1 张种植园/森林；贵族驻守→若你岛上空格【独多】+2 VP。",
+  41:"建造阶段：殖民者驻守→1~3 列建筑 -1 金；贵族驻守→第 4 列大建筑 -2 金。",
+  42:"船长阶段首次装船前：每有 1 名贵族可弃 1 个货（须不同种）入供应区，每个 +1 VP（不吃港口/灯塔加成）。",
+  43:"市长阶段：额外从供应区拿 1 名贵族（没有贵族则拿殖民者）。",
+  44:"工匠阶段：你板上每有 1 名贵族 +1 金。公会大厅按大型生产建筑计 2VP。",
+  45:"终局：你板上每名贵族额外 +1 VP（贵族变 2 VP/个）。占 2 格。",
+});
+
 const BASE_BUILDINGS = BUILDINGS.slice(); // 原始 23 个基础建筑的纯净副本（轮抽会改 BUILDINGS，构造时据此复原）
 // 查询表/文本始终登记扩展建筑（是否「激活进市场」由 Game 构造时的 BUILDINGS 数组控制）
 Object.assign(BLD_BY_ID, Object.fromEntries(EXPANSION_BUILDINGS.map(b => [b.id, b])));
@@ -149,19 +175,19 @@ Object.assign(TIER_BY_BID, { 24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,3
 Object.assign(BUILDING_EN, { 24:"Aqueduct",25:"Black Market",26:"Forest House",27:"Storehouse",28:"Guesthouse",29:"Trading Post",30:"Church",31:"Small Wharf",32:"Lighthouse",33:"Library",34:"Specialty Factory",35:"Union Hall",36:"Cloister",37:"Statue" });
 Object.assign(BUILDING_EFFECT_TEXT, {
   24:"工匠阶段：用【大靛蓝厂/大制糖厂】生产时，该货 +1。",
-  25:"建造阶段：建造时可还 1货 + 1岸边工人 + 1VP 各抵 1 金（最多 -3，建完用尽余钱）。AI 不为建造牺牲 VP。",
-  26:"拓殖阶段：可改拿一块「森林」地块；每 2 块森林使建造 -1 金（不受采石场列限、不上工人）。",
+  25:"建造阶段：建造时可还 1货 + 1殖民者(岸边或板块上,黑市自身除外) + 1VP 各抵 1 金（最多 -3，且建完不能剩钱）。",
+  26:"拓殖阶段：可改拿「森林」——翻扣 1 张明牌种植园置于岛上；每 2 块森林使建造 -1 金（不受采石场列限、不上工人）。",
   27:"船长阶段末：除正常保留外，额外保留任意 3 个货物。",
-  28:"招待所(2 工人槽)：把最多 2 个殖民者停在此当「客工」，工匠阶段前可调去能提升生产的空位（当回合建好的新产业链立刻上岗）。",
+  28:"招待所(2 工人槽)：把最多 2 个殖民者停在此当「客工」，可在任意阶段开始时派往任意空位立即上岗（须工作到下个市长阶段）。",
   29:"商人阶段：可把 1 个货物卖给【自己的】贸易站（任意货、含重复、即使公共站满），按价得金，货入供应区（市场不加成）。",
   30:"建造阶段：建造时按建筑列额外 +0/1/2 VP。",
   31:"船长阶段：自有船；装运货物每 2 个 = 1 VP（货入供应区）。",
-  32:"船长阶段：每次装货船 +1 金；选择船长角色者，阶段开始时额外 +1 金（不论是否装货）。",
-  33:"各阶段：你选到角色的【特权翻倍】（工匠+2货、建造-2金、商人/船长/金矿主/市长特权×2）。",
-  34:"工匠阶段：得金 = 最多单货(非玉米)产量 − 第二多单货产量；只有一种非玉米货时全部产量得金。",
+  32:"船长阶段：每次装运（含码头/小码头）+1 金；选择船长角色者，阶段开始额外 +1 金（不论是否装货）。",
+  33:"各阶段：你选到角色的【特权翻倍】（工匠+2货(可同种)、拓殖者末再拿1张田、建造-2金、商人/船长/金矿主/市长特权×2）。",
+  34:"工匠阶段：得金 = 产量最多的单一货物(非玉米)数量 − 1。",
   35:"船长阶段：首次装船前，手上每 2 个同种货物 +1 VP。",
-  36:"终局：每 3 张同类【种植园】成套 → 1/2/3/4 套得 1/3/6/10 VP（需镇守）。占 2 格。",
-  37:"终局：直接 +8 VP；不可放工人。占 2 格。",
+  36:"终局：每 3 张同类【岛屿地块】(含采石场/森林)成套 → 1/2/3/4 套得 1/3/6/10 VP（需镇守）。占 2 格。",
+  37:"终局：建筑本身即 8 VP（计入建筑分）；不可放工人。占 2 格。",
 });
 
 function buildBuildingTooltip(b) {
@@ -288,12 +314,15 @@ document.getElementById("rules-text").innerHTML = RULES_TEXT;
 class Game {
   constructor(numPlayers, humanName, expansion) {
     this.numPlayers = numPlayers;
-    this.expansion = !!expansion;
+    // expansion: false/"none"=基础, true/"newbuildings"=扩展I, "nobles"=扩展I+II(贵族)
+    this.expansion = !!expansion && expansion !== "none";
+    this.expansionNobles = expansion === "nobles";
     // 新建筑扩展：把全局 BUILDINGS 从纯净基础副本复原（轮抽可能改过它），启用时追加 14 个扩展建筑。
     // （BUILDINGS 是市场/库存/sim 的唯一建筑来源；构造时控制它即可整体开关扩展。）
     BUILDINGS.length = 0;
     for (const b of BASE_BUILDINGS) BUILDINGS.push(b);
     if (this.expansion) for (const b of EXPANSION_BUILDINGS) BUILDINGS.push(b);
+    if (this.expansionNobles) for (const b of NOBLE_BUILDINGS) BUILDINGS.push(b);
     this.players = [];
     for (let i = 0; i < numPlayers; i++) {
       this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
@@ -308,12 +337,20 @@ class Game {
     // 1p=单人闯关(缩放) / 2p=官方Alea变体(殖民者40+2=42,65VP) / 3-5p=原版
     this.colonistsLeft = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 }[numPlayers] - numPlayers; // 减去船上人数
     this.colonistsOnShip = numPlayers;
+    // 贵族扩展：20 名贵族；开局起殖民者船上 1 名贵族替换 1 名殖民者
+    this.noblesLeft = 0; this.noblesOnShip = 0;
+    if (this.expansionNobles) {
+      this.noblesLeft = 19; // 20 - 1（开局上船）
+      this.noblesOnShip = 1;
+      this.colonistsOnShip -= 1;
+      this.colonistsLeft += 1; // 船上少 1 名殖民者，留在供应区
+    }
     this.vpLeft = { 1: 50, 2: 65, 3: 75, 4: 100, 5: 122 }[numPlayers];
 
-    // 货物供应（2p 官方变体：每种 -2）
+    // 货物供应（原版实物数量：玉米10/靛蓝12/蔗糖11/烟草9/咖啡8；2p 官方变体：每种 -2）
     this.supply = ({
-      2: { corn: 8, indigo: 9, sugar: 9, tobacco: 7, coffee: 7 },
-    })[numPlayers] || { corn: 10, indigo: 11, sugar: 11, tobacco: 9, coffee: 9 };
+      2: { corn: 8, indigo: 10, sugar: 9, tobacco: 7, coffee: 6 },
+    })[numPlayers] || { corn: 10, indigo: 12, sugar: 11, tobacco: 9, coffee: 8 };
 
     // 建筑供应（2p 官方变体：每种生产建筑 2 栋、每种紫色建筑 1 栋）
     this.buildingStock = {};
@@ -409,7 +446,7 @@ class Game {
     // (近似实现 VBA 中的字符串)
     const counts = {
       1: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 },
-      2: { corn: 7, indigo: 9, sugar: 8, tobacco: 6, coffee: 5 }, // 全套每种 -3（官方 2p 变体）
+      2: { corn: 6, indigo: 8, sugar: 8, tobacco: 6, coffee: 5 }, // 全套每种 -3（官方 2p 变体），再扣 2 张起始田（1玉米+1靛蓝）
       3: { corn: 9, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
       4: { corn: 8, indigo: 10, sugar: 11, tobacco: 9, coffee: 8 },
       5: { corn: 8, indigo: 9, sugar: 11, tobacco: 9, coffee: 8 },
@@ -472,7 +509,25 @@ class Game {
     for (const pl of p.plantations) if (pl.manned) n++;
     for (const b of p.buildings) n += b.men;
     n += (p._unplacedMen || 0); // 岸边的也算（用于 Fortress 计分）
+    n += (p._unplacedNobles || 0); // 贵族按殖民者计（Fortress 官方规则）
     return n;
+  }
+  // 贵族扩展：玩家板上（含岸边）的贵族总数。b.men 含贵族，b.nobles 是其中贵族数；田用 pl.noble 标记。
+  nobleCount(p) {
+    let n = p._unplacedNobles || 0;
+    for (const pl of p.plantations) if (pl.manned && pl.noble) n++;
+    for (const b of p.buildings) n += (b.nobles || 0);
+    return n;
+  }
+  // 某建筑是否被贵族驻守（用于礼拜堂/狩猎小屋/规划办的贵族功能；1 槽建筑非贵即民）
+  isNobleManned(p, bid) {
+    const b = this.ownsBuilding(p, bid);
+    return !!(b && (b.nobles || 0) >= 1);
+  }
+  // 某建筑是否被殖民者驻守（贵族功能与殖民者功能互斥）
+  isColonistManned(p, bid) {
+    const b = this.ownsBuilding(p, bid);
+    return !!(b && b.men - (b.nobles || 0) >= 1);
   }
   buildingUsedSpaces(p) {
     let s = 0;
@@ -520,7 +575,12 @@ class Game {
     for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) qManned++;
     // 扩展：森林屋 — 每 2 块森林 -1（不受费用列上限）
     const forestDiscount = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2);
-    return Math.max(0, bld.cost - Math.min(qManned, maxQuarries) - forestDiscount);
+    // 扩展II：规划办公室(41) — 殖民者驻守：1~3 列建筑 -1；贵族驻守：第 4 列大建筑 -2
+    let zoning = 0;
+    const colTier = TIER_BY_BID[bld.id] || 1;
+    if (colTier <= 3 && this.isColonistManned(p, 41)) zoning = 1;
+    if (colTier >= 4 && this.isNobleManned(p, 41)) zoning = 2;
+    return Math.max(0, bld.cost - Math.min(qManned, maxQuarries) - forestDiscount - zoning);
   }
 
   // 玩家可用的"小奖励金"：当前选角色的玩家在 Builder 阶段额外 -1（图书馆 -2）
@@ -535,7 +595,12 @@ class Game {
   blackMarketCapacity(p) {
     if (!this.isManned(p, 25)) return 0;
     const hasGood = GOODS.some(g => p.goods[g] > 0) ? 1 : 0;
-    const hasCol = (p._unplacedMen || 0) > 0 ? 1 : 0;
+    // 规则书：可归还任意 1 名殖民者（岸边或板块上），但不能是黑市上那个。AI 只用岸边的（合法子集）。
+    const hasTileCol = p.isHuman && (
+      p.plantations.some(pl => pl.manned) ||
+      p.buildings.some(b => b.men > 0 && !(b.bid === 25 && b.men === 1))
+    );
+    const hasCol = ((p._unplacedMen || 0) > 0 || hasTileCol) ? 1 : 0;
     const hasVP = (p.isHuman && p.vp > 0) ? 1 : 0;
     return Math.min(3, hasGood + hasCol + hasVP);
   }
@@ -977,9 +1042,8 @@ function startGame() {
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = (n >= 2) && !!document.getElementById("all-ai")?.checked;
   const expSel = document.getElementById("expansion-select")?.value || "none";
-  const expansion = expSel === "newbuildings";
-  G = new Game(n, name, expansion);
-  G.expansionType = expansion ? expSel : "none";
+  G = new Game(n, name, expSel); // "none" | "newbuildings" | "nobles"
+  G.expansionType = expSel;
   let needsNN = false;
   // 读取每个 CPU 的独立难度
   G.players.forEach((p, i) => {
@@ -1127,8 +1191,9 @@ document.getElementById("btn-show-rules").onclick = () => {
 async function runDraft(G) {
   const smallSlots = { 1: 1, 2: 2, 3: 1, 4: 1, 5: 2, 6: 1, 7: 1, 8: 2, 9: 1 }; // 共 12
   const largeSlots = { 10: 5 };
-  const poolSmall = BUILDINGS.filter(b => b.type === "violet");
-  const poolLarge = BUILDINGS.filter(b => b.type === "large_violet");
+  // 扩展II 贵族建筑(38+)不参与轮抽：官方规则是"额外加在板上"
+  const poolSmall = BUILDINGS.filter(b => b.type === "violet" && b.id < 38);
+  const poolLarge = BUILDINGS.filter(b => b.type === "large_violet" && b.id < 38);
   const picked = new Set();
   const totalPicks = 12 + 5;
   G.logEvent(`🏛️ 新建筑扩展：轮抽建筑开始（每人轮流选哪些建筑进入本局，共 ${totalPicks} 个）`, "role");
@@ -1158,6 +1223,7 @@ async function runDraft(G) {
   }
   // 重建在场建筑 = 生产(1-6) + 被选中的紫色/大紫；未选入的从市场/库存移除
   const keep = new Set([1, 2, 3, 4, 5, 6, ...picked]);
+  if (G.expansionNobles) for (const b of NOBLE_BUILDINGS) keep.add(b.id); // 贵族建筑全部保留
   for (let i = BUILDINGS.length - 1; i >= 0; i--) if (!keep.has(BUILDINGS[i].id)) BUILDINGS.splice(i, 1);
   G.buildingStock = {};
   BUILDINGS.forEach(b => G.buildingStock[b.id] = (G.numPlayers === 2) ? (b.type === "production" ? 2 : 1) : b.qty);
@@ -1263,7 +1329,8 @@ function checkEndCondition() {
   // 官方三条结束条件（任一触发；游戏继续到本回合所有玩家选完才结束）
   const wasTriggered = G.endTriggered;
   let triggerReason = null;
-  if (G.colonistsLeft <= 0 && G.colonistsOnShip <= 0) {
+  if (!G.expansionNobles && G.colonistsLeft <= 0 && G.colonistsOnShip <= 0) {
+    // 贵族扩展：殖民者耗尽不触发终局
     G.endTriggered = true;
     triggerReason = triggerReason || "殖民者耗尽";
   }
@@ -1287,11 +1354,54 @@ function checkEndCondition() {
   }
 }
 
+// 扩展II：狩猎小屋(40) — 拓殖阶段末结算
+async function runHuntingLodge(order) {
+  for (const i of order) {
+    const p = G.players[i];
+    // 贵族驻守：空岛格【独多】+2VP
+    if (G.isNobleManned(p, 40)) {
+      const myEmpty = 12 - p.plantations.length;
+      const maxOther = Math.max(...G.players.filter(q => q !== p).map(q => 12 - q.plantations.length));
+      if (myEmpty > maxOther && G.vpLeft > 0) {
+        const got = Math.min(2, G.vpLeft);
+        p.vp += got; G.vpLeft -= got;
+        G.logEvent(`${p.name} 狩猎小屋(贵族)：空格独多 +${got} VP`, "action");
+      }
+    } else if (G.isColonistManned(p, 40)) {
+      // 殖民者驻守：可弃 1 张种植园/森林（非采石场）；板块上的工人回岸边
+      const cands = p.plantations.map((pl, k) => ({ pl, k })).filter(x => x.pl.good !== "quarry");
+      if (cands.length === 0) continue;
+      let pick = null;
+      if (p.isHuman) {
+        const labels = ["不弃", ...cands.map(x => `弃 ${x.pl.good === "forest" ? "🌲森林" : plantEmoji(x.pl.good) + GOOD_NAMES[x.pl.good]}${x.pl.manned ? "（工人回岸边）" : ""}`)];
+        const idx = await humanPickFromList("狩猎小屋：可弃 1 张种植园/森林（腾出岛格）", labels, false);
+        if (idx > 0) pick = cands[idx - 1];
+      } // AI 不主动弃田（保守合法策略）
+      if (pick) {
+        const pl = pick.pl;
+        if (pl.manned) {
+          if (pl.noble) p._unplacedNobles = (p._unplacedNobles || 0) + 1;
+          else p._unplacedMen = (p._unplacedMen || 0) + 1;
+        }
+        p.plantations.splice(pick.k, 1);
+        G.logEvent(`${p.name} 狩猎小屋：弃 1 张${pl.good === "forest" ? "森林" : GOOD_NAMES[pl.good] + "田"}`, "action");
+      }
+    }
+  }
+}
+
 async function runRolePhase(roleName, chooserIdx) {
   // 顺时针从 chooser 开始
   const order = [];
   for (let i = 0; i < G.numPlayers; i++) {
     order.push((chooserIdx + i) % G.numPlayers);
+  }
+  // 扩展：招待所(28) — 客工可在（市长以外的）每个阶段开始时派往任意空位，上岗后须留到下个市长阶段
+  if (roleName !== "Mayor") {
+    for (const i of order) {
+      const p = G.players[i];
+      if (p.isHuman) await humanMoveGuests(p, roleName);
+    }
   }
   switch (roleName) {
     case "Settler":
@@ -1312,34 +1422,44 @@ async function runRolePhase(roleName, chooserIdx) {
               const violet = sc.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
               doForest = violet >= 3 && sc.plantations.filter(pl => pl.good === "forest").length < 4;
             }
-            if (doForest) {
+            if (doForest && G.plantationPool.length > 0) {
+              // 森林同样必须翻扣 1 张明牌田
+              let fi2;
+              if (sc.isHuman) fi2 = await humanPickFromList("森林屋：选 1 张明牌田翻扣为森林", G.plantationPool.map(g => plantEmoji(g) + GOOD_NAMES[g]), false);
+              else fi2 = G.plantationPool.reduce((bi, g, k, arr) => GOOD_PRICE[g] < GOOD_PRICE[arr[bi]] ? k : bi, 0);
+              const flipped2 = G.plantationPool.splice(fi2, 1)[0];
               sc.plantations.push({ good: "forest", manned: false });
-              G.logEvent(`${sc.name} 图书馆+森林屋：再拿 1 块森林`, "action");
+              G.logEvent(`${sc.name} 图书馆+森林屋：翻扣 ${GOOD_NAMES[flipped2]} 再拿 1 块森林`, "action");
               if (!sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+森林屋 再拿森林</div>`, { kind: "role" });
               if (sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+森林屋：再拿 1 块森林</div>`, { kind: "gain" });
               tookForest = true;
             }
           }
-          if (!tookForest && G.plantationPool.length > 0) {
+          const canQuarry2 = G.isManned(sc, 9) && G.quarriesLeft > 0; // 规则书注：有建筑工地时第二张也可拿采石场
+          if (!tookForest && (G.plantationPool.length > 0 || canQuarry2)) {
+            const opts2 = G.plantationPool.map((g, k) => ({ kind: "plant", good: g, idx: k }));
+            if (canQuarry2) opts2.push({ kind: "quarry" });
             let pi;
-            if (sc.isHuman) pi = await humanPickFromList("图书馆+拓殖：再拿 1 张种植园", G.plantationPool.map(g => plantEmoji(g) + GOOD_NAMES[g]), true);
-            else pi = aiPickPlantation(sc, G.plantationPool.map((g, k) => ({ kind: "plant", good: g, idx: k })), false);
-            if (pi !== null && pi >= 0 && pi < G.plantationPool.length) {
-              const g2 = G.plantationPool.splice(pi, 1)[0];
+            if (sc.isHuman) pi = await humanPickFromList("图书馆+拓殖：再拿 1 张地块", opts2.map(o => o.kind === "quarry" ? "🪨 采石场（建筑工地）" : plantEmoji(o.good) + GOOD_NAMES[o.good]), true);
+            else pi = aiPickPlantation(sc, opts2, false);
+            if (pi !== null && pi >= 0 && pi < opts2.length && opts2[pi].kind === "quarry") {
+              G.quarriesLeft--;
+              sc.plantations.push({ good: "quarry", manned: false });
+              G.logEvent(`${sc.name} 图书馆+拓殖：再拿 🪨采石场（建筑工地）`, "action");
+            } else if (pi !== null && pi >= 0 && pi < opts2.length) {
+              const g2 = G.plantationPool.splice(opts2[pi].idx, 1)[0];
               const libPlant = { good: g2, manned: false };
               sc.plantations.push(libPlant);
               G.logEvent(`${sc.name} 图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田`, "action");
               if (!sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+拓殖 再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "role" });
               if (sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "gain" });
-              // 济贫院(11)：图书馆额外地块也触发（官方规则：拓殖阶段拿田即触发）
-              if (G.isManned(sc, 11)) {
-                if (G.colonistsLeft > 0) { libPlant.manned = true; G.colonistsLeft--; G.logEvent(`${sc.name} 济贫院：图书馆额外地块上岗(供应区)`, "action"); }
-                else if (G.colonistsOnShip > 0) { libPlant.manned = true; G.colonistsOnShip--; G.logEvent(`${sc.name} 济贫院：图书馆额外地块上岗(船上)`, "action"); }
-              }
+              // 规则书明确：济贫院只对第一张地块给殖民者，图书馆的第二张地块不触发
             }
           }
         }
       }
+      // 扩展II：狩猎小屋(40) — 拓殖阶段末：殖民者驻守可弃 1 张种植园/森林；贵族驻守且空格独多 +2VP
+      if (G.expansionNobles) await runHuntingLodge(order);
       // FIX: 拓殖者阶段结束后，所有未被选的种植园全部弃掉，下回合重新翻
       if (G.plantationPool.length > 0) {
         G.plantationDiscard = G.plantationDiscard.concat(G.plantationPool);
@@ -1350,11 +1470,12 @@ async function runRolePhase(roleName, chooserIdx) {
     case "Mayor":     await doMayor(chooserIdx, order); break;
     case "Builder":   for (const i of order) await doBuilder(i, i === chooserIdx); break;
     case "Craftsman":
-      for (const p of G.players) deployGuests(p); // 扩展：招待所 — 工匠前部署客工到生产位
+      for (const p of G.players) if (!p.isHuman) deployGuests(p); // 扩展：招待所 — AI 工匠前自动部署客工到生产位
       await doCraftsman(chooserIdx, order);
       break;
     case "Trader":
-      for (const i of order) await doTrader(i, i === chooserIdx);
+      // 扩展II：地产办公室在卖货之外（或不卖货时）也可使用
+      for (const i of order) { await doTrader(i, i === chooserIdx); await runLandOffice(G.players[i]); }
       // FIX #32: 阶段末作为 trader 的最后职责，若贸易站满则清空到供应区
       if (G.tradingHouse.length >= 4) {
         for (const g of G.tradingHouse) G.supply[g]++;
@@ -1383,11 +1504,12 @@ async function runRolePhase(roleName, chooserIdx) {
 async function doSettler(playerIdx, isChooser) {
   const p = G.players[playerIdx];
   if (p.plantations.length >= 12) return; // 满
-  // 扩展：森林屋(26) — 可改拿一块「森林」地块（每 2 块建造 -1 金；不上工人）
-  if (G.isManned(p, 26)) {
+  // 扩展：森林屋(26) — 可改拿一块「森林」：从明牌池拿 1 张种植园（不能用采石场）反扣置于岛上
+  // （规则书：取走的是明牌池里的实体板块，因此会减少其他玩家的可选明牌）
+  if (G.isManned(p, 26) && G.plantationPool.length > 0) {
     let takeForest;
     if (p.isHuman) {
-      const idx = await humanPickFromList("森林屋：本次拓殖要拿什么？", ["🌲 拿一块森林（每 2 块建造 -1 金）", "🌱 拿种植园 / 采石场（正常）"], true);
+      const idx = await humanPickFromList("森林屋：本次拓殖要拿什么？", ["🌲 拿一块森林（翻扣 1 张明牌田；每 2 块建造 -1 金）", "🌱 拿种植园 / 采石场（正常）"], true);
       if (idx === null) return; // 跳过整个拓殖
       takeForest = (idx === 0);
     } else {
@@ -1396,12 +1518,39 @@ async function doSettler(playerIdx, isChooser) {
       takeForest = violet >= 3 && forests < 4; // 建筑流的 AI 才囤森林省建造费
     }
     if (takeForest) {
+      let fi;
+      if (p.isHuman) {
+        fi = await humanPickFromList("森林屋：选 1 张明牌田翻扣为森林", G.plantationPool.map(g => plantEmoji(g) + GOOD_NAMES[g]), false);
+      } else {
+        // AI：翻扣对自己价值最低（价格最低）的明牌田
+        fi = G.plantationPool.reduce((bi, g, k, arr) => GOOD_PRICE[g] < GOOD_PRICE[arr[bi]] ? k : bi, 0);
+      }
+      const flipped = G.plantationPool.splice(fi, 1)[0];
       p.plantations.push({ good: "forest", manned: false });
-      G.logEvent(`${p.name} 森林屋：拿一块森林`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了森林</div>`, { kind: "role" });
+      G.logEvent(`${p.name} 森林屋：翻扣 ${GOOD_NAMES[flipped]} 田作为森林`, "action");
+      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了森林（翻扣 ${GOOD_NAMES[flipped]}）</div>`, { kind: "role" });
+      // 规则书：济贫院持有者放置森林时，殖民者放到自己的风向标（岸边）
+      if (G.isManned(p, 11)) {
+        if (G.colonistsLeft > 0) { G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; G.logEvent(`${p.name} 济贫院+森林：殖民者放到岸边 (从供应区)`, "action"); }
+        else if (G.colonistsOnShip > 0) { G.colonistsOnShip--; p._unplacedMen = (p._unplacedMen || 0) + 1; G.logEvent(`${p.name} 济贫院+森林：殖民者放到岸边 (从船上)`, "action"); }
+      }
       return;
     }
   }
+  // 庄园 Hacienda 效果（规则书：在拿明牌种植园"之前"，可选地从暗牌堆额外拿一张）
+  if (G.isManned(p, 8) && p.plantations.length < 12 && G.plantationDeck.length > 0) {
+    let useHacienda = true;
+    if (p.isHuman) {
+      const idx = await humanPickFromList("庄园效果：是否先从暗牌堆额外拿 1 张种植园？", ["使用（拿 1 张暗牌）", "不使用"], false);
+      useHacienda = (idx === 0);
+    }
+    if (useHacienda) {
+      const extra = G.plantationDeck.pop();
+      p.plantations.push({ good: extra, manned: false });
+      G.logEvent(`${p.name} 庄园效果：+${GOOD_NAMES[extra]}`, "action");
+    }
+  }
+  if (p.plantations.length >= 12) return; // 庄园拿满 12 格后不能再拿明牌田
   const hasConstructionHut = G.isManned(p, 9);
   // 选项：池中种植园 + 可选采石场（chooser 或 有 construction hut）
   const options = [];
@@ -1448,13 +1597,8 @@ async function doSettler(playerIdx, isChooser) {
   );
   // 等拿田动画播放完（真人观战也播放；仅无头测试跳过）
   if (!window._fastSpectator) await sleep(350);
-  // 庄园 Hacienda 效果：拿种植园同时从牌堆拿一张额外
-  if (G.isManned(p, 8) && p.plantations.length < 12 && G.plantationDeck.length > 0) {
-    const extra = G.plantationDeck.pop();
-    p.plantations.push({ good: extra, manned: false });
-    G.logEvent(`${p.name} 庄园效果：+${GOOD_NAMES[extra]}`, "action");
-  }
   // 济贫院 Hospice 效果：新种植园上+1人。优先从供应区，没有则从船上。
+  // （注意：规则书明确济贫院只作用于本阶段正常拿的那张田，不作用于庄园的额外暗牌田）
   if (G.isManned(p, 11)) {
     if (G.colonistsLeft > 0) {
       plantation.manned = true;
@@ -1483,14 +1627,35 @@ async function doMayor(chooserIdx, order) {
       if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 市长特权${got > 1 ? ' 图书馆 +2' : ' +1'} 殖民者</div>`, { kind: "role" });
     }
   }
-  // FIX: 船上的殖民者按顺时针轮转分配 (每次1人) 直到船空
-  let safety = 0;
-  while (G.colonistsOnShip > 0 && safety++ < 100) {
+  // 扩展II：别墅(43) — 市长阶段首轮额外从供应区拿 1 名贵族（无贵族则拿殖民者）
+  if (G.expansionNobles) {
     for (const i of order) {
-      if (G.colonistsOnShip <= 0) break;
       const p = G.players[i];
-      p._unplacedMen = (p._unplacedMen || 0) + 1;
-      G.colonistsOnShip--;
+      if (!G.isManned(p, 43)) continue;
+      if (G.noblesLeft > 0) {
+        G.noblesLeft--; p._unplacedNobles = (p._unplacedNobles || 0) + 1;
+        G.logEvent(`${p.name} 别墅：从供应区 +1 贵族`, "action");
+      } else if (G.colonistsLeft > 0) {
+        G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1;
+        G.logEvent(`${p.name} 别墅：贵族用尽，改拿 1 殖民者`, "action");
+      }
+    }
+  }
+  // FIX: 船上的殖民者（含贵族）按顺时针轮转分配 (每次1人) 直到船空；两者都有时玩家自选
+  let safety = 0;
+  while ((G.colonistsOnShip > 0 || G.noblesOnShip > 0) && safety++ < 200) {
+    for (const i of order) {
+      if (G.colonistsOnShip <= 0 && G.noblesOnShip <= 0) break;
+      const p = G.players[i];
+      let takeNoble;
+      if (G.noblesOnShip > 0 && G.colonistsOnShip > 0) {
+        if (p.isHuman) {
+          const ti = await humanPickFromList(`市长：从船上拿哪一个？（船上 殖民者×${G.colonistsOnShip} / 贵族×${G.noblesOnShip}）`, ["🎩 贵族（终局 1 VP，可触发贵族建筑功能）", "👷 殖民者"], false);
+          takeNoble = ti === 0;
+        } else takeNoble = true; // AI 优先拿贵族
+      } else takeNoble = G.noblesOnShip > 0;
+      if (takeNoble) { G.noblesOnShip--; p._unplacedNobles = (p._unplacedNobles || 0) + 1; }
+      else { G.colonistsOnShip--; p._unplacedMen = (p._unplacedMen || 0) + 1; }
     }
   }
   // 在分配前快照人类玩家本轮收到的殖民者数（含 chooser 特权 +1 / 船上分配）
@@ -1514,42 +1679,50 @@ async function doMayor(chooserIdx, order) {
   }
   const refill = Math.max(G.numPlayers, openBuildingSlots);
   // 游戏结束条件：供应不足以补满船 → 本回合结束后游戏结束
-  if (G.colonistsLeft < refill) {
+  // （贵族扩展：殖民者耗尽【不再】触发终局——玩家可把全部殖民者用完，终局只看 12 格 / VP 池）
+  if (!G.expansionNobles && G.colonistsLeft < refill) {
     G.endTriggered = true;
     G.logEvent(`⚠ 供应殖民者不足（${G.colonistsLeft} < 需补 ${refill}），本回合后游戏结束`, "role");
   }
-  const actualRefill = Math.min(refill, G.colonistsLeft);
+  // 贵族扩展：补船时用 1 名贵族替换 1 名殖民者（贵族供应有剩时）
+  let nobleRefill = 0;
+  if (G.expansionNobles && G.noblesLeft > 0 && refill > 0) {
+    nobleRefill = 1; G.noblesLeft--;
+  }
+  const actualRefill = Math.min(refill - nobleRefill, G.colonistsLeft);
   G.colonistsOnShip = actualRefill;
+  G.noblesOnShip = nobleRefill;
   G.colonistsLeft -= actualRefill;
-  G.logEvent(`市长阶段结束，已分配并补船 ${actualRefill} 人`, "action");
+  G.logEvent(`市长阶段结束，已分配并补船 ${actualRefill + nobleRefill} 人${nobleRefill ? `（含 ${nobleRefill} 名贵族）` : ""}`, "action");
   if (humanForToast && !window._allAIMode && humanReceivedMen > 0) {
     showToast(`<div class="t-title">市长：你 +${humanReceivedMen} 殖民者</div>`, { kind: "gain" });
   }
 }
 
 async function humanReallocate(p) {
-  // FIX #31 + #33: 必须填满所有空位（如果有）；允许先"拿下"已上岗的殖民者到岸边重分配
+  // FIX #31 + #33: 必须填满所有空位（如果有）；允许先"拿下"已上岗的殖民者/贵族到岸边重分配
   let remaining = p._unplacedMen;
+  let remNobles = p._unplacedNobles || 0;
 
-  // 第一阶段：允许玩家拿下已有的殖民者（可选）
+  // 第一阶段：允许玩家拿下已有的殖民者/贵族（可选）
   while (true) {
     const occupied = [];
     for (const b of p.buildings) {
       const bd = BLD_BY_ID[b.bid];
-      if (b.men > 0) {
-        occupied.push({ kind: "rm_building", bid: b.bid, label: `拿下 ${bd.cn} (${b.men}/${bd.men})` });
-      }
+      const nb = b.nobles || 0;
+      if (b.men - nb > 0) occupied.push({ kind: "rm_building", bid: b.bid, noble: false, label: `拿下 👷 ${bd.cn} (${b.men}/${bd.men})` });
+      if (nb > 0) occupied.push({ kind: "rm_building", bid: b.bid, noble: true, label: `拿下 🎩 ${bd.cn} (${b.men}/${bd.men})` });
     }
     for (let i = 0; i < p.plantations.length; i++) {
       const pl = p.plantations[i];
       if (pl.manned) {
-        occupied.push({ kind: "rm_plant", idx: i, label: `拿下 ${pl.good === "quarry" ? "🪨" : plantEmoji(pl.good)} ${pl.good === "quarry" ? "采石场" : GOOD_NAMES[pl.good]}` });
+        occupied.push({ kind: "rm_plant", idx: i, label: `拿下 ${pl.noble ? "🎩" : ""}${pl.good === "quarry" ? "🪨" : plantEmoji(pl.good)} ${pl.good === "quarry" ? "采石场" : GOOD_NAMES[pl.good]}` });
       }
     }
     if (occupied.length === 0) break;
     occupied.unshift({ kind: "done_picking", label: "✓ 完成拿下，开始放置" });
     const idx = await humanPickFromList(
-      `市长阶段：可拿下已上岗的殖民者重分配（当前岸边 ${remaining} 人）`,
+      `市长阶段：可拿下已上岗的殖民者重分配（岸边 👷${remaining}${remNobles ? ` 🎩${remNobles}` : ""}）`,
       occupied.map(o => o.label), false
     );
     const choice = occupied[idx];
@@ -1557,15 +1730,18 @@ async function humanReallocate(p) {
     if (choice.kind === "rm_building") {
       const b = p.buildings.find(bb => bb.bid === choice.bid);
       b.men--;
-      remaining++;
+      if (choice.noble) { b.nobles--; remNobles++; }
+      else remaining++;
     } else if (choice.kind === "rm_plant") {
-      p.plantations[choice.idx].manned = false;
-      remaining++;
+      const pl = p.plantations[choice.idx];
+      pl.manned = false;
+      if (pl.noble) { pl.noble = false; remNobles++; }
+      else remaining++;
     }
   }
 
-  // 第二阶段：放置（必须填满）
-  while (remaining > 0) {
+  // 第二阶段：放置（必须填满；殖民者与贵族都可放任意空位）
+  while (remaining + remNobles > 0) {
     const slots = [];
     for (const b of p.buildings) {
       const bd = BLD_BY_ID[b.bid];
@@ -1573,20 +1749,31 @@ async function humanReallocate(p) {
     }
     for (let i = 0; i < p.plantations.length; i++) {
       const pl = p.plantations[i];
+      if (pl.good === "forest") continue; // 森林不可上工人
       if (!pl.manned) slots.push({ kind: "plant", idx: i, label: (pl.good === "quarry" ? "🪨" : plantEmoji(pl.good)) + " " + (pl.good === "quarry" ? "采石场" : GOOD_NAMES[pl.good]) });
     }
     if (slots.length === 0) break;
-    const idx = await humanPickFromList(`必须放置殖民者（剩余 ${remaining} 人，规则要求填满所有空位）`, slots.map(s => s.label), false);
+    const idx = await humanPickFromList(`必须放置（剩余 👷${remaining}${remNobles ? ` 🎩${remNobles}` : ""}，规则要求填满所有空位）`, slots.map(s => s.label), false);
     const choice = slots[idx];
+    // 选择放殖民者还是贵族（两者都有时询问）
+    let useNoble;
+    if (remaining > 0 && remNobles > 0) {
+      const ti = await humanPickFromList("放置哪种？", ["👷 殖民者", "🎩 贵族（贵族建筑功能需要贵族驻守）"], false);
+      useNoble = ti === 1;
+    } else useNoble = remNobles > 0;
     if (choice.kind === "building") {
       const b = p.buildings.find(bb => bb.bid === choice.bid);
       b.men++;
+      if (useNoble) b.nobles = (b.nobles || 0) + 1;
     } else {
-      p.plantations[choice.idx].manned = true;
+      const pl = p.plantations[choice.idx];
+      pl.manned = true;
+      if (useNoble) pl.noble = true;
     }
-    remaining--;
+    if (useNoble) remNobles--; else remaining--;
   }
   p._unplacedMen = remaining;
+  p._unplacedNobles = remNobles;
 }
 
 // 激活大紫建筑的终局特殊分（粗估，用于派工优先级）
@@ -1594,7 +1781,7 @@ function estLargeVioletSpecial(p, id) {
   if (id === 19) { let s = 0; for (const b of p.buildings) { const bd = BLD_BY_ID[b.bid]; if (bd.type === "production") s += (bd.men === 1 ? 1 : 2); } return s; }
   if (id === 20) { const n = p.plantations.length; return n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7; }
   if (id === 21) return Math.floor(G.totalColonists(p) / 3);
-  if (id === 22) return Math.floor(p.shippingVP / 4);
+  if (id === 22) return Math.floor(p.vp / 4);
   if (id === 23) return p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
   return 1;
 }
@@ -1616,7 +1803,23 @@ function bestLargeViolet(p) {
 function aiReallocate(p) {
   // 贪心：每次把 1 个工人放到"边际收益最高"的空位（按产业链瓶颈，不浪费工人）。
   let remaining = p._unplacedMen || 0;
-  if (remaining <= 0) { p._unplacedMen = 0; return; }
+  let remNobles = p._unplacedNobles || 0;
+  // 贵族扩展：贵族优先驻守贵族功能建筑（皇家花园45/礼拜堂39/规划办41/狩猎小屋40）
+  if (remNobles > 0) {
+    for (const bid of [45, 39, 41, 40]) {
+      if (remNobles <= 0) break;
+      const b = G.ownsBuilding(p, bid);
+      if (b && b.men < BLD_BY_ID[bid].men) { b.men++; b.nobles = (b.nobles || 0) + 1; remNobles--; }
+    }
+  }
+  if (remaining + remNobles <= 0) { p._unplacedMen = 0; p._unplacedNobles = remNobles; return; }
+  // 放 1 人：殖民者优先，殖民者用尽后放贵族（打贵族标记）
+  const placeOne = (ref, kind) => {
+    const useNoble = remaining <= 0;
+    if (kind === "p") { ref.manned = true; if (useNoble) ref.noble = true; }
+    else { ref.men++; if (useNoble) ref.nobles = (ref.nobles || 0) + 1; }
+    if (useNoble) remNobles--; else remaining--;
+  };
   const prodUnit = g => 4 + GOOD_PRICE[g] * 2; // corn4 indigo6 sugar8 tobacco10 coffee12
   // 采石场上岗价值：建筑流（已有紫色建筑越多）越高 —— 每个有人采石场减少未来建造花费
   const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
@@ -1639,7 +1842,7 @@ function aiReallocate(p) {
     }
   };
 
-  while (remaining > 0) {
+  while (remaining + remNobles > 0) {
     // 当前产业链状态
     const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };       // 已上岗田
     const fieldsTotal = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };  // 田总数
@@ -1685,37 +1888,66 @@ function aiReallocate(p) {
       if (gain > bestGain) { bestGain = gain; best = { kind: "b", ref: b }; }
     }
 
-    if (!best) break; // 没有正收益空位 → 余下留岸边
-    if (best.kind === "p") best.ref.manned = true;
-    else best.ref.men++;
-    remaining--;
+    if (!best) {
+      // 规则：只要面板上还有空位就必须放置殖民者，不能主动留在岸边（森林不可上工人）
+      const pl = p.plantations.find(x => !x.manned && x.good !== "forest");
+      if (pl) { placeOne(pl, "p"); continue; }
+      const bb = p.buildings.find(x => x.men < BLD_BY_ID[x.bid].men);
+      if (bb) { placeOne(bb, "b"); continue; }
+      break; // 真的没有空位了 → 余下留岸边（San Juan）
+    }
+    placeOne(best.ref, best.kind);
   }
   p._unplacedMen = remaining;
+  p._unplacedNobles = remNobles;
 }
 
 // 扩展：黑市(25) — 人类玩家选择用哪些资源抵钱
 async function humanPayBlackMarket(p, gap) {
   let need = gap;
-  // 显示可用的资源选项
+  // 规则书：1货 + 1殖民者 + 1VP 各最多还 1 个；殖民者可来自岸边或任意板块（黑市上那个除外）
+  let usedGood = false, usedCol = false, usedVP = false;
   while (need > 0) {
     const opts = [];
-    const cheapGood = GOODS.slice().sort((a, b) => GOOD_PRICE[a] - GOOD_PRICE[b]).find(g => p.goods[g] > 0);
-    if (cheapGood) opts.push({ label: `还 1个${GOOD_NAMES[cheapGood]} 抵 1金`, kind: "good", good: cheapGood });
-    if ((p._unplacedMen || 0) > 0) opts.push({ label: `还 1名殖民者（岸边）抵 1金`, kind: "col" });
-    if (p.vp > 0) opts.push({ label: `还 1点 VP 抵 1金（慎重！）`, kind: "vp" });
+    if (!usedGood) {
+      for (const g of GOODS) if (p.goods[g] > 0) opts.push({ label: `还 1个${GOOD_NAMES[g]} 抵 1金`, kind: "good", good: g });
+    }
+    if (!usedCol) {
+      if ((p._unplacedMen || 0) > 0) opts.push({ label: `还 1名殖民者（岸边）抵 1金`, kind: "col" });
+      p.plantations.forEach((pl, i) => { if (pl.manned) opts.push({ label: `还 1名殖民者（${pl.good === "quarry" ? "采石场" : GOOD_NAMES[pl.good]}上）抵 1金`, kind: "col_plant", idx: i }); });
+      for (const b of p.buildings) {
+        if (b.men > 0 && !(b.bid === 25 && b.men === 1)) opts.push({ label: `还 1名殖民者（${BLD_BY_ID[b.bid].cn}上）抵 1金`, kind: "col_bld", bid: b.bid });
+      }
+    }
+    if (!usedVP && p.vp > 0) opts.push({ label: `还 1点 VP 抵 1金（慎重！）`, kind: "vp" });
     if (opts.length === 0) break;
     const idx = await humanPickFromList(`黑市：还差 ${need} 金，选择抵扣资源`, opts.map(o => o.label), false);
     const opt = opts[idx];
     if (opt.kind === "good") {
-      p.goods[opt.good]--; G.supply[opt.good]++; need--;
+      p.goods[opt.good]--; G.supply[opt.good]++; need--; usedGood = true;
       G.logEvent(`${p.name} 黑市：还 1 ${GOOD_NAMES[opt.good]} 抵 1金`, "action");
       showToast(`<div class="t-title">黑市：还了 1${GOOD_NAMES[opt.good]}</div>`, { kind: "gain" });
     } else if (opt.kind === "col") {
-      p._unplacedMen--; G.colonistsLeft++; need--;
+      p._unplacedMen--; G.colonistsLeft++; need--; usedCol = true;
       G.logEvent(`${p.name} 黑市：还 1 殖民者 抵 1金`, "action");
       showToast(`<div class="t-title">黑市：还了 1 殖民者</div>`, { kind: "gain" });
+    } else if (opt.kind === "col_plant") {
+      const pl = p.plantations[opt.idx];
+      pl.manned = false;
+      if (pl.noble) { pl.noble = false; G.noblesLeft++; } else G.colonistsLeft++; // 贵族按殖民者计（官方），归还各自供应堆
+      need--; usedCol = true;
+      G.logEvent(`${p.name} 黑市：从板块拿下 1 ${pl.noble ? "贵族" : "殖民者"}归还 抵 1金`, "action");
+      showToast(`<div class="t-title">黑市：还了 1 殖民者</div>`, { kind: "gain" });
+    } else if (opt.kind === "col_bld") {
+      const b = p.buildings.find(bb => bb.bid === opt.bid);
+      b.men--;
+      if (b.men < (b.nobles || 0)) { b.nobles--; G.noblesLeft++; } // 只剩贵族时拿下的是贵族
+      else G.colonistsLeft++;
+      need--; usedCol = true;
+      G.logEvent(`${p.name} 黑市：从 ${BLD_BY_ID[opt.bid].cn} 拿下 1 人归还 抵 1金`, "action");
+      showToast(`<div class="t-title">黑市：还了 1 殖民者</div>`, { kind: "gain" });
     } else if (opt.kind === "vp") {
-      p.vp--; G.vpLeft++; need--;
+      p.vp--; G.vpLeft++; need--; usedVP = true;
       G.logEvent(`${p.name} 黑市：还 1 VP 抵 1金`, "action");
       showToast(`<div class="t-title">黑市：还了 1 VP</div>`, { kind: "gain" });
     }
@@ -1771,15 +2003,19 @@ async function doBuilder(playerIdx, isChooser) {
   , 500);
   if (!window._fastSpectator) await sleep(350);
   // 大学：建造后+1殖民者直接上岗。优先从供应区取，没有则从船上取。
+  // （官方注：建造雕像等无工人槽建筑时，该殖民者放到岸边 San Juan）
   if (G.isManned(p, 16)) {
+    const slots = BLD_BY_ID[b.id].men;
+    const place = () => {
+      if (slots > 0) p.buildings[p.buildings.length - 1].men = 1;
+      else p._unplacedMen = (p._unplacedMen || 0) + 1;
+    };
     if (G.colonistsLeft > 0) {
-      p.buildings[p.buildings.length - 1].men = Math.min(1, BLD_BY_ID[b.id].men);
-      G.colonistsLeft--;
-      G.logEvent(`${p.name} 大学效果：建筑直接上1人 (从供应区)`, "action");
+      place(); G.colonistsLeft--;
+      G.logEvent(`${p.name} 大学效果：+1殖民者${slots > 0 ? "直接上岗" : "（无槽建筑→岸边）"} (从供应区)`, "action");
     } else if (G.colonistsOnShip > 0) {
-      p.buildings[p.buildings.length - 1].men = Math.min(1, BLD_BY_ID[b.id].men);
-      G.colonistsOnShip--;
-      G.logEvent(`${p.name} 大学效果：建筑直接上1人 (从船上)`, "action");
+      place(); G.colonistsOnShip--;
+      G.logEvent(`${p.name} 大学效果：+1殖民者${slots > 0 ? "直接上岗" : "（无槽建筑→岸边）"} (从船上)`, "action");
     }
   }
   G.logEvent(`${p.name} 建造 ${b.cn} (花费${cost}金)`, "action");
@@ -1798,6 +2034,38 @@ async function doBuilder(playerIdx, isChooser) {
   }
 }
 
+// 扩展：招待所(28) — 人类玩家在每个（非市长）阶段开始时可把客工派往任意空位（含紫色建筑）
+async function humanMoveGuests(p, roleName) {
+  const gh = G.ownsBuilding(p, 28);
+  if (!gh || gh.men <= 0) return;
+  while (gh.men > 0) {
+    const slots = [{ kind: "skip", label: `✓ 保留客工在招待所（剩 ${gh.men} 名）` }];
+    for (const b of p.buildings) {
+      const bd = BLD_BY_ID[b.bid];
+      if (b.bid !== 28 && b.men < bd.men) slots.push({ kind: "b", bid: b.bid, label: `派去 ${bd.cn} (${b.men}/${bd.men})` });
+    }
+    p.plantations.forEach((pl, i) => {
+      if (!pl.manned && pl.good !== "forest") slots.push({ kind: "p", idx: i, label: `派去 ${pl.good === "quarry" ? "🪨采石场" : plantEmoji(pl.good) + GOOD_NAMES[pl.good]}` });
+    });
+    if (slots.length === 1) break;
+    const idx = await humanPickFromList(`招待所：${ROLE_NAME_CN[roleName]}阶段开始，可派出客工（派出后须工作到下个市长阶段）`, slots.map(s => s.label), false);
+    const c = slots[idx];
+    if (c.kind === "skip") break;
+    const isNobleGuest = (gh.men - (gh.nobles || 0)) <= 0; // 殖民者客工先走，只剩贵族时派贵族
+    if (c.kind === "b") {
+      const tb = p.buildings.find(b => b.bid === c.bid);
+      tb.men++;
+      if (isNobleGuest) tb.nobles = (tb.nobles || 0) + 1;
+    } else {
+      p.plantations[c.idx].manned = true;
+      if (isNobleGuest) p.plantations[c.idx].noble = true;
+    }
+    gh.men--;
+    if (isNobleGuest) gh.nobles--;
+    G.logEvent(`${p.name} 招待所：派 1 名客工上岗`, "action");
+  }
+}
+
 // 扩展：招待所(28) — 把住在招待所的「客工」(gh.men)部署到能立刻提升生产的空位(工匠阶段前)。
 // 还原"2 个可在阶段间自由调动的客工"的核心价值：上回合先把人停在招待所，本回合建完/想清楚再派去生产位。
 function deployGuests(p) {
@@ -1807,17 +2075,24 @@ function deployGuests(p) {
   const factCap = (good) => (ref[good] || []).reduce((s, fb) => { const bb = G.ownsBuilding(p, fb); return s + (bb ? bb.men : 0); }, 0);
   const mannedPl = (good) => p.plantations.filter(x => x.good === good && x.manned).length;
   let moved = 0, guard = 0;
+  const popGuest = (targetBld, targetPl) => { // 殖民者客工先走，只剩贵族时派贵族（打标记）
+    const isNoble = (gh.men - (gh.nobles || 0)) <= 0;
+    if (targetBld) { targetBld.men++; if (isNoble) targetBld.nobles = (targetBld.nobles || 0) + 1; }
+    else if (targetPl) { targetPl.manned = true; if (isNoble) targetPl.noble = true; }
+    gh.men--;
+    if (isNoble) gh.nobles--;
+  };
   while (gh.men > 0 && guard++ < 12) {
     let placed = false;
     for (const bid of [3, 4, 5, 6, 1, 2]) { // 空工厂槽(有闲置满人种植园 → 立刻多产)
       const b = G.ownsBuilding(p, bid); if (!b) continue;
       const bd = BLD_BY_ID[bid]; if (b.men >= bd.men) continue;
-      if (mannedPl(bd.good) > factCap(bd.good)) { b.men++; gh.men--; moved++; placed = true; break; }
+      if (mannedPl(bd.good) > factCap(bd.good)) { popGuest(b, null); moved++; placed = true; break; }
     }
     if (placed) continue;
     for (const pl of p.plantations) { // 空种植园(玉米直接产；其他需工厂有余量)
       if (pl.manned || pl.good === "quarry" || pl.good === "forest") continue;
-      if (pl.good === "corn" || factCap(pl.good) > mannedPl(pl.good)) { pl.manned = true; gh.men--; moved++; placed = true; break; }
+      if (pl.good === "corn" || factCap(pl.good) > mannedPl(pl.good)) { popGuest(null, pl); moved++; placed = true; break; }
     }
     if (!placed) break;
   }
@@ -1858,13 +2133,15 @@ async function doCraftsman(chooserIdx, order) {
   for (let i = 0; i < G.players.length; i++) {
     const p = G.players[i];
     if (G.isManned(p, 24)) {
-      if (G.isManned(p, 3) && perPlayerProducedCount[i].indigo > 0 && G.supply.indigo > 0) {
+      // 规则：大厂里产出≥1 即可（工人可自由归因到大厂），不要求大厂满员
+      const big3 = G.ownsBuilding(p, 3), big4 = G.ownsBuilding(p, 4);
+      if (big3 && big3.men > 0 && perPlayerProducedCount[i].indigo > 0 && G.supply.indigo > 0) {
         p.goods.indigo++; G.supply.indigo--; perPlayerProducedCount[i].indigo++;
         G.logEvent(`${p.name} 引水渠：+1 靛蓝`, "action");
         if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 靛蓝</div>`, { kind: "role" });
         if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 靛蓝</div>`, { kind: "gain" });
       }
-      if (G.isManned(p, 4) && perPlayerProducedCount[i].sugar > 0 && G.supply.sugar > 0) {
+      if (big4 && big4.men > 0 && perPlayerProducedCount[i].sugar > 0 && G.supply.sugar > 0) {
         p.goods.sugar++; G.supply.sugar--; perPlayerProducedCount[i].sugar++;
         G.logEvent(`${p.name} 引水渠：+1 蔗糖`, "action");
         if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 蔗糖</div>`, { kind: "role" });
@@ -1872,9 +2149,9 @@ async function doCraftsman(chooserIdx, order) {
       }
     }
     if (G.isManned(p, 34)) {
-      // 专业工厂：得分 = 最多单货(非玉米) - 第二多单货(非玉米)；只有一种时全部计入
+      // 专业工厂（规则书）：得金 = 产量最多的单一货物(非玉米)的数量 - 1
       const sfCounts = GOODS.filter(g => g !== "corn").map(g => perPlayerProducedCount[i][g]).sort((a, b) => b - a);
-      const gain = Math.max(0, sfCounts[0] - (sfCounts[1] || 0));
+      const gain = Math.max(0, (sfCounts[0] || 0) - 1);
       if (gain > 0) {
         p.money += gain;
         G.logEvent(`${p.name} 专业工厂：+${gain}金`, "action");
@@ -1897,17 +2174,29 @@ async function doCraftsman(chooserIdx, order) {
       }
     }
   }
-  // 工匠特权：只能选 1 种本回合"被生产"的货物。
-  // 例如：场上没人在玉米田上岗 → producedKinds 不含 corn → 选择者不能拿 corn。
+  // 扩展II：礼拜堂(39) 殖民者驻守 +1金 / 贵族驻守 +1VP；珠宝匠(44) 每名贵族 +1金
+  if (G.expansionNobles) {
+    for (const p of G.players) {
+      if (G.isColonistManned(p, 39)) { p.money += 1; G.logEvent(`${p.name} 礼拜堂：+1金`, "action"); }
+      else if (G.isNobleManned(p, 39) && G.vpLeft > 0) { p.vp += 1; G.vpLeft -= 1; G.logEvent(`${p.name} 礼拜堂(贵族)：+1 VP`, "action"); }
+      if (G.isManned(p, 44)) {
+        const jn = G.nobleCount(p);
+        if (jn > 0) { p.money += jn; G.logEvent(`${p.name} 珠宝匠：${jn} 名贵族 +${jn}金`, "action"); }
+      }
+    }
+  }
+  // 工匠特权：只能选 1 种"选择者自己本回合生产"的货物（规则书：of those YOU have produced）。
+  // 例如：你自己没产咖啡（哪怕对手产了）→ 不能拿咖啡；你什么都没产 → 无特权。
   const chooser = G.players[chooserIdx];
-  const available = GOODS.filter(g => G.supply[g] > 0 && producedKinds.has(g));
+  const ownKinds = perPlayerProducedKinds[chooserIdx];
+  const available = GOODS.filter(g => G.supply[g] > 0 && ownKinds.has(g));
   if (available.length > 0) {
     let g;
     if (chooser.isHuman) {
-      const producedList = [...producedKinds].map(k => GOOD_NAMES[k]).join("/");
-      const labels = available.map(k => `${GOOD_NAMES[k]} (本回合已产出)`);
+      const producedList = [...ownKinds].map(k => GOOD_NAMES[k]).join("/");
+      const labels = available.map(k => `${GOOD_NAMES[k]} (你本回合已产出)`);
       const idx = await humanPickFromList(
-        `工匠特权：仅可选本回合产出过的种类 [${producedList}]，额外 +1`,
+        `工匠特权：仅可选你自己本回合产出的种类 [${producedList}]，额外 +1`,
         labels, true
       );
       if (idx === null) { /* skip */ }
@@ -1916,15 +2205,24 @@ async function doCraftsman(chooserIdx, order) {
       // AI 选最贵的（仍只能从 available 选）
       g = available.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
     }
-    // 防御性双重检查：g 必须在 producedKinds 且供应 > 0
-    if (g && producedKinds.has(g) && G.supply[g] > 0) {
+    // 防御性双重检查：g 必须是自己产出过的且供应 > 0
+    if (g && ownKinds.has(g) && G.supply[g] > 0) {
       chooser.goods[g]++;
       G.supply[g]--;
       G.logEvent(`${chooser.name} 工匠奖励：+1 ${GOOD_NAMES[g]}`, "action");
       if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
-      // 扩展：图书馆(33) — 工匠特权翻倍，再拿 1 种【不同】的已产出货
+      // 扩展：图书馆(33) — 工匠特权翻倍，再拿 1 个自己已产出的货（规则书：可与第一个相同，也可不同）
       if (G.isManned(chooser, 33)) {
-        const g2 = available.find(x => x !== g && producedKinds.has(x) && G.supply[x] > 0);
+        const avail2 = GOODS.filter(x => ownKinds.has(x) && G.supply[x] > 0);
+        let g2;
+        if (avail2.length > 0) {
+          if (chooser.isHuman) {
+            const idx2 = await humanPickFromList("图书馆+工匠：再额外 +1（可与第一个相同）", avail2.map(k => GOOD_NAMES[k]), true);
+            if (idx2 !== null) g2 = avail2[idx2];
+          } else {
+            g2 = avail2.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
+          }
+        }
         if (g2) {
           chooser.goods[g2]++; G.supply[g2]--;
           G.logEvent(`${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}`, "action");
@@ -1933,11 +2231,11 @@ async function doCraftsman(chooserIdx, order) {
         }
       }
     } else if (g) {
-      console.warn(`Craftsman bonus blocked: '${g}' not in producedKinds or supply empty`, [...producedKinds], G.supply[g]);
+      console.warn(`Craftsman bonus blocked: '${g}' not in own produced kinds or supply empty`, [...ownKinds], G.supply[g]);
     }
   } else {
-    // 本回合无人生产 → 选择者亦无特权
-    G.logEvent(`${chooser.name} 工匠特权：本回合无人生产，无可选种类`, "action");
+    // 选择者自己本回合没有生产 → 无特权
+    G.logEvent(`${chooser.name} 工匠特权：你本回合未生产任何货物，无可选种类`, "action");
   }
   G.logEvent(`生产阶段结束`, "action");
   if (humanForCraftToast && !window._allAIMode) {
@@ -1987,6 +2285,46 @@ async function doTrader(playerIdx, isChooser) {
   }
 }
 
+// 扩展II：地产办公室(38) — 商人阶段（卖货之外额外使用）：
+// 殖民者驻守：付 1 金从暗牌堆抽 1 张种植园放上岛；贵族驻守：弃 1 张种植园/森林（非采石场）得 1 金
+async function runLandOffice(p) {
+  if (!G.expansionNobles) return;
+  if (G.isColonistManned(p, 38)) {
+    if (p.money < 1 || p.plantations.length >= 12 || G.plantationDeck.length === 0) return;
+    let use;
+    if (p.isHuman) {
+      const idx = await humanPickFromList("地产办公室：付 1 金从暗牌堆抽 1 张种植园？", ["使用（付 1 金抽暗牌）", "不使用"], false);
+      use = idx === 0;
+    } else use = p.money >= 3; // AI：现金充裕才买地
+    if (use) {
+      p.money -= 1;
+      const t = G.plantationDeck.pop();
+      p.plantations.push({ good: t, manned: false });
+      G.logEvent(`${p.name} 地产办公室：付 1 金抽到 ${GOOD_NAMES[t]} 田`, "action");
+      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 地产办：+${GOOD_NAMES[t]} 田</div>`, { kind: "role" });
+    }
+  } else if (G.isNobleManned(p, 38)) {
+    const cands = p.plantations.map((pl, k) => ({ pl, k })).filter(x => x.pl.good !== "quarry");
+    if (cands.length === 0) return;
+    let pick = null;
+    if (p.isHuman) {
+      const labels = ["不使用", ...cands.map(x => `弃 ${x.pl.good === "forest" ? "🌲森林" : plantEmoji(x.pl.good) + GOOD_NAMES[x.pl.good]} 得 1 金${x.pl.manned ? "（工人回岸边）" : ""}`)];
+      const idx = await humanPickFromList("地产办公室(贵族)：可弃 1 张种植园/森林得 1 金", labels, false);
+      if (idx > 0) pick = cands[idx - 1];
+    } // AI 不主动弃田
+    if (pick) {
+      const pl = pick.pl;
+      if (pl.manned) {
+        if (pl.noble) p._unplacedNobles = (p._unplacedNobles || 0) + 1;
+        else p._unplacedMen = (p._unplacedMen || 0) + 1;
+      }
+      p.plantations.splice(pick.k, 1);
+      p.money += 1;
+      G.logEvent(`${p.name} 地产办公室(贵族)：弃 1 张地块 +1金`, "action");
+    }
+  }
+}
+
 // 扩展：小码头(31) — 人类玩家选择装船货物（可多选不同货物种类）
 async function humanSmallWharfLoad(p) {
   const pool = {};
@@ -1997,18 +2335,25 @@ async function humanSmallWharfLoad(p) {
     const opts = GOODS.filter(g => (pool[g] || 0) > 0);
     if (opts.length === 0) break;
     const totalChosen = Object.values(chosen).reduce((s, v) => s + v, 0);
+    // 规则书：可装任意数量（≥1），不必把一种货全部装上 → 提供 +1 个 与 +全部 两档
     const labels = [];
-    if (totalChosen > 0) labels.push(`✓ 完成（${totalChosen}货 → ${Math.floor(totalChosen / 2)} VP）`);
-    for (const g of opts) labels.push(`+装 ${pool[g]}个 ${GOOD_NAMES[g]}`);
+    const acts = [];
+    if (totalChosen > 0) { labels.push(`✓ 完成（${totalChosen}货 → ${Math.floor(totalChosen / 2)} VP）`); acts.push({ kind: "done" }); }
+    for (const g of opts) {
+      labels.push(`+1 个 ${GOOD_NAMES[g]}（剩 ${pool[g]}）`); acts.push({ kind: "one", g });
+      if (pool[g] > 1) { labels.push(`+全部 ${pool[g]} 个 ${GOOD_NAMES[g]}`); acts.push({ kind: "all", g }); }
+    }
     const idx = await humanPickFromList(
       `⛵ 小码头：选择货物装船（每 2 货 = 1 VP${totalChosen > 0 ? `，已选 ${totalChosen} 货` : '，至少选 1 货'}）`,
       labels, true
     );
     if (idx === null) { if (totalChosen > 0) break; /* must choose something */ continue; }
-    if (idx === 0 && totalChosen > 0) break; // "Done"
-    const g = opts[totalChosen > 0 ? idx - 1 : idx]; // labels: totalChosen>0 → [Done,g0,g1,...]; else → [g0,g1,...]
-    chosen[g] = (chosen[g] || 0) + pool[g];
-    delete pool[g];
+    const act = acts[idx];
+    if (act.kind === "done") break;
+    const take = act.kind === "all" ? pool[act.g] : 1;
+    chosen[act.g] = (chosen[act.g] || 0) + take;
+    pool[act.g] -= take;
+    if (pool[act.g] <= 0) delete pool[act.g];
   }
   if (Object.values(chosen).reduce((s, v) => s + v, 0) === 0) {
     for (const g of GOODS) if (p.goods[g] > 0) { chosen[g] = p.goods[g]; break; } // fallback: load first good
@@ -2047,6 +2392,42 @@ async function doCaptain(order, chooserIdx) {
       if (!window._fastSpectator) await sleep(300);
     }
   }
+  // 扩展II：皇家供应商(42) — 首次装船前：每名贵族可弃 1 个不同种货入供应区，每个 +1VP（无任何加成）
+  if (G.expansionNobles) {
+    for (const i of order) {
+      const p = G.players[i];
+      if (!G.isManned(p, 42)) continue;
+      const limit = G.nobleCount(p);
+      if (limit <= 0) continue;
+      const owned = GOODS.filter(g => p.goods[g] > 0);
+      if (owned.length === 0) continue;
+      let picks = [];
+      if (p.isHuman) {
+        const pool2 = new Set(owned);
+        while (picks.length < limit && pool2.size > 0) {
+          const opts = [...pool2];
+          const labels = [`✓ 完成（已选 ${picks.length} 个，每个 +1VP）`, ...opts.map(g => `弃 1 个 ${GOOD_NAMES[g]}（+1VP）`)];
+          const idx = await humanPickFromList(`皇家供应商：可弃最多 ${limit} 个不同种货换 VP`, labels, false);
+          if (idx === 0) break;
+          const g = opts[idx - 1];
+          picks.push(g); pool2.delete(g);
+        }
+      } else {
+        // AI：弃低价值货换 VP（玉米/靛蓝/糖），后期全弃
+        const cheap = owned.filter(g => GOOD_PRICE[g] <= (gamePhase() === "late" ? 4 : 2));
+        picks = cheap.slice(0, limit);
+      }
+      for (const g of picks) {
+        p.goods[g]--; G.supply[g]++;
+        const got = Math.min(1, G.vpLeft);
+        p.vp += got; p.shippingVP += got; G.vpLeft -= got;
+      }
+      if (picks.length > 0) {
+        G.logEvent(`${p.name} 皇家供应商：弃 ${picks.length} 货 +${picks.length} VP`, "action");
+        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 皇家供应商 +${picks.length} VP</div>`, { kind: "role" });
+      }
+    }
+  }
   let progress = true;
   while (progress) {
     progress = false;
@@ -2072,12 +2453,21 @@ async function doCaptain(order, chooserIdx) {
           }
         }
       }
-      // 码头（Wharf）作为私人船 — 可装任意货物（含已经在货船上的种类）
+      // 规则：选定一种货后必须装"尽可能多" — 同种货有多艘可选船时，只能选装载量最大的那艘
+      // （多艘空船时必须用装得下全部货物的船；都装不下则用最大的）
+      {
+        const maxByGood = {};
+        for (const c of candidates) maxByGood[c.good] = Math.max(maxByGood[c.good] || 0, c.amount);
+        const legal = candidates.filter(c => c.amount === maxByGood[c.good]);
+        candidates.length = 0;
+        candidates.push(...legal);
+      }
+      // 码头（Wharf）作为私人船 — 可装任意货物（含已经在货船上的种类），容量 11，不受上述约束
       const hasWharf = G.isManned(p, 18);
       if (hasWharf && !p._wharfUsedThisRound) {
         for (const g of GOODS) {
           if (p.goods[g] > 0) {
-            candidates.push({ ship: "wharf", good: g, amount: p.goods[g] });
+            candidates.push({ ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) });
           }
         }
       }
@@ -2130,8 +2520,8 @@ async function doCaptain(order, chooserIdx) {
         ship.count += loaded;
         p.goods[pick.good] -= loaded;
       }
-      // 扩展：灯塔(32) — 每次装【货船】(非私人船) +1金（船长特权在阶段开始已给）
-      if (!isPersonal && G.isManned(p, 32)) {
+      // 扩展：灯塔(32) — 与港口同理：每次装运（含码头/小码头）+1金（船长特权在阶段开始已给）
+      if (G.isManned(p, 32)) {
         p.money += 1;
         G.logEvent(`${p.name} 灯塔：装船 +1金`, "action");
         if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 灯塔 +1金</div>`, { kind: "role" });
@@ -2173,6 +2563,10 @@ async function doCaptain(order, chooserIdx) {
   }
   // 每人保留货物
   for (const p of G.players) {
+    // FIX: 码头/小码头使用标记必须对所有玩家无条件重置（包括货物清零的玩家），
+    // 否则用码头运光货物的玩家之后的船长阶段码头永久失效
+    p._wharfUsedThisRound = false;
+    p._smallWharfUsedThisRound = false;
     const totalGoods = GOODS.reduce((s, g) => s + p.goods[g], 0);
     if (totalGoods === 0) continue;
     const storageKinds = G.storageKinds(p);
@@ -2219,9 +2613,6 @@ async function doCaptain(order, chooserIdx) {
         p.goods[g] = keep[g] || 0;
       }
     }
-    // 清重置 wharf / small wharf
-    p._wharfUsedThisRound = false;
-    p._smallWharfUsedThisRound = false;
   }
   G.logEvent(`船长阶段结束`, "action");
   const humanCaptain = G.players.find(pp => pp.isHuman);
@@ -2276,7 +2667,9 @@ function gamePhase() {
 }
 
 function aiPickRole(p, available) {
-  const lvl = p._aiLevel || 3;
+  let lvl = p._aiLevel || 3;
+  // 贵族扩展：sim 引擎未建模贵族 → L4/L5/L6 回退到 L3 强启发式
+  if (G.expansionNobles && lvl >= 4) lvl = 3;
   updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
@@ -4256,6 +4649,7 @@ Game.prototype.getSpecialVPs = function (p) {
     for (const b of p.buildings) {
       const bd = BLD_BY_ID[b.bid];
       if (bd.type === "production") v += (bd.men === 1 ? 1 : 2);
+      else if (b.bid === 44) v += 2; // 扩展II：珠宝匠按大型生产建筑计
     }
   }
   // Residence (20)
@@ -4267,9 +4661,9 @@ Game.prototype.getSpecialVPs = function (p) {
   if (this.isManned(p, 21)) {
     v += Math.floor(this.totalColonists(p) / 3);
   }
-  // Customs House (22)
+  // Customs House (22) — 官方：按游戏中获得的全部 VP 筹码计（含教堂/工会/贵族建筑等来源）
   if (this.isManned(p, 22)) {
-    v += Math.floor(p.shippingVP / 4);
+    v += Math.floor(p.vp / 4);
   }
   // City Hall (23)
   if (this.isManned(p, 23)) {
@@ -4278,8 +4672,13 @@ Game.prototype.getSpecialVPs = function (p) {
       if (bd.type === "violet" || bd.type === "large_violet") v += 1;
     }
   }
-  // 扩展：Statue(37) 直接 +8（无需镇守）
-  if (this.ownsBuilding(p, 37)) v += 8;
+  // 扩展II：贵族 — 每名贵族终局 1 VP；皇家花园(45) 镇守时每名贵族再 +1 VP
+  if (this.expansionNobles) {
+    const nb = this.nobleCount(p);
+    v += nb;
+    if (this.isManned(p, 45)) v += nb;
+  }
+  // 扩展：Statue(37) — 印刷 VP 即 8，已计入建筑分，这里不再加（避免双重计分）
   // 扩展：Cloister(36) 每 3 张同类种植园成套 → 1/2/3/4 套 = 1/3/6/10 VP（需镇守）
   if (this.isManned(p, 36)) {
     const cnt = {};
@@ -4342,7 +4741,8 @@ async function endGame() {
     if (G.isManned(p, 19)) specialDetail.push(`公会大厅:${G.guildHallVPs ? G.guildHallVPs(p) : ""}`);
     if (G.isManned(p, 20)) specialDetail.push(`官邸:${p.plantations.length <= 9 ? 4 : p.plantations.length === 10 ? 5 : p.plantations.length === 11 ? 6 : 7}`);
     if (G.isManned(p, 21)) specialDetail.push(`城堡:${Math.floor(G.totalColonists(p)/3)}`);
-    if (G.isManned(p, 22)) specialDetail.push(`海关大楼:${Math.floor(p.shippingVP/4)}`);
+    if (G.isManned(p, 22)) specialDetail.push(`海关大楼:${Math.floor(p.vp/4)}`);
+    if (G.expansionNobles && G.nobleCount(p) > 0) specialDetail.push(`贵族:${G.nobleCount(p)}${G.isManned(p, 45) ? "×2(皇家花园)" : ""}`);
     if (G.isManned(p, 23)) specialDetail.push(`市政厅`);
     return `
       <tr style="background:${i === 0 ? '#4a6938' : 'transparent'}; border-bottom: 1px solid #444;">
