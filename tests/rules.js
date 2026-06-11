@@ -23,7 +23,7 @@
     return { colonistsTotal, goodsPlayers, goodsShips, supply: { ...g.supply } };
   }
 
-  const expectedGoods = { corn: 10, indigo: 11, sugar: 11, tobacco: 9, coffee: 9 };
+  const expectedGoods = { corn: 10, indigo: 12, sugar: 11, tobacco: 9, coffee: 8 };
   const expectedColonists = { 3: 55, 4: 75, 5: 95 };
 
   for (let n = 3; n <= 5; n++) checkInitialStocks(n);

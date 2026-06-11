@@ -31,6 +31,18 @@ body {
   text-align: left;
 }
 .setup-box label { display: block; margin: 12px 0; font-size: 16px; }
+.mode-note {
+  margin: 10px 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #e6ddc4;
+  background: rgba(243, 201, 105, 0.12);
+  border-left: 3px solid #f3c969;
+  border-radius: 4px;
+  max-width: 460px;
+}
+.mode-note.hidden { display: none; }
 .cpu-row {
   display: flex !important;
   align-items: center;

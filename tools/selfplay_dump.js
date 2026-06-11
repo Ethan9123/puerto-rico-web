@@ -53,6 +53,11 @@ const MCTS_ITERS = parseInt(process.argv[3] || '80');
 const OUT_PATH = process.argv[4] || path.join(__dirname, '..', 'data', `selfplay-${Date.now()}.jsonl`);
 const NUM_PLAYERS = parseInt(process.argv[5] || '4');
 const NN_PATH = process.argv[6] || null; // 可选 NN：有则用 PUCT+NN 制导 self-play
+// value 目标口径（环境变量）：
+//   margin (默认/原行为) = (我分 - 对手平均) / 50      → 刷分差
+//   rank                 = 名次→[-1,1]，独占第1=+1，末名=-1 → 抢第一（AlphaZero 式胜负信号）
+//   vsbest               = (我分 - 最强对手) / 30        → 聚焦压制领先者，且仍稠密
+const VALUE_MODE = process.env.VALUE_MODE || 'margin';
 
 // 确保 data/ 目录存在
 fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
@@ -150,10 +155,23 @@ for (let g = 0; g < GAMES; g++) {
   //     推理只读 vv[0]；vv[1..] 作辅助多任务。固定写 4 维（不足补 0，多则截断）。
   const VVDIM = 4;
   function relAdv(playerIdx) {
+    if (VALUE_MODE === 'rank') {
+      // 名次→value：独占第 1 = +1，末名 = -1，线性；并列取平均名次
+      let better = 0, equal = 0;
+      for (let i = 0; i < N; i++) { if (i === playerIdx) continue; if (scores[i] > scores[playerIdx]) better++; else if (scores[i] === scores[playerIdx]) equal++; }
+      const rank = better + equal / 2; // 0 = 独占第一
+      return N > 1 ? Math.max(-1, Math.min(1, 1 - 2 * rank / (N - 1))) : 0;
+    }
+    if (VALUE_MODE === 'vsbest') {
+      // 对“最强对手”的分差 → 聚焦“是否在抢第一”，仍稠密
+      let best = -Infinity;
+      for (let i = 0; i < N; i++) if (i !== playerIdx && scores[i] > best) best = scores[i];
+      return Math.max(-1, Math.min(1, (scores[playerIdx] - best) / 30));
+    }
+    // margin（默认 = 原行为：对手平均分差 / 50）
     let oppSum = 0;
     for (let i = 0; i < N; i++) if (i !== playerIdx) oppSum += scores[i];
-    const oppAvg = oppSum / (N - 1);
-    return Math.max(-1, Math.min(1, (scores[playerIdx] - oppAvg) / 50));
+    return Math.max(-1, Math.min(1, (scores[playerIdx] - oppSum / (N - 1)) / 50));
   }
   for (const s of gameSamples) {
     const value = relAdv(s.seat);

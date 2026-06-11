@@ -18,7 +18,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'..','sim.js'),'utf8'), sand
 
 const S = sandbox.PRSim;
 const GOODS = ["corn", "indigo", "sugar", "tobacco", "coffee"];
-const expectedGoods = { corn:10, indigo:11, sugar:11, tobacco:9, coffee:9 };
+const expectedGoods = { corn:10, indigo:12, sugar:11, tobacco:9, coffee:8 };
 const expectedCol = { 3:55, 4:75, 5:95 };
 
 function selfPlay(n) {
