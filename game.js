@@ -747,15 +747,19 @@ function flyToDest(source, destFn, duration = 450) {
 }
 
 // ============================================================
-// 全 AI 观战「解说台」（足球解说风格）
+// 「解说台」（足球解说风格）
 //   - 开牌前：用独立"行家"软评分预测每位 AI 选牌的概率，激情解说
 //   - 开牌后：核对预测命中/落空，累计本场命中率
-//   仅在真人观战全 AI 对战时启用；无头测试/训练(_fastSpectator)完全跳过。
+//   全 AI 观战自动启用；人机对战由开局「🎙️ 实况解说」开关控制（连真人玩家
+//   的每一手也会被预测和点评）。无头测试/训练(_fastSpectator)完全跳过。
 // ============================================================
-const CAST_PREDICT_MS = 2600; // 预测后的悬念时间
-const CAST_REACT_MS = 1800;   // 揭晓后的反应时间
+const CAST_PREDICT_MS = 2600; // 预测后的悬念时间（观战）
+const CAST_REACT_MS = 1800;   // 揭晓后的反应时间（观战）
+const CAST_PVE_PREDICT_MS = 1700; // 人机局节奏更紧凑，少压真人的等待时间
+const CAST_PVE_REACT_MS = 1500;
 
 function spectatorOn() { return !!window._allAIMode && !window._fastSpectator; }
+function castOn() { return spectatorOn() || (!!window._liveCastOn && !window._fastSpectator); }
 
 function commentarySay(html, kind) {
   const box = document.getElementById("commentary-box");
@@ -860,13 +864,13 @@ function castAnalyzeMove(chooser, roleName) {
 }
 
 const CAST_REASON = {
-  Captain: ["船舱在召唤，是时候装船兑换分数了！", "再不装船仓库就要爆仓啦！"],
-  Trader: ["贸易站还空着，正是套现的好时机！", "高价货在手，不卖更待何时！"],
-  Builder: ["金币鼓鼓的，该置办大产业了！", "建筑市场有好货，钱要花在刀刃上！"],
-  Mayor: ["空岗一大片，人力才是硬道理！", "殖民船满载，抢人要趁早！"],
-  Craftsman: ["生产线火力全开，工匠能榨干每一分产能！", "原料齐备，开足马力生产！"],
-  Settler: ["地盘还不够，先圈块好地再说！", "采石场和好田，拓殖者眼里全是机会！"],
-  Prospector: ["没有更香的选择，稳稳收一金也不亏！", "闷声发财，金矿主默默 +1！"],
+  Captain: ["船舱在召唤，是时候装船兑换分数了！", "再不装船仓库就要爆仓啦！", "码头的汽笛已经拉响，这批货拖不得了！", "分数就摆在甲板上，伸手就能拿！"],
+  Trader: ["贸易站还空着，正是套现的好时机！", "高价货在手，不卖更待何时！", "商人的算盘珠子都崩出火星了！", "这波行情，错过要拍大腿！"],
+  Builder: ["金币鼓鼓的，该置办大产业了！", "建筑市场有好货，钱要花在刀刃上！", "口袋里的金币烫手，不花出去睡不着觉！", "圣胡安的天际线就等这一砖了！"],
+  Mayor: ["空岗一大片，人力才是硬道理！", "殖民船满载，抢人要趁早！", "厂房建得再漂亮，没人干活就是摆设！", "招工启事贴满全城，就看谁下手快！"],
+  Craftsman: ["生产线火力全开，工匠能榨干每一分产能！", "原料齐备，开足马力生产！", "仓库的门都快被货顶开了，还要再来一轮！", "烟囱冒烟的声音，就是分数的声音！"],
+  Settler: ["地盘还不够，先圈块好地再说！", "采石场和好田，拓殖者眼里全是机会！", "好地不等人，今天不圈明天就是别人的！", "万丈高楼平地起，先把地基打牢！"],
+  Prospector: ["没有更香的选择，稳稳收一金也不亏！", "闷声发财，金矿主默默 +1！", "别人抢破头，他蹲在河边淘金子！", "一块钱也是钱，攒着攒着就是一座庄园！"],
 };
 function castReason(role) { return castPick(CAST_REASON[role] || [""]); }
 
@@ -915,6 +919,101 @@ function castJargon(me, roleName, phase, heat) {
   return "";
 }
 
+// 低概率随机花絮：解说员的"人味"——看台、搭档、从业自嘲，让播报不那么像机器
+const CAST_COLOR = [
+  "看台上的椰子树都跟着摇了三摇！",
+  "我的搭档老何已经把领带扯下来当毛巾用了！",
+  "导播！快给个特写！",
+  "观众朋友们，这就是波多黎各——每一张角色牌都是人生的十字路口！",
+  "解说席的咖啡又凉了，谁还顾得上喝！",
+  "圣胡安的海风此刻都为之一滞！",
+  "干了三十年解说，这种局面我手心还是会出汗！",
+  "电视机前的观众请扶稳坐好！",
+];
+function castColorMaybe() { return Math.random() < 0.22 ? ` ${castPick(CAST_COLOR)}` : ""; }
+
+// 连选执念：同一位选手反复拿同一张角色，是解说最爱的"人设"素材
+function castStreakNote(me, roleName) {
+  G._castPicks = G._castPicks || {};
+  const key = me.idx + ":" + roleName;
+  const n = (G._castPicks[key] = (G._castPicks[key] || 0) + 1);
+  if (n === 3) return ` 注意——这已经是${me.isHuman ? "你" : "他"}本场<b>第 3 次</b>拿起 <b>${ROLE_NAME_CN[roleName]}</b>了，执念初现！`;
+  if (n >= 4) return ` <b>${ROLE_NAME_CN[roleName]}</b>×${n}！${me.isHuman ? "你对这张牌是真爱啊！" : `${me.name} 和这张牌怕不是签了终身合同！`}`;
+  return "";
+}
+
+// 头名易主：比分被反超是全场最大的新闻，必须单独喊出来
+function castLeadChangeNote(standings) {
+  const allZero = standings.every(s => s.v === 0);
+  if (allZero) return "";
+  const leader = standings[0].p;
+  const prev = G._castLeader;
+  G._castLeader = leader;
+  if (prev && prev !== leader) {
+    return castPick([
+      ` 👑 风云突变！<b>${leader.name}</b> 把 <b>${prev.name}</b> 从王座上拽了下来，头名易主！`,
+      ` 👑 改朝换代！积分榜第一的名字现在写着——<b>${leader.name}</b>！`,
+    ]);
+  }
+  return "";
+}
+
+// 开场白：解说员介绍今晚的对阵（castOn 时开局播一次）
+function castOpening() {
+  const human = G.players.find(p => p.isHuman);
+  const ais = G.players.filter(p => !p.isHuman);
+  const roster = ais.map(p => `<b>${p.name}</b>（${AI_LEVEL_NAMES[p._aiLevel] ? AI_LEVEL_NAMES[p._aiLevel].cn : "?"}）`).join("、");
+  let line;
+  if (G.numPlayers === 1) {
+    line = `欢迎来到圣胡安体育场！今晚是 <b>${human.name}</b> 的单人闯关之夜——一个人，一座岛，和一个不断刷新的分数纪录。让我们看看这位总督能把岛经营到什么高度！`;
+  } else if (human) {
+    line = castPick([
+      `欢迎来到圣胡安体育场！灯光打向主队入场通道——<b>${human.name}</b> 来了！今晚的对手是 ${roster}。七张角色牌已经摆上桌，祝各位好运，比赛——开始！`,
+      `观众朋友们晚上好！这里是波多黎各殖民大赛现场。挑战者 <b>${human.name}</b> 将迎战 ${roster}。我已经迫不及待了，发牌！`,
+    ]);
+  } else {
+    line = `欢迎来到圣胡安体育场！今晚的全明星对决：${roster}。神仙打架，凡人观战，我们直接进入比赛！`;
+  }
+  commentarySay(`<div class="cast-head">🎙️ 解说台</div><div class="cast-line">${line}</div>`, "talk");
+}
+
+// 终场颁奖词：宣布冠军（castOn 时终局播一次）
+function castFinale(scores) {
+  const champ = scores[0], runner = scores[1];
+  const gap = runner ? champ.total - runner.total : 0;
+  let line;
+  if (G.numPlayers === 1) {
+    line = `终场哨响！<b>${champ.p.name}</b> 的单人航程定格在 <b>${champ.total}</b> 分！这座岛记住了你的名字！`;
+  } else if (champ.p.isHuman) {
+    line = castPick([
+      `终场哨响！！冠军是——<b>${champ.p.name}</b>！！${gap <= 2 ? `仅仅 ${gap} 分的差距，从机器的牙缝里抢下胜利！` : `${champ.total} 分，碾压群雄！`}人类的荣光今夜由你守护！向看台挥手吧！`,
+      `比赛结束！<b>${champ.p.name}</b> 以 <b>${champ.total}</b> 分登顶！我看到 ${runner ? `<b>${runner.p.name}</b> 的散热风扇还在不甘地转着` : "对手已经低下了头"}——但今晚，王冠属于人类！`,
+    ]);
+  } else {
+    const human = scores.find(s => s.p.isHuman);
+    line = `终场哨响！<b>${champ.p.name}</b> 以 <b>${champ.total}</b> 分捧起奖杯${gap <= 2 ? `——仅 ${gap} 分险胜，惊出我一身冷汗` : ""}！` +
+      (human ? ` <b>${human.p.name}</b> 名列第 ${scores.indexOf(human) + 1}（${human.total} 分），${scores.indexOf(human) === 1 ? "虽败犹荣，下一局就是你的！" : "胜败乃兵家常事，回去复盘，我们再战！"}` : "");
+  }
+  commentarySay(`<div class="cast-head">🎙️ 解说台 · 终场</div><div class="cast-line cast-hit">${line}</div>`, "power");
+}
+
+// 真人玩家选角前：解说员当众押注（不阻塞，思考多久都行——悬念由玩家自己制造）
+function commentaryPreRoleHuman(me, available) {
+  const pred = commentatorPredict(me, available);
+  const top = pred[0];
+  const pct = Math.round(top.p * 100);
+  const hot = `<b class="cast-hot">${ROLE_NAME_CN[top.r.name]}</b>`;
+  const heat = castEndgameHeat();
+  const opener = heat === 2 ? `🔚 生死时速！` : (heat === 1 ? `⏳ 末日临近——` : ``);
+  const line = castPick([
+    `${opener}聚光灯打向 <b>${me.name}</b>！全场安静——行家盘口最看好 ${hot}（<b>${pct}%</b>）。按套路走，还是给我们一个惊喜？`,
+    `${opener}轮到 <b>${me.name}</b> 出手了！我当众押 ${hot}（<b>${pct}%</b>）——来，打我的脸，我等着！`,
+    `${opener}<b>${me.name}</b> 的手悬在七张牌上方……我赌 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`,
+  ]);
+  commentarySay(`<div class="cast-head">🎙️ 解说台</div><div class="cast-line">${line}</div>`, "predict");
+  return pred;
+}
+
 function commentaryPreRole(me, available) {
   const pred = commentatorPredict(me, available);
   const top = pred[0], second = pred[1];
@@ -925,9 +1024,19 @@ function commentaryPreRole(me, available) {
   const pct = Math.round(top.p * 100);
   const hot = `<b class="cast-hot">${ROLE_NAME_CN[top.r.name]}</b>`;
   let lead;
-  if (pct >= 45) lead = castPick([`我重押 ${hot}！可能性 <b>${pct}%</b>！${castReason(top.r.name)}`, `毫无悬念——${hot}！<b>${pct}%</b>！${castReason(top.r.name)}`]);
-  else if (pct >= 28) lead = `我看好 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`;
-  else lead = `七张牌几乎五五开——我咬牙压 ${hot}（仅 <b>${pct}%</b>），这一手太难猜了！`;
+  if (pct >= 45) lead = castPick([
+    `我重押 ${hot}！可能性 <b>${pct}%</b>！${castReason(top.r.name)}`,
+    `毫无悬念——${hot}！<b>${pct}%</b>！${castReason(top.r.name)}`,
+    `闭着眼睛报：${hot}！<b>${pct}%</b>！${castReason(top.r.name)}`,
+  ]);
+  else if (pct >= 28) lead = castPick([
+    `我看好 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`,
+    `直觉告诉我是 ${hot}（<b>${pct}%</b>）！${castReason(top.r.name)}`,
+  ]);
+  else lead = castPick([
+    `七张牌几乎五五开——我咬牙压 ${hot}（仅 <b>${pct}%</b>），这一手太难猜了！`,
+    `盘口乱成一锅粥！我硬着头皮报 ${hot}（<b>${pct}%</b>），猜错别笑话我！`,
+  ]);
   const heat = castEndgameHeat();
   const opener = heat === 2 ? `🔚 生死时速！` : (heat === 1 ? `⏳ 末日临近——` : ``);
   let html = `<div class="cast-head">🎙️ 解说台</div>`;
@@ -938,7 +1047,8 @@ function commentaryPreRole(me, available) {
   return pred;
 }
 
-// 揭晓：以"局势模型"判断这一手好坏/是否卡位，套用足球解说的极端情绪模板
+// 揭晓：以"局势模型"判断这一手好坏/是否卡位，套用足球解说的极端情绪模板。
+// 真人玩家(hu)走第二人称专属台词——解说员是在跟你说话，不是在念稿。
 function commentaryPostRole(me, pred, chosenRole) {
   G._castTotal = (G._castTotal || 0) + 1;
   const rank = pred.findIndex(x => x.r.name === chosenRole); // 0=解说首选
@@ -946,6 +1056,7 @@ function commentaryPostRole(me, pred, chosenRole) {
   const cn = ROLE_NAME_CN[chosenRole];
   const a = castAnalyzeMove(me, chosenRole);
   const nm = `<b>${me.name}</b>`;
+  const hu = !!me.isHuman;
   const phase = gamePhase();
   const heat = castEndgameHeat();
   // 判定戏剧类型
@@ -954,86 +1065,130 @@ function commentaryPostRole(me, pred, chosenRole) {
   const isWaste = !isProspector && a.myGain < 0.6 && a.oppMax >= 1.5; // 真·亏：自己几乎没赚，还把行动资敌
   const isMeh = a.myGain < 1.0;
   const isPower = a.myGain >= 3.0;
-  const amTrailing = a.chooserRank >= a.n - 1;
-  const amLeading = a.chooserRank === 0;
+  const solo = a.n === 1; // 单人闯关没有领跑/垫底之说
+  const amTrailing = !solo && a.chooserRank >= a.n - 1;
+  const amLeading = !solo && a.chooserRank === 0;
   let line, kind, endgameSpecial = false;
   if (heat === 2 && chosenRole === "Builder" && me.money >= 10) {
     kind = "power"; endgameSpecial = true;
-    line = castPick([
+    line = hu ? castPick([
+      `终场哨在即，${nm}，你这一锤砸下了大件！！满额奖励分就在眼前——这可能就是属于你的惊天逆转！历史在此刻拐弯！`,
+      `末日倒计时声中，你的通天塔轰然建起！！要一锤定音了吗？！我和全场观众一起屏住了呼吸！`,
+    ]) : castPick([
       `终场哨在即，${nm} 一锤砸下大件！！这一砸可能就是惊天逆转的满额奖励分——历史在此刻拐弯！`,
       `末日倒计时声中，${nm} 的通天塔轰然建起！！要一锤定音了吗？！全场屏住呼吸！`,
     ]);
   } else if (heat === 2 && (chosenRole === "Mayor" || chosenRole === "Craftsman") && !isBlock) {
     kind = "block"; endgameSpecial = true;
-    line = castPick([
+    line = hu ? castPick([
+      `控速！${nm}，你在精算供应堆的每一个木头人——你想亲手决定终场哨什么时候吹响！好大的胆子，我喜欢！`,
+      `生死时速！你一只手按住刹车，一只手踩着油门——整张牌桌的命运攥在你的手心里！`,
+    ]) : castPick([
       `控速大师！${nm} 在精算供应堆的每一个木头人，要强行吹响全场结束的哨音！这是一场关于流速的拔河！`,
       `生死时速！${nm} 一只手按在刹车上，一只手按在油门上——他在亲手决定游戏什么时候暴毙！`,
     ]);
   } else if (isBlock && a.rivalRank === 0) {
     kind = "block";
-    line = castPick([
+    line = hu ? castPick([
+      `斩断！斩——断！${nm}，你一把抢走 <b>${cn}</b>，直接掐住了领头羊 <b>${a.rival.name}</b> 的咽喉！！这一刀又稳又狠，我看到它的引擎当场熄火！为你起立鼓掌！`,
+      `心机！太有心机了！你这手 <b>${cn}</b> 根本不是为了自己——是把 <b>${a.rival.name}</b> 摁在地上摩擦！！教科书级别的卡位，这才是会玩波多黎各的人！`,
+    ]) : castPick([
       `斩断！斩——断！${nm} 一把抢走 <b>${cn}</b>，直接掐死了领头羊 <b>${a.rival.name}</b> 的命脉！！这一刀又稳又狠，<b>${a.rival.name}</b> 的引擎当场熄火！全场沸腾！`,
       `不可思议！${nm} 这手 <b>${cn}</b> 根本不是为了自己——是为了把 <b>${a.rival.name}</b> 摁在地上摩擦！！教科书级别的卡位，绝了！`,
     ]);
   } else if (isBlock) {
     kind = "block";
-    line = castPick([
+    line = hu ? castPick([
+      `卡位！${nm}，你抢下 <b>${cn}</b>，一刀切断了 <b>${a.rival.name}</b> 的财路！要是机器会做表情，它现在脸都绿了！漂亮！`,
+      `好一记釜底抽薪！你把 <b>${a.rival.name}</b> 最想要的 <b>${cn}</b> 生生夺走！这股杀气，我隔着解说席都感觉到了！`,
+    ]) : castPick([
       `卡位！${nm} 抢下 <b>${cn}</b>，一刀切断了 <b>${a.rival.name}</b> 的财路！${a.rival.name} 脸都绿了！漂亮！`,
       `好一记釜底抽薪！${nm} 把 <b>${a.rival.name}</b> 最想要的 <b>${cn}</b> 生生夺走！这就是高手的杀气！`,
+      `毒辣！${nm} 看都不看自己的收益，先把 <b>${a.rival.name}</b> 的算盘掀翻在地！心理战拉满！`,
     ]);
   } else if (isWaste) {
     kind = "miss";
-    line = castPick([
+    line = hu ? castPick([
+      `（捂住话筒）……朋友，咱俩商量一下？你这手 <b>${cn}</b> 自己几乎没捞到，行动还白送了全场……我相信你有更深的布局，对吧？对吧？！`,
+      `哎呀呀！${nm}，这手 <b>${cn}</b> 颗粒无收还资敌——大意了啊！不过比赛还长，深呼吸，下一手找回来！`,
+    ]) : castPick([
       `（停顿）……他在干什么？！${nm} 这手 <b>${cn}</b> 自己几乎没捞到，却把行动白送全场！业余！不可原谅！这一步要写进检讨书！`,
       `灾难！纯纯的灾难！${nm} 选了 <b>${cn}</b> 颗粒无收，反倒给对手们做了嫁衣裳！看不懂，真的看不懂！`,
+      `全场倒吸一口凉气——${nm} 的 <b>${cn}</b> 是给对手们集体发红包啊！经理，快申请暂停！`,
     ]);
   } else if (isProspector) {
     kind = "talk";
-    line = castPick([
+    line = hu ? castPick([
+      `${nm} 务实地摸了金矿主，闷声 +1 金。低调，但金币不会说谎——攒着，憋个大的！`,
+      `你选了金矿主，独吞一块钱，谁也蹭不到。稳！有时候最朴素的一手就是最好的一手。`,
+    ]) : castPick([
       `没有更香的选择，${nm} 务实地摸了金矿主，闷声 +1 金——不亏，但也只是过渡。`,
       `${nm} 选金矿主求稳，独吞一块钱。没人能蹭，安全牌一张。`,
+      `${nm} 蹲在河边淘了块金子。平平无奇？不，省下的每一手都是伏笔。`,
     ]);
   } else if (isPower && amLeading) {
     kind = "power";
-    line = castPick([
+    line = hu ? castPick([
+      `霸气外露！领跑的 ${nm} 用一记 <b>${cn}</b> 把优势焊死，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！王座上的风景如何？全场都在仰望你！`,
+      `碾压！就是碾压！你的 <b>${cn}</b> 又是一波暴击，AI 的风扇都转出了哀鸣！谁能拦住你？！`,
+    ]) : castPick([
       `霸气外露！领跑的 ${nm} 用一记 <b>${cn}</b> 把优势焊死，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！这是属于王者的从容！`,
       `碾压！就是碾压！${nm} 的 <b>${cn}</b> 又是一波暴击，把分差拉到令人窒息！谁能拦住他？！`,
     ]);
   } else if (amTrailing && a.myGain >= 1.2) {
     kind = "power";
-    line = castPick([
+    line = hu ? castPick([
+      `但是！！！垫底的 ${nm} 没有认输！这记 <b>${cn}</b> 撕开一道口子，净赚 <b>${a.myGain.toFixed(1)}</b> 分——我听到了绝境中的怒吼！英雄不死，翻盘有望！`,
+      `不服输！你在最艰难的时刻祭出 <b>${cn}</b>，硬生生抢回一口气！这就是冠军的心脏！看台都被你点燃了！`,
+    ]) : castPick([
       `但是！！！垫底的 ${nm} 没有认输！这记 <b>${cn}</b> 撕开一道口子，净赚 <b>${a.myGain.toFixed(1)}</b> 分——绝境中的怒吼，英雄不死！`,
       `不服输！${nm} 在最艰难的时刻祭出 <b>${cn}</b>，硬生生抢回一口气！这就是冠军的心脏！`,
     ]);
   } else if (isPower) {
     kind = "power";
-    line = castPick([
+    line = hu ? castPick([
+      `漂亮！${nm}，你这记 <b>${cn}</b> 价值连城，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！强！实在是强！`,
+      `世界级的一手！你拿下 <b>${cn}</b>，收益拉满——这水平，解说席集体起立！`,
+    ]) : castPick([
       `漂亮！${nm} 这记 <b>${cn}</b> 价值连城，预计净赚 <b>${a.myGain.toFixed(1)}</b> 分！强！太强了！`,
       `世界级的一手！${nm} 拿下 <b>${cn}</b>，收益拉满，全场起立！`,
+      `教科书都要为这一手加印一页！${nm} 的 <b>${cn}</b>，净赚 <b>${a.myGain.toFixed(1)}</b> 分，行云流水！`,
     ]);
   } else if (isMeh) {
     kind = "talk";
-    line = castPick([
+    line = hu ? castPick([
+      `${nm} 选了 <b>${cn}</b>，收益平平（约 <b>${a.myGain.toFixed(1)}</b> 分）。稳健的一手——还是说，在憋什么后手？我盯着你呢。`,
+      `不温不火，你拿下 <b>${cn}</b>。没什么火花，但棋盘上的杀招往往就藏在这种安静里。`,
+    ]) : castPick([
       `${nm} 选了 <b>${cn}</b>，收益平平（约 <b>${a.myGain.toFixed(1)}</b> 分），保守的一手，把节奏交还牌桌。`,
       `不温不火，${nm} 拿下 <b>${cn}</b>，没什么火花，稳字当头。`,
+      `${nm} 轻拿轻放一张 <b>${cn}</b>，象棋里这叫等着——看谁先沉不住气。`,
     ]);
   } else {
     kind = "talk";
-    line = castPick([
+    line = hu ? castPick([
+      `${nm} 稳稳选下 <b>${cn}</b>，预计赚 <b>${a.myGain.toFixed(1)}</b> 分，扎实的一手。基本功，看得见！`,
+      `合理！你的 <b>${cn}</b> 收益 <b>${a.myGain.toFixed(1)}</b> 分，按部就班推进——大赛拼的就是少犯错。`,
+    ]) : castPick([
       `${nm} 稳稳选下 <b>${cn}</b>，预计赚 <b>${a.myGain.toFixed(1)}</b> 分，扎实的一手。`,
       `合理！${nm} 的 <b>${cn}</b> 收益 <b>${a.myGain.toFixed(1)}</b> 分，按部就班推进。`,
     ]);
   }
   // 贴合实况的"黑话"桥段（端游/控速分支自带，不重复）
   if (!endgameSpecial) { const jg = castJargon(me, chosenRole, phase, heat); if (jg) line += ` ${jg}`; }
+  // 连选执念 + 头名易主 + 低概率花絮
+  line += castStreakNote(me, chosenRole);
+  line += castLeadChangeNote(a.standings);
+  line += castColorMaybe();
   // 预测核对小花絮
   let tag = "";
-  if (rank === 0) tag = `　<span class="cast-hit">[解说命中✓]</span>`;
-  else if (rank > 2) tag = `　<span class="cast-miss">[爆冷·打脸✗]</span>`;
+  if (rank === 0) tag = hu ? `　<span class="cast-hit">[被解说看穿了✓]</span>` : `　<span class="cast-hit">[解说命中✓]</span>`;
+  else if (rank > 2) tag = hu ? `　<span class="cast-miss">[你让解说员当众社死✗]</span>` : `　<span class="cast-miss">[爆冷·打脸✗]</span>`;
   // 局势播报
   const L = a.standings[0], gap = (a.standings[0].v - (a.standings[1] ? a.standings[1].v : 0));
   const allZero = a.standings.every(s => s.v === 0);
-  const standingTxt = allZero ? `比分尚未拉开，群雄逐鹿` : `<b>${L.p.name}</b> 以 ${L.v} 分领跑（领先次席 ${gap} 分）`;
+  const standingTxt = solo ? `单人闯关 · 当前 <b>${a.standings[0].v}</b> 分`
+    : allZero ? `比分尚未拉开，群雄逐鹿` : `<b>${L.p.name}</b> 以 ${L.v} 分领跑（领先次席 ${gap} 分）`;
   const heatNote = heat === 2 ? `🔚 终场哨已吹响！　` : (heat === 1 ? `⏳ 末日倒计时…　` : ``);
   const acc = G._castTotal ? Math.round((G._castHits || 0) / G._castTotal * 100) : 0;
   let html = `<div class="cast-head">🎙️ 解说台</div>`;
@@ -1065,6 +1220,7 @@ function startGame() {
     }
   });
   window._allAIMode = !!allAI;
+  window._liveCastOn = !!document.getElementById("live-cast")?.checked; // 人机对战实况解说开关
   assignCastNames(); // 给每位 AI 选手起一个昵称（解说要喊名字；难度由解说单独播报）
   // 读取 AI 思考预算。全 AI 观战模式也尊重所选预算（配合 5s/10s 节奏让观众
   // 能看清强 AI 的对局），不再强制 fast。想快速看完可自行选 fast。
@@ -1240,6 +1396,7 @@ async function runDraft(G) {
 }
 
 async function runMainLoop() {
+  if (castOn()) castOpening(); // 解说开场白：介绍今晚的对阵
   // 扩展：开局先轮抽决定哪些建筑进入本局
   if (G.expansion && !G._drafted) await runDraft(G);
   while (!G.gameOver) {
@@ -1266,16 +1423,20 @@ async function runMainLoop() {
       render();
       let chosenIdx;
       if (player.isHuman) {
+        // 实况解说：当众押注真人的选择（不阻塞，玩家想多久都行），选完再点评
+        const castPred = castOn() ? commentaryPreRoleHuman(player, available) : null;
         chosenIdx = await humanPickRole(available);
+        if (castPred) commentaryPostRole(player, castPred, available[chosenIdx].name);
       } else {
-        // 仅在有人类玩家时延时（给人类看清节奏）；全 AI 测试模式立即执行
-        if (!window._allAIMode) await sleep(700);
-        // 观战解说：开牌前预测
+        // 解说：开牌前预测（观战节奏慢、人机局节奏紧凑）；无解说时仅短暂延时给人类看清节奏
         let castPred = null;
-        if (spectatorOn()) { castPred = commentaryPreRole(player, available); await sleep(CAST_PREDICT_MS); }
+        if (castOn()) {
+          castPred = commentaryPreRole(player, available);
+          await sleep(spectatorOn() ? CAST_PREDICT_MS : CAST_PVE_PREDICT_MS);
+        } else if (!window._allAIMode) await sleep(700);
         chosenIdx = aiPickRole(player, available);
-        // 观战解说：开牌后核对
-        if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(CAST_REACT_MS); }
+        // 解说：开牌后核对
+        if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(spectatorOn() ? CAST_REACT_MS : CAST_PVE_REACT_MS); }
       }
       const chosen = available[chosenIdx];
       // 对局日志：在标记 taken 之前记录（快照里该角色仍可选）
@@ -1286,7 +1447,8 @@ async function runMainLoop() {
       chosen.money = 0;
       player.money += bonusMoney;
       G.logEvent(`${player.name} 选择 [${ROLE_NAME_CN[chosen.name]}]${bonusMoney ? ` +${bonusMoney}金` : ""}`, "role");
-      if (!player.isHuman && !window._allAIMode) {
+      // 解说台开着时不再弹"选了X"的 toast，避免和解说重复刷屏
+      if (!player.isHuman && !window._allAIMode && !castOn()) {
         showToast(`<div class="t-title">${player.name} 选了 ${ROLE_NAME_CN[chosen.name]}</div>${bonusMoney ? `<div class="t-sub">+${bonusMoney}金 奖励</div>` : ""}`, { kind: "role" });
       }
       G._currentPrompt = `阶段：${ROLE_NAME_CN[chosen.name]}（由 ${player.name} 选择${bonusMoney ? `，+${bonusMoney}金` : ""}）`;
@@ -4739,6 +4901,7 @@ async function endGame() {
     const tieB = b.p.money + GOODS.reduce((s, g) => s + b.p.goods[g], 0);
     return tieB - tieA;
   });
+  if (castOn()) { castFinale(scores); await sleep(2200); } // 终场颁奖词，停一拍再上结算面板
   // 触发原因
   let endReason = "未知";
   if (G.colonistsLeft <= 0) endReason = "💀 殖民者用尽";
