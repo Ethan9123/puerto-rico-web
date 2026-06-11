@@ -2154,8 +2154,13 @@ async function doCraftsman(chooserIdx, order) {
         if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 蔗糖</div>`, { kind: "gain" });
       }
     }
-    if (G.isManned(p, 34)) {
-      // 专业工厂（规则书）：得金 = 产量最多的单一货物(非玉米)的数量 - 1
+    // 专业工厂(34) 移至阶段末结算（官方注：工匠特权拿到的货也计入）——见下方 paySpecialtyFactory
+  }
+  const paySpecialtyFactory = () => {
+    for (let i = 0; i < G.players.length; i++) {
+      const p = G.players[i];
+      if (!G.isManned(p, 34)) continue;
+      // 专业工厂（规则书）：得金 = 产量最多的单一货物(非玉米)的数量 - 1；阶段末结算，特权货计入
       const sfCounts = GOODS.filter(g => g !== "corn").map(g => perPlayerProducedCount[i][g]).sort((a, b) => b - a);
       const gain = Math.max(0, (sfCounts[0] || 0) - 1);
       if (gain > 0) {
@@ -2165,7 +2170,7 @@ async function doCraftsman(chooserIdx, order) {
         if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">专业工厂：+${gain}金</div>`, { kind: "gain" });
       }
     }
-  }
+  };
   // FIX: Factory 工厂奖励 — 镇守工厂的玩家按本回合生产的种类拿金币
   // 2种=1金, 3种=2金, 4种=3金, 5种=5金
   const factoryBonus = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
@@ -2215,6 +2220,7 @@ async function doCraftsman(chooserIdx, order) {
     if (g && ownKinds.has(g) && G.supply[g] > 0) {
       chooser.goods[g]++;
       G.supply[g]--;
+      perPlayerProducedCount[chooserIdx][g]++; // 特权货计入专业工厂（官方注），不影响工厂的"种类"判定
       G.logEvent(`${chooser.name} 工匠奖励：+1 ${GOOD_NAMES[g]}`, "action");
       if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
       // 扩展：图书馆(33) — 工匠特权翻倍，再拿 1 个自己已产出的货（规则书：可与第一个相同，也可不同）
@@ -2231,6 +2237,7 @@ async function doCraftsman(chooserIdx, order) {
         }
         if (g2) {
           chooser.goods[g2]++; G.supply[g2]--;
+          perPlayerProducedCount[chooserIdx][g2]++; // 同样计入专业工厂
           G.logEvent(`${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}`, "action");
           if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "role" });
           if (chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "gain" });
@@ -2243,6 +2250,7 @@ async function doCraftsman(chooserIdx, order) {
     // 选择者自己本回合没有生产 → 无特权
     G.logEvent(`${chooser.name} 工匠特权：你本回合未生产任何货物，无可选种类`, "action");
   }
+  paySpecialtyFactory(); // 专业工厂：阶段末结算（特权货已计入）
   G.logEvent(`生产阶段结束`, "action");
   if (humanForCraftToast && !window._allAIMode) {
     // 只展示本回合 *新增* 的货物（包括 chooser 奖励的 +1）
