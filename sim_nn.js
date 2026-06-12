@@ -30,17 +30,31 @@
   }
 
   // 一次 Dense 前向：out = W·in + b（W 形状 [out, in]，row-major）
-  function _dense(input, W, b) {
-    const outDim = W.length;
-    const inDim = W[0].length;
+  // 性能: 载入时把嵌套 JS 数组平铺成 Float64Array(_prep)——数值与原嵌套数组
+  // 实现逐位一致(同为 f64 乘加、同序)，但缓存局部性好得多。
+  function _dense(input, L) {
+    const outDim = L._outDim, inDim = L._inDim;
+    const Wf = L._Wf, bf = L._bf;
     const out = new Float32Array(outDim);
     for (let i = 0; i < outDim; i++) {
-      const Wi = W[i];
-      let s = b[i];
-      for (let j = 0; j < inDim; j++) s += Wi[j] * input[j];
+      let s = bf[i];
+      const base = i * inDim;
+      for (let j = 0; j < inDim; j++) s += Wf[base + j] * input[j];
       out[i] = s;
     }
     return out;
+  }
+
+  // 载入时预处理 linear 层 → 平铺权重；之后释放嵌套数组(单进程省 ~100MB+, 浏览器同收益)
+  function _prep(net) {
+    for (const L of net.layers) {
+      if (!L.W) continue;
+      const outDim = L.W.length, inDim = L.W[0].length;
+      const Wf = new Float64Array(outDim * inDim);
+      for (let i = 0; i < outDim; i++) { const Wi = L.W[i]; const base = i * inDim; for (let j = 0; j < inDim; j++) Wf[base + j] = Wi[j]; }
+      L._Wf = Wf; L._bf = new Float64Array(L.b); L._outDim = outDim; L._inDim = inDim;
+      L.W = null; L.b = null; // 推理只用 _Wf/_bf
+    }
   }
 
   function _relu(input) {
@@ -55,31 +69,34 @@
     return out;
   }
 
-  // 一次完整前向，返回 { policy: Float32Array[7], value: number ∈ [-1, 1] }
+  // 一次完整前向，返回 { policy: Float32Array[7], value: number ∈ [-1, 1], valueVec }
+  // valueVec: 价值向量头的完整输出(4 维, perspective-ordered: [k]=视角玩家顺时针第 k 位的价值)。
+  // 旧标量网络 valueVec 长度为 1。value === valueVec[0] 不变。
   function _forward(net, features) {
     if (features.length !== net.feature_dim) {
       throw new Error(`forward: feature dim mismatch ${features.length} vs ${net.feature_dim}`);
     }
     let cur = features;
     let trunkOut = null;            // 走完 trunk 的输出（给 head 用）
-    let policyLogits = null, value = null;
+    let policyLogits = null, value = null, valueVec = null;
     for (const L of net.layers) {
       if (L.head === "policy") {
-        policyLogits = _dense(trunkOut || cur, L.W, L.b);
+        policyLogits = _dense(trunkOut || cur, L);
         continue; // 不更新 cur，因为 policy head 是分叉
       }
       if (L.head === "value") {
-        cur = _dense(trunkOut || cur, L.W, L.b);
+        cur = _dense(trunkOut || cur, L);
         continue;
       }
       // 普通 trunk 层
       if (L.type === "linear") {
-        cur = _dense(cur, L.W, L.b);
+        cur = _dense(cur, L);
       } else if (L.type === "relu") {
         cur = _relu(cur);
       } else if (L.type === "tanh") {
         cur = _tanh(cur);
         // 价值 head 后的 tanh 完结
+        valueVec = cur;
         value = cur[0];
         continue;
       }
@@ -88,7 +105,7 @@
     }
     if (!policyLogits) throw new Error("network has no policy head");
     if (value === null) throw new Error("network has no value head");
-    return { policy: _softmax(policyLogits), policyLogits, value };
+    return { policy: _softmax(policyLogits), policyLogits, value, valueVec };
   }
 
   // 加载网络。src 可以是：
@@ -106,6 +123,7 @@
     if (!net.feature_dim || !net.layers || !Array.isArray(net.layers)) {
       throw new Error("loadNetwork: invalid network JSON");
     }
+    _prep(net);
     NET = net;
     console.log(`[sim_nn] loaded ${net.layers.length} layers, feature_dim=${net.feature_dim}, n_roles=${net.n_roles}, val_loss=${(net.val_loss || 0).toFixed(4)}`);
     return net;
@@ -128,11 +146,29 @@
     return out.value;
   }
 
+  // ISMCTS 用(向量版): 一次前向输出全部 4 个视角的价值 → 整条回传路径共享。
+  // 原 evalLeafNN 在回传时对路径上每个节点(不同视角)各做一次完整前向(~6-12 次/迭代),
+  // 本函数把它压到 1 次。代价: 视角玩家以外的价值来自辅助头 vv[1..3](同目标联合训练,
+  // 精度略低于各自视角的 vv[0])。仅支持 4 人局(vv 固定 4 维); 其余人数返回 null,
+  // 调用方应回退 evalLeafNN。
+  function evalLeafVecNN(state) {
+    if (!NET) return null;
+    const N = state.numPlayers;
+    if (N !== 4) return null;
+    const out = networkEval(state, 0); // 视角=座位0 → valueVec[k] 即玩家 k 的价值
+    if (!out || !out.valueVec || out.valueVec.length < N) return null;
+    const vec = out.valueVec;
+    return (persp) => {
+      const v = vec[persp];
+      return (typeof v === "number" && isFinite(v)) ? Math.max(-1, Math.min(1, v)) : 0;
+    };
+  }
+
   function isLoaded() { return NET !== null; }
 
-  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, isLoaded });
+  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded });
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, isLoaded, _forward, _softmax };
+    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, _forward, _softmax };
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));

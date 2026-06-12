@@ -2768,13 +2768,19 @@ function alphazeroPickRole(p, available) {
     if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
     const b = window._aiThinkBudget || {};
     // L6 用更少的 iters：NN 已"看远"，每次模拟更便宜的 NN eval 取代 rollout
-    const iters = b.alphaIters || 800;
-    const ms = b.alphaMs || 6000;
+    let iters = b.alphaIters || 800;
+    let ms = b.alphaMs || 6000;
+    // 终局增压：收官期(终局已触发/VP 池将尽/殖民者将尽)的决策决定 1-3 分的胜负毛差,
+    // 提高这些少数关键决策的搜索预算。_alphaEndBoost 注入倍率(A/B 调参), 默认 1(关闭)。
+    const endBoost = (window._alphaEndBoost != null ? window._alphaEndBoost : 1);
+    if (endBoost > 1 && (st.endTriggered || (st.vpLeft != null && st.vpLeft <= 12) || (st.colonistsLeft != null && st.colonistsLeft <= 6))) {
+      iters = Math.round(iters * endBoost); ms = ms * endBoost;
+    }
     const ROLE_NAMES = ["Settler", "Mayor", "Builder", "Craftsman", "Trader", "Captain", "Prospector"];
     const ri = PRSim.ismctsPickRoleIdx(st, {
       maxIters: iters,
       budgetMs: ms,
-      C: 1.5, // PUCT 常数；NN policy 比较自信，稍微鼓励探索
+      C: (window._alphaC != null ? window._alphaC : 1.5), // PUCT 常数；NN policy 比较自信，稍微鼓励探索（_alphaC 供调参注入）
       truncate: 999, // 全 rollout 到终局：用 NN 仅作 policy prior，value 用真实回报
       evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
       priorPolicyFn: (state, seat) => {

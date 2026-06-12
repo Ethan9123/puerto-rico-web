@@ -876,7 +876,11 @@
     //     有则替代 evalLeaf 的截断 rollout，直接用 NN 估值
     //   priorPolicyFn(st, perspectiveSeat) -> { [roleName]: prob }
     //     有则在每个节点用 PUCT 而非 UCT：score = Q/N + C * P * sqrt(N_parent) / (1 + N_child)
+    //   evalLeafVecFn(st) -> (persp => value) | null
+    //     向量版叶评估: 一次调用给出全部视角的价值(整条回传路径共享一次 NN 前向)。
+    //     返回 null 时回退 evalLeafFn(如 5 人局)。
     const evalLeafFn = opts.evalLeafFn || null;
+    const evalLeafVecFn = opts.evalLeafVecFn || null;
     const priorPolicyFn = opts.priorPolicyFn || null;
     if (currentChooser(rootState) < 0) return -1;
     const rootLegal = legalRoleIdxs(rootState);
@@ -926,7 +930,7 @@
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout / NN eval
       }
       let leafEval;
-      if (evalLeafFn) {
+      if (evalLeafFn || evalLeafVecFn) {
         // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
         // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
         // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
@@ -941,13 +945,21 @@
         if (isTerminal(st)) {
           leafEval = (persp) => reward(st, persp);
         } else {
-          leafEval = (persp) => {
-            try {
-              const v = evalLeafFn(st, persp);
-              if (typeof v !== "number" || !isFinite(v)) return 0;
-              return Math.max(-1, Math.min(1, v));
-            } catch (e) { return 0; }
-          };
+          let vecEval = null;
+          if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
+          if (vecEval) {
+            leafEval = vecEval; // 已含 clamp/容错
+          } else if (evalLeafFn) {
+            leafEval = (persp) => {
+              try {
+                const v = evalLeafFn(st, persp);
+                if (typeof v !== "number" || !isFinite(v)) return 0;
+                return Math.max(-1, Math.min(1, v));
+              } catch (e) { return 0; }
+            };
+          } else {
+            leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+          }
         }
       } else {
         leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
