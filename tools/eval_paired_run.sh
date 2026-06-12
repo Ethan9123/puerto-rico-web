@@ -15,6 +15,7 @@ PROCS=${5:-12}
 SEEDBASE=${6:-20260611}
 ALPHAC=${7:-}
 ENDBOOST=${8:-}
+HEURJSON=${9:-}
 
 mkdir -p data/paired logs
 CHUNK=$(( (GAMES + PROCS - 1) / PROCS ))
@@ -25,7 +26,7 @@ for i in $(seq 0 $((PROCS-1))); do
   [ "$S" -ge "$E" ] && break
   P="data/paired/.${NAME}-lo${LO}-part$i.jsonl"
   parts+=("$P")
-  node tools/eval_paired_worker.js "$NN" "$LO" "$S" "$E" "$P" "$SEEDBASE" $ALPHAC $ENDBOOST > "logs/paired-${NAME}-lo${LO}-p$i.log" 2>&1 &
+  node tools/eval_paired_worker.js "$NN" "$LO" "$S" "$E" "$P" "$SEEDBASE" $ALPHAC $ENDBOOST $HEURJSON > "logs/paired-${NAME}-lo${LO}-p$i.log" 2>&1 &
   pids+=($!)
 done
 echo "[eval_paired] $NAME lo=$LO games=$GAMES procs=${#pids[@]} 已启动"

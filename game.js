@@ -4238,6 +4238,30 @@ function evalBuildingValue(p, b, phase) {
   return v;
 }
 
+// ---- L6 私有启发式参数：默认值=共用启发式的手调常数；window._l6Heur 注入覆盖(仅 L6 生效) ----
+// 这是"打破 L4/L5/L6 共用子决策启发式"的入口(AI_STRENGTH §7 的剩余方向)：
+// L4/L5 永远走默认值；CMA-ES/(1+1)-ES 调参产物只改变宗师的行为。
+const L6_HEUR_DEFAULTS = {
+  pl_moneyLean: 7,    // 选地: money>=此值视为建筑流(多囤矿)
+  pl_priceMult: 1.5,  // 选地: 货价基础权重
+  pl_cornEarly: 6,    // 选地: 早期玉米加分
+  pl_cornLate: 3,     // 选地: 中后期玉米加分
+  pl_chain: 14,       // 选地: 有厂缺田补产业链
+  pl_diverse: 2,      // 选地: 多样化
+  pl_monoBase: 3,     // 选地: 垄断基础分(再加货价)
+  pl_clash: 5,        // 选地: 与右手撞高价货减分
+  bd_costMult: 3,     // 建造: 价格机会成本
+  bd_chooser: 5,      // 建造: chooser 折扣加分
+  bd_grabLate: 30,    // 建造: 心仪大紫 late 抢卡
+  bd_grabMid: 16,     // 建造: 心仪大紫 mid 抢卡
+  bd_saveGap: 4,      // 建造: 攒钱抢大紫的差额容忍
+  bd_saveMediocre: 20,// 建造: "平庸建筑"分数线(低于则留钱)
+};
+function l6h(p, key) {
+  if (p && p._aiLevel === 6 && typeof window !== "undefined" && window._l6Heur && window._l6Heur[key] != null) return window._l6Heur[key];
+  return L6_HEUR_DEFAULTS[key];
+}
+
 function aiPickPlantation(p, options, isChooser) {
   const lvl = p._aiLevel || 3;
   // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
@@ -4249,7 +4273,7 @@ function aiPickPlantation(p, options, isChooser) {
   let qCount = 0;
   for (const pl of p.plantations) if (pl.good === "quarry") qCount++;
   const violetOwned = p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
-  const buildingLean = violetOwned >= 1 || p.money >= 7;
+  const buildingLean = violetOwned >= 1 || p.money >= l6h(p, "pl_moneyLean");
   const quarryCap = buildingLean ? 4 : (gamePhase() === "early" ? 2 : 1);
   if (isChooser && qCount < quarryCap && G.quarriesLeft > 0) {
     const qOpt = options.findIndex(o => o.kind === "quarry");
@@ -4265,17 +4289,17 @@ function aiPickPlantation(p, options, isChooser) {
     const o = options[i];
     if (o.kind !== "plant") continue;
     const g = o.good;
-    let s = GOOD_PRICE[g] * 1.5;                       // 基础：贵货种植园略高
-    if (g === "corn") s += (phase === "early" ? 6 : 3); // 早期玉米强(不需厂、1人即产)
+    let s = GOOD_PRICE[g] * l6h(p, "pl_priceMult");      // 基础：贵货种植园略高
+    if (g === "corn") s += (phase === "early" ? l6h(p, "pl_cornEarly") : l6h(p, "pl_cornLate")); // 早期玉米强(不需厂、1人即产)
     const ref = refMap[g];
     let factCap = 0; if (ref) for (const bid of ref) { const bb = G.ownsBuilding(p, bid); if (bb) factCap += BLD_BY_ID[bid].men; }
     const myCount = p.plantations.filter(pp => pp.good === g).length;
-    if (ref && myCount < factCap) s += 14;             // 有厂缺田 → 补全产业链(主因)
-    if (myCount === 0 && g !== "corn") s += 2;          // 多样化(利于贸易/运货、打破重复)
+    if (ref && myCount < factCap) s += l6h(p, "pl_chain"); // 有厂缺田 → 补全产业链(主因)
+    if (myCount === 0 && g !== "corn") s += l6h(p, "pl_diverse"); // 多样化(利于贸易/运货、打破重复)
     // 垄断意识：全场没别人产这种 → 加分(独家卖钱+占船拖慢对手)，贵货更值
-    if (!G.anyOpponentProduces(p, g)) s += 3 + GOOD_PRICE[g];
+    if (!G.anyOpponentProduces(p, g)) s += l6h(p, "pl_monoBase") + GOOD_PRICE[g];
     // 不与右手做同种高价货：上家已做咖啡/烟草而我去撞 → 减分(他先卖/先运堵我)
-    if ((g === "coffee" || g === "tobacco") && G.playerProduces(upstream, g)) s -= 5;
+    if ((g === "coffee" || g === "tobacco") && G.playerProduces(upstream, g)) s -= l6h(p, "pl_clash");
     if (s > bestS) { bestS = s; bestI = i; }
   }
   return bestI >= 0 ? bestI : 0;
@@ -4294,16 +4318,16 @@ function aiPickBuilding(p, options, isChooser) {
   const tgtStrong = tgt && tgt.special >= 3 && (phase === "mid" || phase === "late");
   const scored = options.map((o, i) => {
     let score = evalBuildingValue(p, o.b, phase);
-    score -= o.cost * 3;            // 价格高减分（机会成本）
-    if (isChooser) score += 5;      // chooser 折扣略加分
-    if (tgtStrong && o.b.id === tgt.id) score += (phase === "late" ? 30 : 16); // 心仪大紫可买→抢下
+    score -= o.cost * l6h(p, "bd_costMult");      // 价格高减分（机会成本）
+    if (isChooser) score += l6h(p, "bd_chooser"); // chooser 折扣略加分
+    if (tgtStrong && o.b.id === tgt.id) score += (phase === "late" ? l6h(p, "bd_grabLate") : l6h(p, "bd_grabMid")); // 心仪大紫可买→抢下
     return { i, score };
   });
   scored.sort((a, b) => b.score - a.score);
   // 攒钱抢大紫：心仪大紫还买不起但已接近（一两回合可凑齐），且当前最佳可买只是平庸小建筑 → 不买，留钱。
   if (tgtStrong && !options.some(o => o.b.id === tgt.id)) {
     const cost = G.effectiveCostWithRoleBonus(p, BLD_BY_ID[tgt.id], isChooser);
-    if (p.money >= cost - 4 && scored[0].score < 20) return -1;
+    if (p.money >= cost - l6h(p, "bd_saveGap") && scored[0].score < l6h(p, "bd_saveMediocre")) return -1;
   }
   return scored[0].i;
 }

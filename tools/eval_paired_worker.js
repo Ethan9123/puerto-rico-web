@@ -23,6 +23,8 @@ const OUT = process.argv[6] || `data/paired/worker-${G_START}-${G_END}.jsonl`;
 const SEED_BASE = parseInt(process.argv[7] || '20260611');
 const ALPHA_C = process.argv[8] ? parseFloat(process.argv[8]) : null; // L6 PUCT 常数覆盖(调参)
 const END_BOOST = process.argv[9] ? parseFloat(process.argv[9]) : null; // L6 终局增压倍率(调参)
+const HEUR_JSON = process.argv[10] || null; // L6 私有启发式参数 JSON 文件路径(调参)
+const HEUR_OBJ = HEUR_JSON ? JSON.parse(fs.readFileSync(HEUR_JSON, 'utf8')) : null;
 const NN_OVERRIDE = NN_ARG === 'DEPLOY' ? null : NN_ARG;
 
 // ---- 可设种子的 Math 包装(必须在 game.js 加载前注入, 让 `rnd: Math.random`
@@ -67,6 +69,7 @@ const src = `(async () => {
   ${NN_OVERRIDE ? `window.__MCTS_VALUE_NN__ = ${JSON.stringify(NN_OVERRIDE)};` : ''}
   ${ALPHA_C != null ? `window._alphaC = ${ALPHA_C};` : ''}
   ${END_BOOST != null ? `window._alphaEndBoost = ${END_BOOST};` : ''}
+  ${HEUR_OBJ ? `window._l6Heur = ${JSON.stringify(HEUR_OBJ)};` : ''}
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');
