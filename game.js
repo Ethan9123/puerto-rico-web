@@ -348,7 +348,7 @@ document.getElementById("rules-text").innerHTML = RULES_TEXT;
 // 游戏状态
 // ============================================================
 class Game {
-  constructor(numPlayers, humanName, expansion) {
+  constructor(numPlayers, humanName, expansion, buccaneer) {
     this.numPlayers = numPlayers;
     // expansion: false/"none"=基础, true/"newbuildings"=扩展I, "nobles"=扩展I+II(贵族),
     //            "tibs"=扩展I+II+Tibs 自制(超集)
@@ -446,9 +446,14 @@ class Game {
     const startMoney = { 1: 2, 2: 3 }[numPlayers] ?? (numPlayers - 1);
     for (let p of this.players) p.money = startMoney;
 
+    // Tibs 节庆模块（随 tibs 扩展启用）：3 个竞速目标
+    this.moduleFestival = this.expansionTibs;
+    // Tibs 海盗模块（独立开关，因为加第 8 个角色）：由 startGame 传入 buccaneer 标志
+    this.moduleBuccaneer = this.expansionTibs && !!buccaneer;
     this.log = [];
     this.logEvent(`游戏开始：${numPlayers} 玩家`);
     this.logEvent(`抽选首任总督：${this.players[this.governor].name}`, 'role');
+    if (this.moduleFestival) this.setupFestival();
     // 给人类玩家提示他们的顺位与起始田
     const humanPlayer = this.players.find(p => p.isHuman);
     if (humanPlayer) {
@@ -1539,9 +1544,17 @@ async function runRolePhase(roleName, chooserIdx) {
         if (pr.isHuman) showToast(`<div class="t-title">金矿主：你 +${gold}金</div>`, { kind: "gain" });
         else showToast(`<div class="t-title">${pr.name} 金矿主：+${gold}金</div>`, { kind: "role" });
       }
+      // Tibs 塔楼(49)：非选择者塔楼主也得金矿主特权 +1 金
+      for (const i of order) {
+        if (i === chooserIdx) continue;
+        const tp = G.players[i];
+        if (G.towerActive(tp)) { tp.money += 1; G.logEvent(`${tp.name} 塔楼·金矿主特权：+1 金`, "action"); }
+      }
     }
       break;
   }
+  // Tibs 节庆模块：每个角色阶段结束后结算竞速目标
+  if (G.checkFestival) G.checkFestival(roleName);
 }
 
 // ============================================================
@@ -2361,6 +2374,7 @@ async function doCraftsman(chooserIdx, order) {
     }
   }
   paySpecialtyFactory(); // 专业工厂：阶段末结算（特权货已计入）
+  G._lastCraftKinds = perPlayerProducedKinds; // Tibs 节庆②：记录本回合各玩家产出种类
   G.logEvent(`生产阶段结束`, "action");
   if (humanForCraftToast && !window._allAIMode) {
     // 只展示本回合 *新增* 的货物（包括 chooser 奖励的 +1）
@@ -4847,6 +4861,58 @@ Game.prototype.getDisplayVPs = function (p) {
   for (const b of p.buildings) vp += BLD_BY_ID[b.bid].vp;
   vp += this.getSpecialVPs(p);
   return vp;
+};
+
+// ============================================================
+// Tibs 节庆模块（Festival）：3 个竞速目标，各首位达成者得奖励
+// 规则取自 mod 笔记本：种植3×X→3殖民者 / 一回合同产3种→3金 / 建造第3列指定建筑→3VP
+// ============================================================
+Game.prototype.setupFestival = function () {
+  const goods = GOODS.slice();
+  const plant = goods[Math.floor(Math.random() * goods.length)];
+  const prod = goods.slice().sort(() => Math.random() - 0.5).slice(0, 3);
+  // 第 3 列建筑：tier3 紫色 + 烟草/咖啡厂；避开与种植目标同色的产建
+  const col3 = BUILDINGS.filter(b => (TIER_BY_BID[b.id] === 3 && b.type === "violet") || b.id === 5 || b.id === 6);
+  const pool = col3.filter(b => !((plant === "tobacco" && b.id === 5) || (plant === "coffee" && b.id === 6)));
+  const cand = pool.length ? pool : col3;
+  const bld = cand.length ? cand[Math.floor(Math.random() * cand.length)].id : 15;
+  this.festival = { plant, prod, bld, plantWinner: null, prodWinner: null, bldWinner: null };
+  this.logEvent(`🎉 节庆目标：①种植 3×${GOOD_NAMES[plant]}→+3殖民者 ②一回合同产 ${prod.map(g => GOOD_NAMES[g]).join("+")}→+3金 ③建造「${BLD_BY_ID[bld].cn}」→+3VP（各仅首位达成者得奖）`, "role");
+};
+// 在每个角色阶段结束后调用，结算尚未被领取的目标（按座位序定"首位"）
+Game.prototype.checkFestival = function (roleName) {
+  const f = this.festival; if (!f) return;
+  if (f.plantWinner === null) {
+    for (let i = 0; i < this.numPlayers; i++) {
+      const p = this.players[i];
+      if (p.plantations.filter(pl => pl.good === f.plant).length >= 3) {
+        f.plantWinner = i; let got = 0;
+        while (got < 3 && this.colonistsLeft > 0) { this.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; got++; }
+        this.logEvent(`🎉 ${p.name} 完成节庆①种植 3×${GOOD_NAMES[f.plant]}：+${got} 殖民者(岸边)`, "role");
+        break;
+      }
+    }
+  }
+  if (f.prodWinner === null && roleName === "Craftsman" && this._lastCraftKinds) {
+    for (let i = 0; i < this.numPlayers; i++) {
+      const kinds = this._lastCraftKinds[i];
+      if (kinds && f.prod.every(g => kinds.has(g))) {
+        f.prodWinner = i; this.players[i].money += 3;
+        this.logEvent(`🎉 ${this.players[i].name} 完成节庆②同产 ${f.prod.map(g => GOOD_NAMES[g]).join("+")}：+3 金`, "role");
+        break;
+      }
+    }
+  }
+  if (f.bldWinner === null) {
+    for (let i = 0; i < this.numPlayers; i++) {
+      if (this.ownsBuilding(this.players[i], f.bld)) {
+        f.bldWinner = i; const gain = Math.min(3, this.vpLeft);
+        this.players[i].vp += gain; this.vpLeft -= gain;
+        this.logEvent(`🎉 ${this.players[i].name} 完成节庆③建造「${BLD_BY_ID[f.bld].cn}」：+${gain} VP`, "role");
+        break;
+      }
+    }
+  }
 };
 
 Game.prototype.getSpecialVPs = function (p) {
