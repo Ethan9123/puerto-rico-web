@@ -59,7 +59,9 @@ const sandbox = {
 sandbox.window = sandbox; sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) load(f);
+for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js','sim_az.js','sim_solve.js']) load(f);
+const L6_SOLVER = process.env.L6_SOLVER ? true : false; // 终局精确求解器开关(真实评测 A/B)
+const L6_SOLVER_CAP = process.env.L6_SOLVER_CAP ? parseFloat(process.env.L6_SOLVER_CAP) : null;
 
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
@@ -70,6 +72,8 @@ const src = `(async () => {
   ${ALPHA_C != null ? `window._alphaC = ${ALPHA_C};` : ''}
   ${END_BOOST != null ? `window._alphaEndBoost = ${END_BOOST};` : ''}
   ${HEUR_OBJ ? `window._l6Heur = ${JSON.stringify(HEUR_OBJ)};` : ''}
+  ${L6_SOLVER ? `window._l6Solver = true;` : ''}
+  ${L6_SOLVER_CAP != null ? `window._l6SolverCap = ${L6_SOLVER_CAP};` : ''}
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');

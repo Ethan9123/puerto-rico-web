@@ -2766,6 +2766,19 @@ function alphazeroPickRole(p, available) {
   try {
     const st = buildSimState(G);
     if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    // 终局精确求解器(opt-in, 默认关闭直到真实评测确认; AI_STRENGTH §9)：
+    // endTriggered 后剩余决策树小(中位 ~10^4), 完整 maxⁿ 给出精确最优角色, 绕开启发式天花板。
+    // buildSimState 恰是角色边界(az 默认 role 阶段) → 这里求解的就是 role 决策, 干净对齐。
+    // 超预算(cap)返回 null → 落到下方 NN-ISMCTS。开关: window._l6Solver。
+    if (window._l6Solver && st.endTriggered && typeof PRSim.solveEndgame === "function") {
+      try {
+        const sol = PRSim.solveEndgame(st, window._l6SolverCap || 1.5e5);
+        if (sol && sol.type === "role" && sol.action != null && st.roleCards[sol.action]) {
+          const idx = available.findIndex(r => r.name === st.roleCards[sol.action].name);
+          if (idx >= 0) return idx;
+        }
+      } catch (e) { /* 求解失败 → 落到 NN-ISMCTS */ }
+    }
     const b = window._aiThinkBudget || {};
     // L6 用更少的 iters：NN 已"看远"，每次模拟更便宜的 NN eval 取代 rollout
     let iters = b.alphaIters || 800;
