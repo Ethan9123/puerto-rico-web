@@ -196,7 +196,7 @@ Object.assign(BUILDING_EFFECT_TEXT, {
 // cost/tier 已折算到引擎的金币造价→VP 阶梯；标注[简化]者为避免新增持久状态而做的合理裁定。
 // ============================================================
 const TIBS_BUILDINGS = [
-  { id:46, name:"Gold Mine",       cn:"金矿",   img:"46_gold_mine.jpg",       type:"violet",       cost:1,  men:1, vp:1, size:1, qty:2, tier:1, effect:"gold_mine" },
+  { id:46, name:"Gold Mine",       cn:"金矿",   img:"46_gold_mine.jpg",       type:"violet",       cost:1,  men:2, vp:1, size:1, qty:2, tier:1, effect:"gold_mine" },
   { id:47, name:"Well",            cn:"水井",   img:"47_well.jpg",            type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:2, effect:"well" },
   { id:48, name:"Boarding House",  cn:"寄宿屋", img:"48_boarding_house.jpg",  type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"boarding_house" },
   { id:49, name:"Tower",           cn:"塔楼",   img:"49_tower.jpg",           type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"tower" },
@@ -208,15 +208,16 @@ const TIBS_BUILDINGS = [
 Object.assign(BLD_BY_ID, Object.fromEntries(TIBS_BUILDINGS.map(b => [b.id, b])));
 Object.assign(TIER_BY_BID, { 46:1, 47:2, 48:2, 49:2, 50:3, 51:3, 52:3, 53:4 });
 Object.assign(BUILDING_EN, { 46:"Gold Mine", 47:"Well", 48:"Boarding House", 49:"Tower", 50:"Customs Station", 51:"Archive", 52:"Bank", 53:"Cathedral" });
+// 规则取自 mod 内嵌 Building Rules（Tibs 原文，权威）
 Object.assign(BUILDING_EFFECT_TEXT, {
-  46:"工匠阶段末：你每个空（未驻人）种植园地块 +1 金。[Tibs 自制]",
-  47:"工匠阶段：镇守时额外 +1 玉米或靛蓝（取你已产出者，AI 取玉米）。[Tibs 自制]",
-  48:"拓殖阶段：镇守时本阶段额外 +1 殖民者（放到岸边）。[Tibs 自制]",
-  49:"建造阶段：建成塔楼当下一次性 +2 金 + 1 殖民者（岸边）。[Tibs 自制·裁定]",
-  50:"船长阶段：本阶段首次装船 +1 VP；每次装船后从供应区补 1 个同种货回手。[Tibs 自制]",
-  51:"终局：按你手上持有的不同货物种类数 +1 VP/种（镇守）。[Tibs 自制·简化]",
-  52:"终局：你每持有 3 金 +1 VP（镇守）。[Tibs 自制·简化原'投资'机制]",
-  53:"终局：每个【其他玩家】拥有的大型建筑 +2 VP（镇守）。占 2 格。[Tibs 自制]",
+  46:"工匠阶段：满员（2 殖民者）时可把两名殖民者移回岸边(San Juan) + 拿 1 金。仅 1 人时无效。需 2 工人槽。",
+  47:"工匠阶段：若你生产了玉米或靛蓝，可额外多产 1 个（两者只能择一）。镇守生效。",
+  48:"拓殖阶段：你拿到的明牌种植园/采石场自带 1 名殖民者（供应区→没有则从殖民者堆）。镇守生效。",
+  49:"被动：当其他玩家选择某角色时，你也获得该角色的【特权】（你当总督起始位时除外）。镇守生效。",
+  50:"船长阶段：选船长 +1 VP；阶段末每艘满货船清空时，你各得回 1 个该船的货（在存货之后，不腐坏、不触发档案馆等）。镇守生效。",
+  51:"船长阶段末：除免费保留 1 桶外，每种货各可保留 1 桶，并立即按保留的货物种类数 +1 VP/种。镇守生效。",
+  52:"投资机制：建造银行时可投入≤8 枚未花的金币；贵族驻守时你每选 1 个角色可投 1 金（累计上限 8）。投入的金不可再用。终局每枚投资 +1 VP。",
+  53:"终局：每个【其他玩家】拥有的大型建筑 +2 VP（无需镇守对方建筑）。占 2 格，需镇守本建筑。",
 });
 
 // 无美术资源的建筑（贵族扩展 38+）用文字占位卡面，避免 404 / 裂图
@@ -466,6 +467,7 @@ class Game {
       buildings: [],         // {bid, men}
       goods: { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 },
       buildingSpaceLeft: 12, // 板上总格
+      _invest: 0,            // Tibs 银行(52)：已投资金币（终局每枚 +1VP，不可再用）
     };
     // 给电脑分配 DNA（来自进化好的 AI 池）
     if (!isHuman && typeof pickDNAForPlayer === "function") {
@@ -541,6 +543,11 @@ class Game {
   isManned(p, bid) {
     const b = this.ownsBuilding(p, bid);
     return b && b.men >= BLD_BY_ID[bid].men;
+  }
+  // Tibs 塔楼(49)：当【别人】选角色时，镇守塔楼的非总督玩家也获得该角色特权。
+  // 用法：在各阶段对【非选择者】判定 towerActive(p) 即与"选择者特权"等价处理。
+  towerActive(p) {
+    return this.expansionTibs && this.isManned(p, 49) && p.idx !== this.governor;
   }
   totalColonists(p) {
     let n = 0;
@@ -1542,13 +1549,6 @@ async function runRolePhase(roleName, chooserIdx) {
 // ============================================================
 async function doSettler(playerIdx, isChooser) {
   const p = G.players[playerIdx];
-  // Tibs 寄宿屋(48)：本拓殖阶段额外 +1 殖民者（放岸边），先于拿地结算
-  if (G.expansionTibs && G.isManned(p, 48)) {
-    if (G.colonistsLeft > 0) { G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; G.logEvent(`${p.name} 寄宿屋：+1 殖民者(岸边)`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 寄宿屋：+1 殖民者</div>`, { kind: "role" });
-      if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">寄宿屋：+1 殖民者</div>`, { kind: "gain" }); }
-    else if (G.colonistsOnShip > 0) { G.colonistsOnShip--; p._unplacedMen = (p._unplacedMen || 0) + 1; G.logEvent(`${p.name} 寄宿屋：+1 殖民者(岸边,船上)`, "action"); }
-  }
   if (p.plantations.length >= 12) return; // 满
   // 扩展：森林屋(26) — 可改拿一块「森林」：从明牌池拿 1 张种植园（不能用采石场）反扣置于岛上
   // （规则书：取走的是明牌池里的实体板块，因此会减少其他玩家的可选明牌）
@@ -1656,6 +1656,11 @@ async function doSettler(playerIdx, isChooser) {
       G.logEvent(`${p.name} 济贫院效果：殖民者上岗 (从船上)`, "action");
     }
   }
+  // Tibs 寄宿屋(48 = Tibs 改名的济贫院，但对采石场也生效)：拿到的明牌种植园/采石场自带 1 殖民者
+  if (G.expansionTibs && !plantation.manned && G.isManned(p, 48)) {
+    if (G.colonistsLeft > 0) { plantation.manned = true; G.colonistsLeft--; G.logEvent(`${p.name} 寄宿屋：新地自带殖民者(供应区)`, "action"); }
+    else if (G.colonistsOnShip > 0) { plantation.manned = true; G.colonistsOnShip--; G.logEvent(`${p.name} 寄宿屋：新地自带殖民者(船上)`, "action"); }
+  }
   G.logEvent(`${p.name} 拓殖：${choice.kind === "quarry" ? "🪨采石场" : plantEmoji(choice.good) + GOOD_NAMES[choice.good]}`, "action");
   if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了 ${choice.kind === "quarry" ? "采石场" : GOOD_NAMES[choice.good]} 田</div>`, { kind: "role" });
 }
@@ -1671,6 +1676,15 @@ async function doMayor(chooserIdx, order) {
     if (got > 0) {
       G.logEvent(`${p.name} 市长特权：从供应区+${got}殖民者`, "action");
       if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 市长特权${got > 1 ? ' 图书馆 +2' : ' +1'} 殖民者</div>`, { kind: "role" });
+    }
+  }
+  // Tibs 塔楼(49)：非选择者的塔楼主也得市长特权 +1 殖民者
+  for (const i of order) {
+    if (i === chooserIdx) continue;
+    const tp = G.players[i];
+    if (G.towerActive(tp) && G.colonistsLeft > 0) {
+      G.colonistsLeft--; tp._unplacedMen = (tp._unplacedMen || 0) + 1;
+      G.logEvent(`${tp.name} 塔楼·市长特权：+1 殖民者`, "action");
     }
   }
   // 扩展II：别墅(43) — 市长阶段首轮额外从供应区拿 1 名贵族（无贵族则拿殖民者）
@@ -1885,10 +1899,12 @@ function aiReallocate(p) {
       case 16: return 6;  // 大学
       case 8: case 9: case 11: return 5; // 庄园/工地/济贫院
       case 10: case 14: return 4; // 仓库
-      case 50: return 11; // Tibs 海关站(类港口：装船+VP+补货)
-      case 47: case 48: return 6; // Tibs 水井(+货)/寄宿屋(+殖民者)
-      case 51: case 52: return 6; // Tibs 档案馆/银行(终局得分)
-      case 46: case 49: return 3; // Tibs 金矿(反向激励)/塔楼(无持续效果)
+      case 49: return 10; // Tibs 塔楼：得每个其他玩家选的角色特权(强被动)
+      case 50: return 8;  // Tibs 海关站：清船续货+选船长VP
+      case 51: return 7;  // Tibs 档案馆：每种货留1+即时VP
+      case 47: case 48: return 6; // Tibs 水井(+货)/寄宿屋(新地自带殖民者)
+      case 52: return 5;  // Tibs 银行(终局投资分)
+      case 46: return 3;  // Tibs 金矿(慢速金、占2工人)
       default: return 5;
     }
   };
@@ -2014,7 +2030,7 @@ async function doBuilder(playerIdx, isChooser) {
     if (G.buildingStock[b.id] <= 0) continue;
     if (G.ownsBuilding(p, b.id)) continue; // 不能重复买
     if (12 - G.buildingUsedSpaces(p) < b.size) continue;
-    const cost = G.effectiveCostWithRoleBonus(p, b, isChooser);
+    const cost = G.effectiveCostWithRoleBonus(p, b, isChooser || G.towerActive(p)); // Tibs 塔楼：非选择者也享建造特权 -1
     if (p.money + G.blackMarketCapacity(p) < cost) continue; // 黑市可补差额
     options.push({ b, cost });
   }
@@ -2069,14 +2085,20 @@ async function doBuilder(playerIdx, isChooser) {
       G.logEvent(`${p.name} 大学效果：+1殖民者${slots > 0 ? "直接上岗" : "（无槽建筑→岸边）"} (从船上)`, "action");
     }
   }
-  // Tibs 塔楼(49)：建成当下一次性 +2 金 + 1 殖民者(岸边)  [裁定：原"+其他总督特权"降级为一次性收益]
-  if (G.expansionTibs && b.id === 49) {
-    p.money += 2;
-    if (G.colonistsLeft > 0) { G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; }
-    else if (G.colonistsOnShip > 0) { G.colonistsOnShip--; p._unplacedMen = (p._unplacedMen || 0) + 1; }
-    G.logEvent(`${p.name} 塔楼：建成 +2金 +1殖民者(岸边)`, "action");
-    if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 塔楼：+2金 +1殖民者</div>`, { kind: "role" });
-    if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">塔楼：+2金 +1殖民者</div>`, { kind: "gain" });
+  // Tibs 银行(52)：建造时可立即投入 ≤8 枚未花金币（投资锁定，终局 +1VP/枚）
+  if (G.expansionTibs && b.id === 52) {
+    let invest;
+    if (p.isHuman) {
+      const max = Math.min(8, p.money);
+      invest = max > 0 ? await humanPickFromList(`银行：投资多少金？（终局每枚 +1VP，投资后不可再用）`, Array.from({ length: max + 1 }, (_, k) => `${k} 金`), false) : 0;
+    } else {
+      invest = Math.min(8, Math.max(0, p.money - 4)); // AI 留 4 金缓冲，其余投资
+    }
+    if (invest > 0) {
+      p.money -= invest; p._invest = (p._invest || 0) + invest;
+      G.logEvent(`${p.name} 银行：投资 ${invest} 金`, "action");
+      if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">银行：投资 ${invest} 金（终局 +${invest}VP）</div>`, { kind: "gain" });
+    }
   }
   G.logEvent(`${p.name} 建造 ${b.cn} (花费${cost}金)`, "action");
   if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 建造 ${b.cn} (花费 ${cost}金)</div>`, { kind: "role" });
@@ -2304,25 +2326,36 @@ async function doCraftsman(chooserIdx, order) {
     // 选择者自己本回合没有生产 → 无特权
     G.logEvent(`${chooser.name} 工匠特权：你本回合未生产任何货物，无可选种类`, "action");
   }
-  // Tibs 自制：金矿(46) 每空(未驻人)种植园地块 +1 金；水井(47) 镇守时额外 +1 靛蓝/玉米
+  // Tibs 自制（真实规则）：金矿(46) 满员可把两人移回岸边+1金；水井(47) 产了玉米/靛蓝可多产 1
   if (G.expansionTibs) {
     for (const p of G.players) {
-      if (G.isManned(p, 46)) {
-        const empty = p.plantations.filter(pl => !pl.manned && pl.good !== "forest").length;
-        if (empty > 0) {
-          p.money += empty;
-          G.logEvent(`${p.name} 金矿：${empty} 空地 +${empty}金`, "action");
-          if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 金矿：+${empty}金</div>`, { kind: "role" });
-          if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">金矿：+${empty}金</div>`, { kind: "gain" });
-        }
+      // 金矿：满员(2 殖民者)时把两名移回岸边(San Juan) + 1 金。AI/默认自动执行(净收益)。
+      const gm = G.ownsBuilding(p, 46);
+      if (gm && gm.men >= 2) {
+        gm.men = 0; p._unplacedMen = (p._unplacedMen || 0) + 2; p.money += 1;
+        G.logEvent(`${p.name} 金矿：2 殖民者移回岸边 +1金`, "action");
+        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 金矿：+1金</div>`, { kind: "role" });
+        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">金矿：2人回岸边 +1金</div>`, { kind: "gain" });
       }
+      // 水井：本回合产了玉米/靛蓝则多产 1（择一，优先靛蓝）
       if (G.isManned(p, 47)) {
-        const g = G.supply.indigo > 0 ? "indigo" : (G.supply.corn > 0 ? "corn" : null);
+        let g = null;
+        if (perPlayerProducedCount[p.idx].indigo > 0 && G.supply.indigo > 0) g = "indigo";
+        else if (perPlayerProducedCount[p.idx].corn > 0 && G.supply.corn > 0) g = "corn";
         if (g) {
           p.goods[g]++; G.supply[g]--; perPlayerProducedCount[p.idx][g]++;
           G.logEvent(`${p.name} 水井：+1 ${GOOD_NAMES[g]}`, "action");
           if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
           if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "gain" });
+        }
+      }
+      // 塔楼(49)：非选择者塔楼主也得工匠特权 +1（自己产出的一种，取最贵）
+      if (p.idx !== chooserIdx && G.towerActive(p)) {
+        const kinds = [...perPlayerProducedKinds[p.idx]].filter(g => G.supply[g] > 0);
+        if (kinds.length) {
+          const g = kinds.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
+          p.goods[g]++; G.supply[g]--; perPlayerProducedCount[p.idx][g]++;
+          G.logEvent(`${p.name} 塔楼·工匠特权：+1 ${GOOD_NAMES[g]}`, "action");
         }
       }
     }
@@ -2457,7 +2490,12 @@ async function doCaptain(order, chooserIdx) {
   // FIX: chooser +1VP 总共一次（首次装船时），不是每次
   // FIX: Harbor +1VP 每次装船（不是只第一次）
   const chooserBonusUsed = new Set(); // 谁已经拿过 captain chooser 奖励了
-  const customsUsed = new Set(); // Tibs 海关站(50)：本阶段首次装船 +1VP 的去重
+  const towerShipUsed = new Set(); // Tibs 塔楼(49)：非选择者首次装船 +1VP 的去重
+  // Tibs 海关站(50)：选船长者 +1 VP（无论是否装船）
+  if (G.expansionTibs && G.isManned(G.players[chooserIdx], 50) && G.vpLeft > 0) {
+    G.players[chooserIdx].vp += 1; G.players[chooserIdx].shippingVP += 1; G.vpLeft -= 1;
+    G.logEvent(`${G.players[chooserIdx].name} 海关站：选船长 +1 VP`, "action");
+  }
   // 扩展：工会大厅(35) — 装船前，手上每 2 个同种货物 +1 VP（一次性）
   for (const i of order) {
     const p = G.players[i];
@@ -2628,19 +2666,12 @@ async function doCaptain(order, chooserIdx) {
       }
       // FIX: Harbor 每次装船 +1VP
       if (G.isManned(p, 17)) vp += 1;
-      // Tibs 海关站(50)：本阶段首次装船 +1VP
-      if (G.expansionTibs && G.isManned(p, 50) && !customsUsed.has(i)) { vp += 1; customsUsed.add(i); }
+      // Tibs 塔楼(49)：非选择者塔楼主也得船长特权（本阶段首次装船 +1VP）
+      if (G.expansionTibs && i !== chooserIdx && G.towerActive(p) && !towerShipUsed.has(i)) { vp += 1; towerShipUsed.add(i); }
       const vpGain = Math.min(vp, G.vpLeft);
       p.vp += vpGain;
       p.shippingVP += vpGain;
       G.vpLeft -= vpGain;
-      // Tibs 海关站(50)：每次装船后从供应区补 1 个同种货回手（pick.good 为具体货且供应有）
-      if (G.expansionTibs && G.isManned(p, 50) && pick.good && pick.good !== "mix" && G.supply[pick.good] > 0) {
-        p.goods[pick.good]++; G.supply[pick.good]--;
-        G.logEvent(`${p.name} 海关站：补 1 ${GOOD_NAMES[pick.good] || pick.good}`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 海关站：补 1 ${GOOD_NAMES[pick.good] || pick.good}</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">海关站：补 1 ${GOOD_NAMES[pick.good] || pick.good}</div>`, { kind: "gain" });
-      }
       const shipLabel = isWharf ? "用码头装" : isSmallWharf ? "用小码头装" : `装船${pick.ship + 1}:`;
       const goodLabel = (isSmallWharf && pick.good === "mix") ? "混装" : (GOOD_NAMES[pick.good] || pick.good);
       G.logEvent(`${p.name} ${shipLabel} ${loaded}${goodLabel} (+${vpGain}VP)`, "action");
@@ -2654,9 +2685,11 @@ async function doCaptain(order, chooserIdx) {
   }
   // 装船阶段结束：满船的货物归还到供应区；玩家选择保留货物，其余丢弃
   // FIX #25: 满船的货物归还到供应区（Captain 阶段最后步骤）
+  const clearedShipGoods = []; // Tibs 海关站(50)：本阶段清空的满船货种
   for (let s = 0; s < G.ships.length; s++) {
     const ship = G.ships[s];
     if (ship.count >= ship.capacity) {
+      if (G.expansionTibs && ship.good) clearedShipGoods.push(ship.good);
       G.supply[ship.good] += ship.count;
       ship.good = null;
       ship.count = 0;
@@ -2686,6 +2719,12 @@ async function doCaptain(order, chooserIdx) {
         const saved = 3 - extra;
         if (saved > 0 && !window._allAIMode) showToast(`<div class="t-title">储藏库：额外保留 ${saved} 货</div>`, { kind: "gain" });
       }
+      // Tibs 档案馆(51)：每种货各留 1 桶 + 立即 +1VP/种
+      if (G.expansionTibs && G.isManned(p, 51)) {
+        let types = 0;
+        for (const g of GOODS) if (p.goods[g] > 0) { kept[g] = Math.max(kept[g] || 0, 1); types++; }
+        if (types > 0 && G.vpLeft > 0) { const gain = Math.min(types, G.vpLeft); p.vp += gain; G.vpLeft -= gain; G.logEvent(`${p.name} 档案馆：留${types}种货 +${gain}VP`, "action"); if (!window._allAIMode) showToast(`<div class="t-title">档案馆：留${types}种 +${gain}VP</div>`, { kind: "gain" }); }
+      }
       // FIX #28: 丢弃的货物返回供应区（不是凭空消失）
       for (const g of GOODS) {
         const discarded = p.goods[g] - (kept[g] || 0);
@@ -2707,11 +2746,26 @@ async function doCaptain(order, chooserIdx) {
         keep[g] = (keep[g] || 0) + take;
         singleSlots -= take;
       }
+      // Tibs 档案馆(51)：每种货各留 1 桶 + 立即 +1VP/种
+      if (G.expansionTibs && G.isManned(p, 51)) {
+        let types = 0;
+        for (const g of GOODS) if (p.goods[g] > 0) { keep[g] = Math.max(keep[g] || 0, 1); types++; }
+        if (types > 0 && G.vpLeft > 0) { const gain = Math.min(types, G.vpLeft); p.vp += gain; G.vpLeft -= gain; G.logEvent(`${p.name} 档案馆：留${types}种货 +${gain}VP`, "action"); }
+      }
       // FIX #28: 丢弃的返回供应区
       for (const g of GOODS) {
         const discarded = p.goods[g] - (keep[g] || 0);
         if (discarded > 0) G.supply[g] += discarded;
         p.goods[g] = keep[g] || 0;
+      }
+    }
+  }
+  // Tibs 海关站(50)：阶段末(存货之后)每艘清空的满船，海关站主各得回 1 个该船货(不腐坏)
+  if (G.expansionTibs && clearedShipGoods.length) {
+    for (const p of G.players) {
+      if (!G.isManned(p, 50)) continue;
+      for (const cg of clearedShipGoods) {
+        if (G.supply[cg] > 0) { p.goods[cg]++; G.supply[cg]--; G.logEvent(`${p.name} 海关站：补回 1 ${GOOD_NAMES[cg]}`, "action"); }
       }
     }
   }
@@ -4321,14 +4375,14 @@ function evalBuildingValue(p, b, phase) {
     case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;  // 图书馆：角色特权翻倍(强)
     case 34: { let best = 0; for (const g of GOODS) if (g !== "corn") best = Math.max(best, G.productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; } // 专业工厂：单货收入引擎(类工厂)
     case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break; // 工会大厅：囤同货换VP(得分型)
-    // —— Tibs 自制扩展 ——
-    case 46: { const empty = p.plantations.filter(pl => !pl.manned && pl.good !== "forest").length; v += empty * 4 + (phase === "early" ? 6 : phase === "mid" ? 3 : -4); break; } // 金矿：空地越多越赚(反向激励)
-    case 47: v += (phase === "late" ? -2 : 8); break;                        // 水井：每工匠 +1 货
-    case 48: v += phase === "early" ? 12 : phase === "mid" ? 6 : 1; break;   // 寄宿屋：殖民者引擎
-    case 49: v += phase === "early" ? 12 : 6; break;                         // 塔楼：一次性建造收益
-    case 50: v += phase === "mid" ? 22 : phase === "early" ? 10 : 8; break;  // 海关站：装船得分+续货
-    case 51: { let kinds = 0; for (const g of GOODS) if (G.productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++; v += kinds * 3 + (phase === "late" ? 6 : 2); break; } // 档案馆：货物多样终局分
-    case 52: v += phase === "early" ? 10 : phase === "mid" ? 6 : 2; break;   // 银行：终局金→VP
+    // —— Tibs 自制扩展（真实规则估值）——
+    case 46: v += phase === "early" ? 4 : phase === "mid" ? 2 : -2; break;    // 金矿：慢速金+占 2 工人，弱
+    case 47: { const ci = p.plantations.some(pl => pl.good === "corn" || pl.good === "indigo") ? 6 : 1; v += ci + (phase === "late" ? -2 : 2); break; } // 水井：有玉米/靛蓝才好
+    case 48: v += phase === "early" ? 10 : phase === "mid" ? 6 : 1; break;    // 寄宿屋(=济贫院)：新地自带殖民者
+    case 49: v += phase === "early" ? 16 : phase === "mid" ? 12 : 4; break;   // 塔楼：每个角色特权(强被动)
+    case 50: v += phase === "mid" ? 16 : phase === "early" ? 8 : 6; break;    // 海关站：选船长+VP+清船续货
+    case 51: { let kinds = 0; for (const g of GOODS) if (G.productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++; v += kinds * 3 + (phase === "late" ? 4 : 6); break; } // 档案馆：货种多样得分
+    case 52: v += Math.min(8, Math.max(0, p.money - 4)) * 2 + (phase === "late" ? -4 : 2); break; // 银行：有闲钱才值(投资→VP)
   }
   // ③ 大紫(19-23 + 扩展 36/37)：终盘最强（即时兑现）。快照估值(早期天然低=鼓励晚买正确)
   if (b.type === "large_violet") {
@@ -4842,16 +4896,15 @@ Game.prototype.getSpecialVPs = function (p) {
   }
   // Tibs 自制扩展终局分
   if (this.expansionTibs) {
-    // 大教堂(53)：每个【其他玩家】的大型建筑 +2 VP（互动型）
+    // 大教堂(53)：每个【其他玩家】拥有的大型建筑 +2 VP（无需对方镇守）
     if (this.isManned(p, 53)) {
       let n = 0;
       for (const op of this.players) { if (op === p) continue; n += op.buildings.filter(b => BLD_BY_ID[b.bid].type === "large_violet").length; }
       v += n * 2;
     }
-    // 档案馆(51)：手上持有的不同货物种类数 +1 VP/种 [简化]
-    if (this.isManned(p, 51)) { let kinds = 0; for (const g of GOODS) if (p.goods[g] > 0) kinds++; v += kinds; }
-    // 银行(52)：每持有 3 金 +1 VP [简化原'投资'机制]
-    if (this.isManned(p, 52)) v += Math.floor(p.money / 3);
+    // 银行(52)：每枚投资 +1 VP（需镇守）。投资在建造/选角色时即时锁定，存 p._invest
+    if (this.isManned(p, 52)) v += (p._invest || 0);
+    // 档案馆(51)：船长阶段已即时结算 VP，终局不再加
   }
   return v;
 };
