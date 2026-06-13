@@ -145,14 +145,14 @@ const EXPANSION_BUILDINGS = [
 // 贵族扩展 (官方 Expansion II — The Nobles)：7 紫色 + 1 生产(珠宝匠) + 20 贵族
 // 数值取自周年版图鉴：地产办2/1 礼拜堂3/1 狩猎小屋4/2 规划办5/2 皇家供应商6/2 别墅7/3 珠宝匠8/3 皇家花园10/4(大)
 const NOBLE_BUILDINGS = [
-  { id:38, name:"Land Office",     cn:"地产办公室", img:"",  type:"violet",       cost:2,  men:1, vp:1, size:1, qty:2, tier:1, effect:"land_office" },
-  { id:39, name:"Chapel",          cn:"礼拜堂",     img:"",  type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:1, effect:"chapel" },
-  { id:40, name:"Hunting Lodge",   cn:"狩猎小屋",   img:"",  type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"hunting_lodge" },
-  { id:41, name:"Zoning Office",   cn:"规划办公室", img:"",  type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" },
-  { id:42, name:"Royal Supplier",  cn:"皇家供应商", img:"",  type:"violet",       cost:6,  men:1, vp:2, size:1, qty:2, tier:2, effect:"royal_supplier" },
-  { id:43, name:"Villa",           cn:"别墅",       img:"",  type:"violet",       cost:7,  men:1, vp:3, size:1, qty:2, tier:3, effect:"villa" },
-  { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"",  type:"production",   cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 官方定位=生产建筑：市政厅不计入、公会大厅按大型生产建筑计 2VP（特判）、2p 库存 2 栋
-  { id:45, name:"Royal Garden",    cn:"皇家花园",   img:"",  type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"royal_garden" },
+  { id:38, name:"Land Office",     cn:"地产办公室", img:"38_land_office.jpg",   type:"violet",       cost:2,  men:1, vp:1, size:1, qty:2, tier:1, effect:"land_office" },
+  { id:39, name:"Chapel",          cn:"礼拜堂",     img:"39_chapel.jpg",        type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:1, effect:"chapel" },
+  { id:40, name:"Hunting Lodge",   cn:"狩猎小屋",   img:"40_hunting_lodge.jpg", type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"hunting_lodge" },
+  { id:41, name:"Zoning Office",   cn:"规划办公室", img:"41_zoning_office.jpg", type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" },
+  { id:42, name:"Royal Supplier",  cn:"皇家供应商", img:"42_royal_supplier.jpg",type:"violet",       cost:6,  men:1, vp:2, size:1, qty:2, tier:2, effect:"royal_supplier" },
+  { id:43, name:"Villa",           cn:"别墅",       img:"43_villa.jpg",         type:"violet",       cost:7,  men:1, vp:3, size:1, qty:2, tier:3, effect:"villa" },
+  { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"44_jeweler.jpg",       type:"production",   cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 官方定位=生产建筑：市政厅不计入、公会大厅按大型生产建筑计 2VP（特判）、2p 库存 2 栋
+  { id:45, name:"Royal Garden",    cn:"皇家花园",   img:"45_royal_garden.jpg",  type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"royal_garden" },
 ];
 Object.assign(BLD_BY_ID, Object.fromEntries(NOBLE_BUILDINGS.map(b => [b.id, b])));
 Object.assign(TIER_BY_BID, { 38:1, 39:1, 40:2, 41:2, 42:2, 43:3, 44:3, 45:4 });
