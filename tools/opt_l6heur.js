@@ -86,17 +86,36 @@ function evalCand(name, heurPath) {
   let bestScore = 0; // 相对基线的配对 diff(基线自身=0)
   let sigma = 0.25;
   const t0 = Date.now();
-  console.log(`(1+1)-ES: ${N_CAND} 候选 × ${GAMES} 局配对(固定种子) σ0=${sigma}`);
+  // ---- 断点续跑: checkpoint.jsonl 每候选一行 {k,accepted,diff,z,sigmaAfter,best} ----
+  // 崩溃后重启会 replay 已记录候选的 mutate()(精确推进确定性 RNG)+accept/reject 决策,
+  // 跳过昂贵的 evalCand → 续跑从下一个未评测候选开始。
+  const ckptPath = path.join(OPT_DIR, 'checkpoint.jsonl');
+  const done = new Map();
+  if (fs.existsSync(ckptPath)) {
+    for (const line of fs.readFileSync(ckptPath, 'utf8').split('\n')) {
+      const s = line.trim(); if (!s) continue;
+      const c = JSON.parse(s); done.set(c.k, c);
+    }
+  }
+  console.log(`(1+1)-ES: ${N_CAND} 候选 × ${GAMES} 局配对(固定种子) σ0=${sigma}${done.size ? `  [续跑: 已完成 ${done.size} 候选]` : ''}`);
   console.log(`基线: 现役默认参数 (${baseRows.size} 局已缓存)\n`);
+  const ckptFd = fs.openSync(ckptPath, 'a');
 
   for (let k = 1; k <= N_CAND; k++) {
-    const cand = mutate(best, sigma);
+    const cand = mutate(best, sigma); // 必须每代都调用以推进 RNG(续跑一致性)
+    const prev = done.get(k);
+    if (prev) { // 已评测过 → replay 决策, 跳过 evalCand
+      if (prev.accepted) { best = prev.best; bestScore = prev.diff; sigma = Math.min(0.5, sigma * 1.2); }
+      else { sigma = Math.max(0.08, sigma * 0.9); }
+      console.log(`[${k}/${N_CAND}] (续跑) diff=${(prev.diff * 100).toFixed(1)}pp z=${prev.z.toFixed(2)} ${prev.accepted ? '✅接受' : '✗拒绝'} σ=${sigma.toFixed(2)}`);
+      continue;
+    }
     const candPath = path.join(OPT_DIR, `cand-${k}.json`);
     fs.writeFileSync(candPath, JSON.stringify(cand, null, 1));
     const tk = Date.now();
     let r;
     try { r = evalCand(`opt${k}`, candPath); }
-    catch (e) { console.log(`[${k}/${N_CAND}] 评测失败: ${e.message}`); continue; }
+    catch (e) { console.log(`[${k}/${N_CAND}] 评测失败: ${e.message}`); process.exit(1); } // 崩溃即停, 重启可续
     const accepted = r.diff > bestScore && r.z >= 1.0;
     const mins = ((Date.now() - tk) / 60000).toFixed(0);
     const delta = KEYS.filter(key => cand[key] !== best[key]).map(key => `${key}:${best[key]}→${cand[key]}`).join(' ');
@@ -109,7 +128,9 @@ function evalCand(name, heurPath) {
     } else {
       sigma = Math.max(0.08, sigma * 0.9);
     }
+    fs.writeSync(ckptFd, JSON.stringify({ k, accepted, diff: r.diff, z: r.z, sigmaAfter: sigma, best }) + '\n');
   }
+  fs.closeSync(ckptFd);
   console.log(`\n=== 完成 (${((Date.now() - t0) / 3600000).toFixed(1)}h) ===`);
   if (bestScore > 0) {
     console.log(`best diff=${(bestScore * 100).toFixed(1)}pp (固定种子, 有过拟合风险)`);
