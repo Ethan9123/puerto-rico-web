@@ -31,7 +31,8 @@ const ROLE_TOOLTIP_DATA = {
 };
 const ROLE_NAME_CN = {
   Settler: "拓殖者", Mayor: "市长", Builder: "建造师",
-  Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主"
+  Craftsman: "工匠", Trader: "商人", Captain: "船长", Prospector: "金矿主",
+  Buccaneer: "海盗"
 };
 
 // 6 级 AI 难度（从弱到强；顶档为 AlphaZero 神经网络制导的 MCTS）
@@ -421,6 +422,11 @@ class Game {
     const usedNames = ROLE_LIST.slice();
     if (this.roleCount === 8) usedNames.push("Prospector");
     this.roleCards = usedNames.slice(0, this.roleCount).map(n => ({ name: n, money: 0, taken: false, takenBy: null }));
+    // Tibs 海盗模块：额外加 1 张 Buccaneer 角色卡（仅人类可选，AI/ sim 不参与，避免冲击 7 角色 AI）
+    this._buccaneerReward = -1; // 持有奖励币的玩家(=不可再选 Buccaneer)，-1=无
+    if (buccaneer && this.expansionTibs) {
+      this.roleCards.push({ name: "Buccaneer", money: 0, taken: false, takenBy: null });
+    }
 
     // 起始首页朝上的种植园数 = 玩家+1
     this.flipPlantations();
@@ -1092,7 +1098,8 @@ function startGame() {
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = (n >= 2) && !!document.getElementById("all-ai")?.checked;
   const expSel = document.getElementById("expansion-select")?.value || "none";
-  G = new Game(n, name, expSel); // "none" | "newbuildings" | "nobles"
+  const buccaneer = !!document.getElementById("buccaneer-toggle")?.checked; // Tibs 海盗模块
+  G = new Game(n, name, expSel, buccaneer); // "none" | "newbuildings" | "nobles" | "tibs"
   G.expansionType = expSel;
   let needsNN = false;
   // 读取每个 CPU 的独立难度
@@ -1305,7 +1312,9 @@ async function runMainLoop() {
       const player = G.players[playerIdx];
 
       // 该玩家选择一张未被选的角色卡
-      const available = G.roleCards.filter(r => !r.taken);
+      // Tibs 海盗：仅人类可选 Buccaneer（AI 跳过以保护 7 角色 AI）；持奖励币者不可再选
+      const available = G.roleCards.filter(r => !r.taken &&
+        (r.name !== "Buccaneer" || (player.isHuman && G._buccaneerReward !== playerIdx)));
       if (available.length === 0) break;
       G._currentPlayer = playerIdx; // 在选择前设置当前玩家
       render();
@@ -1327,6 +1336,7 @@ async function runMainLoop() {
       if (typeof PRTrace !== "undefined") PRTrace.recordPick(G, playerIdx, player.isHuman, available, chosen.name);
       chosen.taken = true;
       chosen.takenBy = playerIdx;
+      if (chosen.name === "Buccaneer") G._buccaneerReward = playerIdx; // 拿走奖励币（直到他人选 Buccaneer）
       const bonusMoney = chosen.money;
       chosen.money = 0;
       player.money += bonusMoney;
@@ -1350,9 +1360,9 @@ async function runMainLoop() {
       if (window._allAIMode && !window._fastSpectator) await sleep(SPECTATOR_ACTION_DELAY);
     }
 
-    // 回合结束：未被选的角色卡 +1 金
+    // 回合结束：未被选的角色卡 +1 金（Buccaneer 不累积金币）
     for (const r of G.roleCards) {
-      if (!r.taken) r.money += 1;
+      if (!r.taken && r.name !== "Buccaneer") r.money += 1;
     }
 
     if (G.endTriggered) {
@@ -1438,6 +1448,51 @@ async function runHuntingLodge(order) {
         G.logEvent(`${p.name} 狩猎小屋：弃 1 张${pl.good === "forest" ? "森林" : GOOD_NAMES[pl.good] + "田"}`, "action");
       }
     }
+  }
+}
+
+// Tibs 海盗(Buccaneer)：选择者从 4 个行动里选 1 个（仅人类选得到此角色）。
+// 不给其他玩家特权、不累积金币。规则取自 mod 内嵌 Buccaneer 说明。
+async function doBuccaneer(chooserIdx) {
+  const p = G.players[chooserIdx];
+  const ACTIONS = [
+    "🏴‍☠️ 劫掠 Piracy：清空一艘货船，留最多 3 个货",
+    "🏴‍☠️ 洗劫 Plundering：清空公共贸易站，每货 +1 VP",
+    "🏴‍☠️ 突袭 Attack：殖民者堆减到每人 1 名，你留最多 3 名（岸边）",
+    "🏴‍☠️ 劫持 Hijacking：占一个无人角色，拿其累积金币并执行该角色",
+  ];
+  let act = p.isHuman ? await humanPickFromList("🏴‍☠️ 海盗：选 1 个行动", ACTIONS, false) : 1;
+  if (act == null) act = 1;
+  if (act === 0) {
+    const ships = G.ships.map((s, i) => ({ s, i })).filter(x => x.s.count > 0 && x.s.good);
+    if (!ships.length) { G.logEvent(`${p.name} 海盗·劫掠：无可劫货船`, "action"); return; }
+    let pick = p.isHuman
+      ? ships[await humanPickFromList("劫掠：选一艘货船清空", ships.map(x => `船${x.i + 1}: ${x.s.count}×${GOOD_NAMES[x.s.good]}`), false)]
+      : ships.reduce((a, b) => a.s.count >= b.s.count ? a : b);
+    const good = pick.s.good, cnt = pick.s.count, keep = Math.min(3, cnt);
+    p.goods[good] += keep; G.supply[good] += (cnt - keep);
+    pick.s.good = null; pick.s.count = 0;
+    G.logEvent(`${p.name} 海盗·劫掠船${pick.i + 1}：留 ${keep}×${GOOD_NAMES[good]}（余 ${cnt - keep} 回供应）`, "action");
+  } else if (act === 1) {
+    const n = G.tradingHouse.length;
+    if (!n) { G.logEvent(`${p.name} 海盗·洗劫：贸易站为空`, "action"); return; }
+    for (const g of G.tradingHouse) G.supply[g]++;
+    const gain = Math.min(n, G.vpLeft); p.vp += gain; G.vpLeft -= gain; G.tradingHouse = [];
+    G.logEvent(`${p.name} 海盗·洗劫贸易站：清 ${n} 货 +${gain} VP`, "action");
+  } else if (act === 2) {
+    const removed = Math.max(0, G.colonistsLeft - G.numPlayers);
+    G.colonistsLeft = Math.min(G.colonistsLeft, G.numPlayers);
+    const keep = Math.min(3, removed); p._unplacedMen = (p._unplacedMen || 0) + keep;
+    G.logEvent(`${p.name} 海盗·突袭：殖民者堆减到 ${G.colonistsLeft}，你留 ${keep} 名（岸边）`, "action");
+  } else {
+    const free = G.roleCards.filter(r => !r.taken && r.name !== "Buccaneer");
+    if (!free.length) { G.logEvent(`${p.name} 海盗·劫持：无可劫角色`, "action"); return; }
+    let pick = p.isHuman
+      ? free[await humanPickFromList("劫持：占一个无人角色（拿其金币并执行）", free.map(r => `${ROLE_NAME_CN[r.name]}${r.money ? ` +${r.money}金` : ""}`), false)]
+      : free[0];
+    p.money += pick.money; pick.money = 0; pick.taken = true; pick.takenBy = chooserIdx;
+    G.logEvent(`${p.name} 海盗·劫持 [${ROLE_NAME_CN[pick.name]}]：拿金币并执行该角色`, "action");
+    await runRolePhase(pick.name, chooserIdx);
   }
 }
 
@@ -1552,6 +1607,7 @@ async function runRolePhase(roleName, chooserIdx) {
       }
     }
       break;
+    case "Buccaneer": await doBuccaneer(chooserIdx); break; // Tibs 海盗
   }
   // Tibs 节庆模块：每个角色阶段结束后结算竞速目标
   if (G.checkFestival) G.checkFestival(roleName);
@@ -2869,7 +2925,7 @@ function buildSimState(G) {
     plantationPool: G.plantationPool.slice(),
     ships: G.ships.map(s => ({ capacity: s.capacity, good: s.good, count: s.count })),
     tradingHouse: G.tradingHouse.slice(),
-    roleCards: G.roleCards.map(r => ({ name: r.name, money: r.money, taken: r.taken, takenBy: r.takenBy })),
+    roleCards: G.roleCards.filter(r => r.name !== "Buccaneer").map(r => ({ name: r.name, money: r.money, taken: r.taken, takenBy: r.takenBy })), // Tibs 海盗不进 sim（保护7角色AI）
     // 本回合已选人数 = 已 taken 的角色卡数（回合初全部重置为未选）
     picksThisTurn: G.roleCards.filter(r => r.taken).length,
     rnd: Math.random,
