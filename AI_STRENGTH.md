@@ -193,9 +193,21 @@ maxⁿ 回溯(每决策点 chooser 选自己终局 VP 最大)。gate: `endTrigge
 `build` 74%(587 决策) > `craftbonus` 62% > `captain` 55% > `role` 46%(694 决策) > `trade` 30%。
 → 终局**建造**启发式最常次优, 其次角色。budgetMiss 29%(cap 1.5e5 解不动 1/3 局, 提 cap 可救但更慢)。
 
-**下一步(待做)**：把求解器接入 game.js 的 L6 终局子决策(优先 build+role), 跑**真实** vs 3×L5
-配对评测确认(注意 sim 的 +1.7pp 是 vs 启发式自对弈; 真实 L6 角色用 NN、子决策用启发式,
-接入后需 ≥480 局配对确认该增益在真实分布存活)。这是当前唯一值得继续投入的方向。
+**真实评测结果(role-only 接入)**：把求解器接入 L6 **角色决策**(`window._l6Solver`, game.js
+alphazeroPickRole, endTriggered 时用精确最优角色), 真实 vs 3×L5 480 局同种子配对：
+
+| | 胜率 | 配对差 | z | 结果不同局数 |
+|---|---|---|---|---|
+| 求解器ON vs 基线OFF | 35.2% vs 35.4% | **−0.2pp** | −0.71 | **仅 6/480** |
+
+→ **role-only 接入无增益, 维持默认关闭**。只有 6 局结果改变, 因为(1)endTriggered 后 L6 只剩
+~2-3 个角色决策且常被逼着选, (2)sim 层的 +1.7pp 来自控制一个座位**全部终局子决策**(build 分歧 74%),
+而 role 决策分歧只 46% 且很少翻盘。**价值在子决策(build/captain), 不在 role。**
+
+**下一步(待做, 唯一未尽方向)**：把求解器接入 L6 终局**子决策**(build/captain/settle 等)。
+难点: `buildSimState` 只表示角色边界, 子决策接入需从 mid-phase G 重建因子化 `az` 游标(见 §1 机制)。
+工程量中等但明确; sim 层已证 +1.7pp 上限。求解器/诊断工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/
+`tools/solver_disagree.js`)与 role-only 钩子(opt-in)已就位。
 
 ---
 
