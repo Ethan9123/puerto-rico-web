@@ -35,3 +35,29 @@
 仅两处行为中性改动：船长选择者奖励显式加 `loaded>0`（game.js/sim.js）；`checkEndCondition` 加注释指明 doMayor 是权威触发。回归：none/nobles/tibs 各 3 局完成、终局正常。
 
 **Sources**: [Wikipedia](https://en.wikipedia.org/wiki/Puerto_Rico_(board_game)) · [UltraBoardGames Roles](https://www.ultraboardgames.com/puerto-rico/roles.php) · [BGG Common Rules Mistakes](https://boardgamegeek.com/thread/25515/common-rules-mistakes)
+
+---
+
+# 第二轮：22 个扩展建筑审计（New Buildings 24-37 + Nobles 38-45）
+
+针对扩展建筑的精确规则与易错边角，逐个核对实现（权威源：mod 内嵌 Description + 官方扩展规则 + 网络 FAQ）。
+
+## 结论：17/22 直接正确；被标记的多为误报或极边角
+
+### ✅ 17 个正确（含全部贵族建筑）
+黑市25(剩钱不能用✓)、森林屋26(折扣不受列限✓)、储藏库27、贸易驿站29(不吃市场加成✓)、教堂30(按列号✓)、灯塔32、专业工厂34、工会大厅35(算对子不弃货✓)、修道院36、雕像37(纯装饰✓)、礼拜堂39、狩猎小屋40(空格须严格最多✓)、规划办41、皇家供应商42(不同种类·不吃装船加成✓)、别墅43、珠宝匠44、皇家花园45。
+
+### ⚠ 被标记 4 项 → 复核后实情
+
+1. **引水渠 24（被标 P0 高）→ 误报，实为正确。** 审计/复核两个 agent 都用了【小靛蓝厂 2 工人】这个**不可能的反例**（小厂只有 1 个工人槽）。实际代码要求"拥有【有人的大厂】+ 本轮产了该货"，而"产能可自由归因到大厂"正是官方玩家友好裁定。**已亲自核对工厂槽位数确认正确，未改。**
+
+2. **图书馆 33（2 人局每轮限一次）→ 真实但仅 2 人局。** 现实现每轮每个选到的角色都翻倍；官方规定 2 人局每轮只享一次。**未修**：修复要动 6 处特权点、且建造成本函数与 AI 估值共用，对主力 4 人局/AI 有回归风险，而 2 人局是小众变体——风险/收益不划算，**记为已知小局限**。3+ 人局（每人每轮选 1 角色）本就正确。
+
+3. **地产办公室 38 + 森林屋 → 缺失合法选项 → 已修。** 用地产办抽到田时，若有森林屋应可改放为森林；原实现缺此选项。**已补**（runLandOffice 殖民者分支，复用拓殖阶段的 look-before-decide 逻辑）。贵族 4 局回归通过。
+
+4. **招待所 28 客工锁定 / 小码头 31 能力可选 → 可商榷的极边角，未改。** 招待所"派出客工本市长阶段不可收回"——但市长阶段本就允许自由重排殖民者，是否违规取决于解读，影响极小；小码头"可选"在强制装船规则下基本是空谈。两者都极低影响，记录备查。
+
+## 第二轮改动
+仅 1 处真实修复：地产办公室 + 森林屋的森林转换选项（game.js runLandOffice）。Aqueduct 经核对正确未动；Library-2p 记为已知局限。
+
+**Sources**: [New Buildings — BGG](https://boardgamegeek.com/boardgame/12382/puerto-rico-expansion-i-new-buildings) · [Expansions 1&2 — BGG](https://boardgamegeek.com/boardgame/270125/puerto-rico-expansions-1-and-2-the-new-buildings-a) · 本地 `docs_tibs_rules_raw.txt`（Tibs 转录官方建筑规则）

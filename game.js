@@ -2493,10 +2493,30 @@ async function runLandOffice(p) {
     } else use = p.money >= 3; // AI：现金充裕才买地
     if (use) {
       p.money -= 1;
-      const t = G.plantationDeck.pop();
-      p.plantations.push({ good: t, manned: false });
-      G.logEvent(`${p.name} 地产办公室：付 1 金抽到 ${GOOD_NAMES[t]} 田`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 地产办：+${GOOD_NAMES[t]} 田</div>`, { kind: "role" });
+      let good = G.plantationDeck.pop();
+      // 规则：地产办公室抽到的田，若你有森林屋(26)，可看过后改放为森林(从明牌池翻扣 1 张)
+      if (G.isManned(p, 26) && G.plantationPool.length > 0) {
+        let toForest;
+        if (p.isHuman) {
+          const idx2 = await humanPickFromList(`地产办+森林屋：抽到 ${plantEmoji(good) + GOOD_NAMES[good]}，改为森林？`, ["🌲 改为森林（翻扣 1 张明牌田；每 2 块建造 -1金）", `🌱 保留 ${GOOD_NAMES[good]} 田`], false);
+          toForest = idx2 === 0;
+        } else {
+          const violet = p.buildings.filter(b => { const t2 = BLD_BY_ID[b.bid].type; return t2 === "violet" || t2 === "large_violet"; }).length;
+          const forests = p.plantations.filter(pl => pl.good === "forest").length;
+          toForest = violet >= 3 && forests < 4;
+        }
+        if (toForest) {
+          const fi = p.isHuman
+            ? await humanPickFromList("森林屋：选 1 张明牌田翻扣为森林", G.plantationPool.map(g => plantEmoji(g) + GOOD_NAMES[g]), false)
+            : G.plantationPool.reduce((bi, g, k, arr) => GOOD_PRICE[g] < GOOD_PRICE[arr[bi]] ? k : bi, 0);
+          const flipped = G.plantationPool.splice(fi, 1)[0];
+          good = "forest";
+          G.logEvent(`${p.name} 地产办+森林屋：翻扣 ${GOOD_NAMES[flipped]} 改为森林`, "action");
+        }
+      }
+      p.plantations.push({ good, manned: false });
+      G.logEvent(`${p.name} 地产办公室：付 1 金得 ${good === "forest" ? "🌲森林" : GOOD_NAMES[good] + " 田"}`, "action");
+      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 地产办：+${good === "forest" ? "森林" : GOOD_NAMES[good] + " 田"}</div>`, { kind: "role" });
     }
   } else if (G.isNobleManned(p, 38)) {
     const cands = p.plantations.map((pl, k) => ({ pl, k })).filter(x => x.pl.good !== "quarry");
