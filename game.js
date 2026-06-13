@@ -1390,8 +1390,9 @@ function checkEndCondition() {
   // 官方三条结束条件（任一触发；游戏继续到本回合所有玩家选完才结束）
   const wasTriggered = G.endTriggered;
   let triggerReason = null;
+  // 注：殖民者不足的【权威】终局触发在 doMayor（颜色补船时 colonistsLeft < refill → endTriggered），
+  // 与官方"市长阶段无法补满船即终局"一致。此处是冗余安全网（doMayor 已先触发），不影响时机。
   if (!G.expansionNobles && G.colonistsLeft <= 0 && G.colonistsOnShip <= 0) {
-    // 贵族扩展：殖民者耗尽不触发终局
     G.endTriggered = true;
     triggerReason = triggerReason || "殖民者耗尽";
   }
@@ -2729,8 +2730,9 @@ async function doCaptain(order, chooserIdx) {
       }
       // 小码头：每 2 货 = 1VP；其余装船 1 货 = 1VP
       let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
-      // FIX: chooser +1VP 仅首次装船（图书馆翻倍 +2）
-      if (i === chooserIdx && !chooserBonusUsed.has(i)) {
+      // FIX: chooser +1VP 仅首次装船（图书馆翻倍 +2）。规则：选择者奖励仅在【实际装了货】时给——
+      // loaded>0 在此循环体内恒成立(空装船不进此分支)，加显式条件以照字面对齐规则、防未来重构。
+      if (i === chooserIdx && !chooserBonusUsed.has(i) && loaded > 0) {
         vp += G.isManned(p, 33) ? 2 : 1;
         chooserBonusUsed.add(i);
       }

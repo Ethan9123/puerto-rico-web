@@ -564,7 +564,7 @@
     }
     // 小码头：每 2 货 = 1VP
     let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
-    if (i === chooser && !bonusUsed.has(i)) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍
+    if (i === chooser && !bonusUsed.has(i) && loaded > 0) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍；选择者奖励仅在实际装货时
     if (isManned(p, 17)) vp += 1;
     // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
     if (isManned(p, 32)) p.money += 1; // 灯塔：与港口同理，每次装运（含码头/小码头）+1金
