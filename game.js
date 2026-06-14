@@ -2941,6 +2941,8 @@ function buildSimState(G) {
   const st = {
     numPlayers: G.numPlayers, governor: G.governor, turnNumber: G.turnNumber,
     gameOver: false, endTriggered: G.endTriggered,
+    // 贵族扩展：传标量贵族状态给 sim(让 L5/L6 角色搜索能看见贵族→终局VP)
+    expansionNobles: !!G.expansionNobles, noblesLeft: G.noblesLeft || 0, noblesOnShip: G.noblesOnShip || 0,
     colonistsLeft: G.colonistsLeft, colonistsOnShip: G.colonistsOnShip, vpLeft: G.vpLeft,
     supply: Object.assign({}, G.supply), buildingStock: Object.assign({}, G.buildingStock),
     quarriesLeft: G.quarriesLeft,
@@ -2958,6 +2960,7 @@ function buildSimState(G) {
       buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
       goods: Object.assign({}, p.goods),
       unplaced: p._unplacedMen || 0, wharfUsed: p._wharfUsedThisRound || false, aiLevel: p._aiLevel || 5,
+      nobleCount: G.expansionNobles ? G.nobleCount(p) : 0, // 贵族扩展：玩家板上贵族总数(终局每名+1VP)
     })),
   };
   return st;

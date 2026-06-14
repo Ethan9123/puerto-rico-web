@@ -98,6 +98,9 @@
       let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3);
       v += [0, 1, 3, 6, 10][Math.min(sets, 4)];
     }
+    // 贵族扩展(标量)：每名贵族终局 +1VP；皇家花园(45) 镇守时每名贵族再 +1VP
+    const nb = p.nobleCount || 0;
+    if (nb > 0) { v += nb; if (isManned(p, 45)) v += nb; }
     return v;
   }
   function finalScore(p) {
@@ -164,6 +167,7 @@
     const c = {
       numPlayers: st.numPlayers, governor: st.governor, turnNumber: st.turnNumber,
       gameOver: st.gameOver, endTriggered: st.endTriggered,
+      expansionNobles: st.expansionNobles, noblesLeft: st.noblesLeft, noblesOnShip: st.noblesOnShip, // 贵族扩展(标量)
       colonistsLeft: st.colonistsLeft, colonistsOnShip: st.colonistsOnShip, vpLeft: st.vpLeft,
       supply: Object.assign({}, st.supply), buildingStock: Object.assign({}, st.buildingStock),
       quarriesLeft: st.quarriesLeft,
@@ -178,6 +182,7 @@
         plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
         buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
+        nobleCount: p.nobleCount, // 贵族扩展(标量)
       })),
     };
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
@@ -404,6 +409,12 @@
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
     }
+    // 贵族扩展(标量近似)：每市长阶段 1 名贵族给选择者(既是工人也是终局VP)；别墅(43) 额外 +1
+    if (st.expansionNobles) {
+      const give = (pi) => { const p = st.players[pi]; p.unplaced = (p.unplaced || 0) + 1; p.nobleCount = (p.nobleCount || 0) + 1; };
+      if (st.noblesLeft > 0) { st.noblesLeft--; give(chooser); }
+      for (const i of ord) if (isManned(st.players[i], 43) && st.noblesLeft > 0) { st.noblesLeft--; give(i); }
+    }
     for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p); }
     let open = 0; for (const p of st.players) for (const b of p.buildings) open += (BLD[b.bid].men - b.men);
     const refill = Math.max(st.numPlayers, open);
@@ -477,7 +488,12 @@
       }
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
-    for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }
+    for (let i = 0; i < st.players.length; i++) {
+      const p = st.players[i];
+      if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; }
+      // 贵族扩展(标量)：珠宝匠(44) 每名贵族 +1金（强金币引擎）
+      if (st.expansionNobles && isManned(p, 44)) p.money += (p.nobleCount || 0);
+    }
     return perKinds[chooser]; // 规则：工匠特权只能拿"自己本回合产出"的种类
   }
   function doCraftsman(st, chooser) {
