@@ -562,3 +562,64 @@ body {
   0% { transform: translateX(-50%) scale(0.97); opacity: 0.55; }
   100% { transform: translateX(-50%) scale(1); opacity: 1; }
 }
+
+/* ===== 新手教程（引导聚光灯） ===== */
+.tutorial-entry {
+  margin-top: 14px; padding: 10px 12px;
+  background: rgba(243, 201, 105, 0.10);
+  border: 1px dashed #f3c969; border-radius: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  max-width: 460px;
+}
+.tutorial-entry > span { font-size: 14px; color: #f3c969; }
+.setup-box .tut-btn {     /* 覆盖 .setup-box button 的大红样式 */
+  background: #34495e; color: #f3e3bd;
+  border: 1px solid #f3c969;
+  padding: 6px 12px; font-size: 13px; border-radius: 4px;
+  margin-top: 0; cursor: pointer;
+}
+.setup-box .tut-btn:hover { background: #46627e; }
+
+#tutorial-overlay {       /* 透明拦截层：吃掉对静态牌面的点击 */
+  position: fixed; inset: 0; z-index: 10001;
+  background: transparent;
+}
+#tutorial-spot {          /* 聚光灯框：框外用巨型 box-shadow 压暗，框内透明露出目标 */
+  position: fixed; z-index: 10002;
+  border-radius: 8px;
+  box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.72);
+  outline: 3px solid #f3c969; outline-offset: 2px;
+  pointer-events: none;
+  transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease;
+}
+#tutorial-spot.pulse { animation: tutPulse 1.4s ease-in-out infinite; }
+@keyframes tutPulse {
+  0%, 100% { outline-color: rgba(243, 201, 105, 0.55); }
+  50%      { outline-color: rgba(243, 201, 105, 1); }
+}
+#tutorial-bubble {
+  position: fixed; z-index: 10003;
+  width: min(330px, calc(100vw - 28px));
+  padding: 15px 17px;
+  background: #2c3e50; color: #eee;
+  border: 1px solid #f3c969; border-radius: 10px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.55);
+  font-size: 14px; line-height: 1.6;
+}
+#tutorial-bubble .tb-title { color: #f3c969; font-weight: 700; font-size: 16px; margin-bottom: 7px; }
+#tutorial-bubble .tb-body { color: #e6e6e6; }
+#tutorial-bubble .tb-body b { color: #f3e3bd; }
+#tutorial-bubble .tb-nav { margin-top: 12px; display: flex; align-items: center; gap: 8px; }
+#tutorial-bubble .tb-progress { font-size: 12px; color: #b5c2cc; margin-right: auto; }
+#tutorial-bubble .tb-nav button {
+  border: 0; border-radius: 4px; padding: 6px 13px; font-size: 13px; cursor: pointer;
+}
+#tutorial-bubble .tb-skip { background: transparent; color: #9fb0bd; border: 1px solid #4a6580 !important; }
+#tutorial-bubble .tb-prev { background: #34495e; color: #eee; }
+#tutorial-bubble .tb-prev:disabled { opacity: .4; cursor: default; }
+#tutorial-bubble .tb-next { background: #f3c969; color: #1f2d3d; font-weight: 700; }
+#tutorial-bubble .tb-nav button:hover:not(:disabled) { filter: brightness(1.1); }
+@media (max-width: 768px) {
+  #tutorial-bubble { font-size: 13px; padding: 12px 14px; }
+  #tutorial-bubble .tb-title { font-size: 15px; }
+}

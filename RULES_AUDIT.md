@@ -61,3 +61,28 @@
 仅 1 处真实修复：地产办公室 + 森林屋的森林转换选项（game.js runLandOffice）。Aqueduct 经核对正确未动；Library-2p 记为已知局限。
 
 **Sources**: [New Buildings — BGG](https://boardgamegeek.com/boardgame/12382/puerto-rico-expansion-i-new-buildings) · [Expansions 1&2 — BGG](https://boardgamegeek.com/boardgame/270125/puerto-rico-expansions-1-and-2-the-new-buildings-a) · 本地 `docs_tibs_rules_raw.txt`（Tibs 转录官方建筑规则）
+
+---
+
+# 第三轮：深度审计（2026-06，105 条规则 / 6 子系统）
+
+更广更深的一轮（21 agent：6 子系统各「联网深挖易错规则 → 审计 game.js」流水线 + 对抗复核 + 综合；权威源含官方规则书/Wikipedia/ultraboardgames/BGG common-mistakes/`all_buildings.txt`）。
+
+## 结论：**105 条规则，0 真实可玩 bug**
+
+8 条被标记（bug/unclear），对抗复核 + **本人亲自再核两条关键项**后，**全部翻案为 correct 或设计取舍**：
+
+| 被标记项 | 真相 |
+|---|---|
+| **贸易站满站后无法卖（标 high bug）** | **误报。** `doTrader`(game.js:2462-2467)：满站→公共站不可卖，但**贸易驿站(29)拥有者仍可卖到自家驿站**（官方 New Buildings 例外，`all_buildings.txt:270-279`），货入供应区、不享市场加成。Office(12) 可卖重复种类。无可卖则 `return` 空操作。故 1588 循环不 break 完全正确。亲核确认。 |
+| 庄园(8) 应限选择者 | **误报。** 官方："occupied hacienda 的拥有者，轮到自己时"即可用——非选择者专属。`isManned(p,8)` 正确。 |
+| 建造工地(9) 应限选择者 | **误报。** 官方：工地拥有者即可拿采石场（正是此建筑的意义）。`isChooser \|\| hasConstructionHut` 正确。 |
+| **同时拥有庄园+工地能否都用（unclear）** | **亲核：correct。** 1656 的 `return` 属【森林屋】分支，非庄园；庄园(1660-1671)**无提前 return**，加完暗牌田继续到主选（1672 仅满12格才 return），工地的采石场选项(1679)对任意拥有者开放。两者并存正常。 |
+| 教堂(39) VP 时序 | 设计取舍（本实现无 Palace 建筑，贵族驻守工匠阶段 +1VP），非 bug。 |
+
+## 本轮新覆盖（上一轮 14 条之外，约 60 条，全 correct）
+船长奖励时序（特权+1仅首装一次性、港口每次装船+1、小码头 VP=⌊货/2⌋）、装满即清回供应、存货上限、市长特权先于分船且来自供应、补船下限=玩家数、终局触发在全员分配后、济贫院只作用主田、大学固定+1、采石场折扣上限=建筑VP值且仅 manned 计入/新采石场当轮不计、建造师特权叠加后≥0、终局计分（官邸不论 manned/城堡含岸边⌊/3⌋/公会含未占建筑/市政厅含自身/海关只数 VP 筹码）、贵族局殖民者耗尽不触发终局、未选角色累金（海盗除外）、工厂按种类数、专业工厂单货、引水渠需先产、贸易站市场加成、Tibs 多建筑时序 等。
+
+**给主程序：无需改任何代码。** 最反直觉处（驿站满站可卖、庄园/工地非选择者可用）恰是实现**正确**——上一版审计的 bug 标记源于对扩展规则的误读。两轮 + 本轮共 **零真实 bug**（历史仅 1 处真实修复=地产办+森林屋缺失选项，第二轮已补）。
+
+**Sources**: 官方规则书 · [Wikipedia](https://en.wikipedia.org/wiki/Puerto_Rico_(board_game)) · [BGG Common Rules Mistakes](https://boardgamegeek.com/thread/25515/common-rules-mistakes) · [ultraboardgames](https://www.ultraboardgames.com/puerto-rico/) · 本地 `all_buildings.txt`（官方建筑规则原文，定案依据）

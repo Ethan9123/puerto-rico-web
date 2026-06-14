@@ -19,6 +19,7 @@ const ROLE_BONUS = {
   Trader: "卖1种货物到贸易站，+1金币",
   Captain: "运货物，每运1货=1胜利点",
   Prospector: "拿1金币",
+  Buccaneer: "四选一海盗行动（仅你执行）",
 };
 const ROLE_TOOLTIP_DATA = {
   Settler: { action: "按顺序拿 1 个种植园；选择者可改拿采石场。", privilege: "选角者优先且可拿采石场。", tip: "适合：你缺关键种植园/要抢采石场；不适合：明牌没有你要的田，且会明显喂肥后手玩家。" },
@@ -28,6 +29,7 @@ const ROLE_TOOLTIP_DATA = {
   Trader: { action: "每位玩家可卖 1 种货到贸易站。", privilege: "卖货时额外 +1 金币。", tip: "适合：你有高价值货且贸易站位子对你有利；不适合：你无货或会先帮对手卖掉高价货。" },
   Captain: { action: "轮流装船得 VP，阶段末弃货（可仓库保留）。", privilege: "本阶段你首次装船额外 +1VP。", tip: "适合：你货多且能抢装船位；不适合：你货少且会让对手先清空大量高价货。" },
   Prospector: { action: "仅选择者执行。", privilege: "立即 +1 金币。", tip: "适合：你需要补 1 金完成关键建造阈值；不适合：场上有更高价值角色窗口可直接转分或卡位。" },
+  Buccaneer: { action: "仅选择者执行：从 4 个海盗行动里选 1 个——劫掠(清空一艘货船，留≤3 货)、洗劫(清空贸易站，每货 +1VP)、突袭(殖民者堆削到每人 1 名，你留≤3 名)、劫持(占一个无人角色，拿其累积金币并执行该角色)。", privilege: "仅人类可选；不给其他玩家特权、自身不累积金币；持有奖励币时这一轮不可再选。", tip: "适合：用洗劫换 VP、或突袭卡住对手补人节奏；不适合：4 个行动当前对你都无明显收益时。" },
 };
 const ROLE_NAME_CN = {
   Settler: "拓殖者", Mayor: "市长", Builder: "建造师",
@@ -260,6 +262,7 @@ function getTraderPreview() {
 
 function buildRoleTooltip(roleName) {
   const d = ROLE_TOOLTIP_DATA[roleName];
+  if (!d) return `<div class="tt-title">${ROLE_NAME_CN[roleName] || roleName}</div>`; // 防御：未登记的角色不致 render 崩溃
   let extra = '';
   if (roleName === 'Mayor') {
     const m = getMayorPreview();
@@ -359,7 +362,10 @@ class Game {
     // 新建筑扩展：把全局 BUILDINGS 从纯净基础副本复原（轮抽可能改过它），启用时追加扩展建筑。
     // （BUILDINGS 是市场/库存/sim 的唯一建筑来源；构造时控制它即可整体开关扩展。）
     BUILDINGS.length = 0;
-    for (const b of BASE_BUILDINGS) BUILDINGS.push(b);
+    // Tibs 版把官方【济贫院 Hospice(11)】改名重做为【寄宿屋 Boarding House(48)】(对采石场也生效)。
+    // 故 Tibs 局用 48 取代 11，从可买池排除 11，避免同一局里两张近乎相同的建筑并存(忠实 mod)。
+    // 非 Tibs 局(基础/新建筑/贵族)保留济贫院(11)不变。BLD_BY_ID[11] 仍在(查表不受影响)。
+    for (const b of BASE_BUILDINGS) { if (this.expansionTibs && b.id === 11) continue; BUILDINGS.push(b); }
     if (this.expansion) for (const b of EXPANSION_BUILDINGS) BUILDINGS.push(b);
     if (this.expansionNobles) for (const b of NOBLE_BUILDINGS) BUILDINGS.push(b);
     if (this.expansionTibs) for (const b of TIBS_BUILDINGS) BUILDINGS.push(b);
@@ -1999,6 +2005,10 @@ function aiReallocate(p) {
       }
     }
 
+    // 完成奖励：把"立即增产"(已有对侧【有人】、放下这枚就真出货)的空位抬到violet激活之上。
+    // 否则贪心会先去上港口12/工厂10/办公室等紫建，把蔗糖厂(完成仅值8)晾着→产能0死厂(友邻反馈)。
+    // 产出=真货→装船VP/交易钱，是胜负根基；半成链只缺一枚时必须先补满，再去激活被动紫建。
+    const CHAIN_DONE = (p._chainDone != null) ? p._chainDone : 5; // A/B 钩子: 设 0 = 旧行为(无完成奖励)
     let best = null, bestGain = 0.01; // 仅放置正收益空位；否则留岸边（仍计入 Fortress 且下回合可重分）
     // 种植园空位
     for (const pl of p.plantations) {
@@ -2006,8 +2016,10 @@ function aiReallocate(p) {
       let gain;
       if (pl.good === "quarry") gain = quarryGain;          // 采石场：建造折扣（建筑流更值）
       else if (pl.good === "corn") gain = prodUnit("corn"); // 玉米直接产出
-      // 经济作物田：仅当（现有或可上岗的）加工槽还吃得下才有产出
-      else gain = (fields[pl.good] < facCapTotal[pl.good]) ? prodUnit(pl.good) : 0;
+      // 经济作物田：有【有人】厂槽在等 → 立即增产(满产出+完成奖励)；仅有空厂槽(没上人) → 起链投资(原值)；无厂吃 → 0
+      else if (fields[pl.good] < facCap[pl.good]) gain = prodUnit(pl.good) + CHAIN_DONE;
+      else if (fields[pl.good] < facCapTotal[pl.good]) gain = prodUnit(pl.good);
+      else gain = 0;
       if (gain > bestGain) { bestGain = gain; best = { kind: "p", ref: pl }; }
     }
     // 建筑空槽
@@ -2016,8 +2028,10 @@ function aiReallocate(p) {
       if (b.men >= bd.men) continue;
       let gain;
       if (bd.type === "production" && bd.good && bd.good !== "corn") {
-        // 加工槽：仅当（现有或可上岗的）同类田喂得起才有产出
-        gain = (facCap[bd.good] < fieldsTotal[bd.good]) ? prodUnit(bd.good) : 0;
+        // 加工槽：有【有人】同类田在等 → 立即增产(满产出+完成奖励)；仅有空田(没上人) → 起链投资(原值)；无田喂 → 0
+        if (facCap[bd.good] < fields[bd.good]) gain = prodUnit(bd.good) + CHAIN_DONE;
+        else if (facCap[bd.good] < fieldsTotal[bd.good]) gain = prodUnit(bd.good);
+        else gain = 0;
       } else if (bd.type === "production") {
         gain = prodUnit("corn"); // 玉米类生产建筑（实际不存在，占位）
       } else {
@@ -4422,6 +4436,10 @@ function evalBuildingValue(p, b, phase) {
     if (feedSoon <= 0) return v - 30; // 喂不起=死建筑，强烈不买
     v += feedNow * 12 + (feedSoon - feedNow) * 4;
     const income = (good === "coffee" || good === "tobacco"); // 高价收入货
+    // 友邻反馈：AI 会买蔗糖厂卡人却不产糖(厂闲置=既资敌又浪费)。根因：当前一块该货田都没有时，
+    // 仅靠"明牌池里有田"就买厂是纯投机——那些田常被先手抢光/翻走，等到自己拓殖时已没了，厂遂闲置。
+    // 故：当前【0 块该货田】时压价，优先"有田才囤厂"；收入货(咖啡/烟草)值得提前布局，罚轻，蔗糖/靛蓝/玉米罚重。
+    if (feedNow === 0 && p._specBuyPen !== 0) v -= income ? 3 : 10; // _specBuyPen=0 → A/B 关闭此罚
     if (phase === "early") v += income ? 22 : 10;  // 收入引擎早期最值（三重红利）
     else if (phase === "mid") v += income ? 10 : 4;
     else v -= 12;                                   // 后期生产建筑来不及发挥
@@ -4865,9 +4883,9 @@ function render() {
       <div class="player-header">
         <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${p.isHuman ? " (你)" : " (AI)"}</span>
         <span class="player-stats">
-          <span class="stat">💰${p.money}</span>
-          <span class="stat">⭐${totalVP}</span>
-          <span class="stat">👷${G.totalColonists(p) - G.nobleCount(p)}</span>${G.expansionNobles ? `<span class="stat">🎩${G.nobleCount(p)}</span>` : ""}
+          <span class="stat" data-stat="money">💰${p.money}</span>
+          <span class="stat" data-stat="vp">⭐${totalVP}</span>
+          <span class="stat" data-stat="colonists">👷${G.totalColonists(p) - G.nobleCount(p)}</span>${G.expansionNobles ? `<span class="stat" data-stat="nobles">🎩${G.nobleCount(p)}</span>` : ""}
         </span>
       </div>
       <div class="player-section">

@@ -52,6 +52,13 @@
         </select>
       </label>
       <button id="btn-start">开始游戏</button>
+      <div class="tutorial-entry">
+        <span>📖 新手教程：</span>
+        <button type="button" class="tut-btn" data-tour="base">基础玩法</button>
+        <button type="button" class="tut-btn" data-tour="newbuildings">新建筑扩展</button>
+        <button type="button" class="tut-btn" data-tour="nobles">贵族扩展</button>
+        <button type="button" class="tut-btn" data-tour="tibs">Tibs 扩展</button>
+      </div>
     </div>
     <div class="rules-link">
       <details>
@@ -73,6 +80,7 @@
       <div id="action-bar"></div>
       <div id="resources-info"></div>
       <button id="btn-show-rules" class="small">规则</button>
+      <button id="btn-tutorial-ingame" class="small">教程</button>
       <button id="btn-restart" class="small">重开</button>
     </header>
 
@@ -124,5 +132,6 @@
 <script src="sim_nn.js"></script>
 <script src="sim_solve.js"></script>
 <script src="trace.js"></script>
+<script src="tutorial.js"></script>
 </body>
 </html>
