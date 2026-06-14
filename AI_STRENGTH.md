@@ -232,3 +232,27 @@ node tools/tier_winrate.js 60
 node tools/eval_az.js     24 heuristic mcts_value_az.json 128 role,build   # 默认 AZ value
 node tools/eval_az_sv.js  24 heuristic mcts_value_az.json 128 role,build   # 换 55% 强价值
 ```
+
+---
+
+## 10. 扩展局 AI 状态（2026-06）
+
+此前 AI(L1–L6)只在**基础游戏**调优/训练。加入扩展后做了诊断+修复。
+
+**诊断（三层）：**
+- `sim.js`(L5/L6 角色搜索引擎)：**建模 New Buildings(24-37)** 效果，但**完全不建模贵族机制(38-45)**（0 处引用，buildSimState 也不传贵族状态）。
+- value 网特征：仅 23 基础建筑（对所有扩展建筑盲）。但 L6 用完整 rollout，value 头本就是死权重（§1），故此盲区影响小。
+- `evalBuildingValue`(买不买)：有 24-35(New Buildings) case，**缺 38-45(贵族)** → AI 只按建筑印刷 VP 买贵族建筑，不识其效果。
+
+**实测天梯崩坏**（`tools/exp_ladder.js`，每组 40 局，公平 25%）：
+| | 修复前 | 修复后 |
+|---|---|---|
+| nobles L6 vs 3×L4 | 23.8%(勉强) | **37.5%(碾压✓)** |
+| nobles L5 vs 3×L4 | 17.5%(L5<L4!) | 21.3% |
+| newbuildings sim | **每船长阶段崩溃**→L5/L6 退化启发式 | 崩溃 0，MCTS 恢复 |
+
+**修复：**
+1. `sim.js rankCaptain`：小码头(`smallwharf`)候选未特判 → `ships['smallwharf']` undefined 崩溃。加 `|| c.ship==='smallwharf'`。
+2. `evalBuildingValue`：加贵族建筑 38-44 效果估值（别墅/珠宝匠按 `nobleCount`、规划办建造折扣等）；`estLargeVioletSpecial` 加皇家花园(45)=`nobleCount`。
+
+**残留缺口**：nobles 模式 L5 vs L4 仍略低于公平（21%）——根因是 `sim.js` 对贵族机制的角色搜索盲区（深搜跑在"贵族不存在"的错误模型上，反而误导 L5）。彻底修需把贵族机制移植进 sim.js（noble 分配/驻守/建筑效果/终局 VP，工作量大、且 value 网仍盲）。鉴于 L6（最强档、玩家主要对手）已在 nobles 碾压 L4，此残留为中低优先。New Buildings 因 sim 已建模 + 崩溃已修，L5/L6 正常。Tibs 模式 AI 用启发式（海盗为人类专属，见 TIBS_EXPANSION.md）。
