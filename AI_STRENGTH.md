@@ -255,4 +255,26 @@ node tools/eval_az_sv.js  24 heuristic mcts_value_az.json 128 role,build   # 换
 1. `sim.js rankCaptain`：小码头(`smallwharf`)候选未特判 → `ships['smallwharf']` undefined 崩溃。加 `|| c.ship==='smallwharf'`。
 2. `evalBuildingValue`：加贵族建筑 38-44 效果估值（别墅/珠宝匠按 `nobleCount`、规划办建造折扣等）；`estLargeVioletSpecial` 加皇家花园(45)=`nobleCount`。
 
-**残留缺口**：nobles 模式 L5 vs L4 仍略低于公平（21%）——根因是 `sim.js` 对贵族机制的角色搜索盲区（深搜跑在"贵族不存在"的错误模型上，反而误导 L5）。彻底修需把贵族机制移植进 sim.js（noble 分配/驻守/建筑效果/终局 VP，工作量大、且 value 网仍盲）。鉴于 L6（最强档、玩家主要对手）已在 nobles 碾压 L4，此残留为中低优先。New Buildings 因 sim 已建模 + 崩溃已修，L5/L6 正常。Tibs 模式 AI 用启发式（海盗为人类专属，见 TIBS_EXPANSION.md）。
+**3. 贵族机制移植进 sim.js（标量 nobleCount）**：上面的 evalBuildingValue 修好了"买不买"，但
+`sim.js`（L5/L6 角色搜索引擎）仍对贵族盲 → L5 深搜跑在"贵族不存在"的错模型上反不如 L4。
+移植了**标量 nobleCount**（不做 per-building 贵族追踪，够角色搜索用）：buildSimState 传
+nobleCount/noblesLeft/noblesOnShip；sim `specialVPs` 加每贵族 +1VP + 皇家花园(45)；`doMayor`
+建模贵族积累（每市长 1 贵族给选择者 + 别墅43）→ MCTS 能算"选市长→贵族→终局VP"；珠宝匠(44) 每贵族 +1金。
+全部 gate 在 `expansionNobles`，非贵族局零影响（实测 none/newbuildings 不变）。
+
+**最终天梯（nobles，90 局/组，SE≈±4.5%）：**
+| | 移植前 | 移植后 |
+|---|---|---|
+| L5 vs 3×L4 | 21%(L5<L4) | **29.4%(L5≥L4 ✓)** |
+| L6 vs 3×L4 | 37.5%* | 23.7% |
+| L6 vs 3×L5 | — | 23.1% |
+
+**结论**：移植后 L4/L5/L6 在 nobles 收敛到**近持平（都 ~24-29% vs 彼此，贴公平 25%）——与基础局
+同一结构天花板**（§2/§3：顶端三档难分高下）。\*移植前 L6=37.5% 其实是**假象**：L6 深搜在"一致但
+错误"的贵族盲 sim 上恰好占了便宜、而 L5 反被坑；移植后三档都正确规划→回归结构持平。L5≥L4 的目标达成，
+天梯非严格单调（L1-3 < L4≈L5≈L6）。**要让 L6 在 nobles 严格碾压 L5，需贵族训练的 NN**（现役 NN
+base 训练、对贵族盲，是 L6 在 nobles 不占优的根因；与 §1"value 头死权重"同源）——属大工程，未做。
+
+New Buildings 因 sim 已建模 + 崩溃已修，L5/L6 正常。Tibs 模式 AI 用启发式（海盗为人类专属，见 TIBS_EXPANSION.md）。
+鲁棒性矩阵（`tools/exp_matrix.js`，4 模式 × 6 难度）：**24/24 格全过**（无崩溃/正常结束/分数合理）。
+L2(纯DNA) 经修也会在贵族/Tibs 局用扩展建筑。
