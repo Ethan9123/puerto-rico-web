@@ -4468,7 +4468,7 @@ function evalBuildingValue(p, b, phase) {
     case 30: { const spaceLeft = 12 - G.buildingUsedSpaces(p); v += (phase === "early" ? 22 : phase === "mid" ? 12 : 2) * Math.min(1, spaceLeft / 3); break; } // 教堂：越早建越值(后面还会建)
     case 31: v += phase === "mid" ? 20 : phase === "early" ? 10 : 12; break; // 小码头：私人船得分
     case 32: v += phase === "mid" ? 22 : phase === "early" ? 12 : 12; break; // 灯塔：装船给金(类港口)
-    case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;  // 图书馆：角色特权翻倍(强)
+    case 33: v += phase === "early" ? 24 : phase === "mid" ? 16 : 6; break;  // 图书馆：角色特权翻倍——价值随后续选角色次数累积，越早买越值(强手共识)
     case 34: { let best = 0; for (const g of GOODS) if (g !== "corn") best = Math.max(best, G.productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; } // 专业工厂：单货收入引擎(类工厂)
     case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break; // 工会大厅：囤同货换VP(得分型)
     // —— 贵族扩展(38-44, 45 走大紫分支)：按效果估值 ——
