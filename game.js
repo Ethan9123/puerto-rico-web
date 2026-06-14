@@ -4573,7 +4573,10 @@ function aiPickBuilding(p, options, isChooser) {
   if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
     const idx = dnaPickBuilding(p, options, isChooser);
     if (idx !== null && idx >= 0 && idx < options.length) return idx;
-    return -1; // 基因选择"不买"（无想买的）→ pass，符合 VBA
+    // 基因选"不买"。DNA 染色体只覆盖基础 23 建筑，看不见扩展建筑。
+    // 基础局：保持 pass（忠于 VBA）。扩展局：若有可买的【扩展建筑(>=24)】，落到下方启发式补一手，
+    // 让 L2 也能用上扩展建筑（不再完全无视扩展），但基础局行为不变。
+    if (!(G.expansion && options.some(o => o.b.id >= 24))) return -1;
   }
   const phase = gamePhase();
   // 全局规划：心仪的大紫块（单张，错过被抢）。mid/late 且契合度高才进入"规划"。
