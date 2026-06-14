@@ -522,7 +522,7 @@
 
   function rankCaptain(cands, ships, phase) {
     const score = (c) => {
-      if (c.ship === "wharf") return -1;
+      if (c.ship === "wharf" || c.ship === "smallwharf") return -1; // 私人船(码头/小码头)优先级最低(先用货船吃 VP)
       const s = ships[c.ship]; const rem = s.capacity - s.count;
       let v = (s.good === c.good ? 1000 : 0) + rem * 10 + (c.amount || 0);
       if (phase && phase !== "late") v += (4 - PRICE[c.good]) * 60; // 早/中期弃廉价货、留咖啡/烟草

@@ -1914,6 +1914,7 @@ function estLargeVioletSpecial(p, id) {
   if (id === 22) return Math.floor(p.vp / 4);
   if (id === 23) return p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
   if (id === 53) { let n = 0; for (const op of G.players) { if (op === p) continue; n += op.buildings.filter(b => BLD_BY_ID[b.bid].type === "large_violet").length; } return n * 2; } // Tibs 大教堂：对手大紫数 ×2
+  if (id === 45) return G.nobleCount(p); // 贵族扩展 皇家花园：每名贵族再 +1VP
   return 1;
 }
 
@@ -4467,6 +4468,14 @@ function evalBuildingValue(p, b, phase) {
     case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;  // 图书馆：角色特权翻倍(强)
     case 34: { let best = 0; for (const g of GOODS) if (g !== "corn") best = Math.max(best, G.productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; } // 专业工厂：单货收入引擎(类工厂)
     case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break; // 工会大厅：囤同货换VP(得分型)
+    // —— 贵族扩展(38-44, 45 走大紫分支)：按效果估值 ——
+    case 38: v += phase === "early" ? 4 : 2; break;                          // 地产办公室：情境性地块操作
+    case 39: v += phase === "late" ? 2 : 6; break;                           // 礼拜堂：每工匠 +1金/贵族+1VP
+    case 40: v += phase === "early" ? 5 : 2; break;                          // 狩猎小屋：情境(弃地/空格最多)
+    case 41: v += phase === "early" ? 11 : phase === "mid" ? 7 : 2; break;   // 规划办公室：建造折扣(建筑流强)
+    case 42: { const nb = G.nobleCount(p); v += nb * 4 + (phase === "mid" ? 4 : 1); break; } // 皇家供应商：每贵族弃货得VP
+    case 43: v += phase === "early" ? 15 : phase === "mid" ? 10 : 3; break;  // 别墅：每市长+1贵族(引擎,贵族→终局VP+功能)
+    case 44: { const nb = G.nobleCount(p); v += nb * 5 + (phase === "early" ? 8 : phase === "mid" ? 5 : -2); break; } // 珠宝匠：每贵族每工匠+1金
     // —— Tibs 自制扩展（真实规则估值）——
     case 46: v += phase === "early" ? 4 : phase === "mid" ? 2 : -2; break;    // 金矿：慢速金+占 2 工人，弱
     case 47: { const ci = p.plantations.some(pl => pl.good === "corn" || pl.good === "indigo") ? 6 : 1; v += ci + (phase === "late" ? -2 : 2); break; } // 水井：有玉米/靛蓝才好
