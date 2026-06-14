@@ -352,13 +352,43 @@ document.getElementById("rules-text").innerHTML = RULES_TEXT;
 // 游戏状态
 // ============================================================
 class Game {
+  // 扩展模块归一化：第3参兼容【旧字符串】(none/newbuildings/nobles/tibs，累积语义)
+  // 与【新对象】({newBuildings,nobles,tibsBuildings,festival,buccaneer}，独立任意组合)。
+  static normalizeModules(expansion, buccaneer) {
+    if (expansion && typeof expansion === "object") {
+      return {
+        newBuildings:  !!expansion.newBuildings,
+        nobles:        !!expansion.nobles,
+        tibsBuildings: !!expansion.tibsBuildings,
+        festival:      !!expansion.festival,
+        buccaneer:     !!expansion.buccaneer,
+      };
+    }
+    const s = (expansion === true) ? "newbuildings" : (expansion || "none");
+    const tibsB = s === "tibs";
+    return {
+      newBuildings:  s === "newbuildings" || s === "nobles" || s === "tibs",
+      nobles:        s === "nobles" || s === "tibs",
+      tibsBuildings: tibsB,
+      festival:      tibsB,                 // 旧语义：tibs 自动开节庆
+      buccaneer:     tibsB && !!buccaneer,  // 旧语义：tibs 且勾选才开海盗
+    };
+  }
+
   constructor(numPlayers, humanName, expansion, buccaneer) {
     this.numPlayers = numPlayers;
-    // expansion: false/"none"=基础, true/"newbuildings"=扩展I, "nobles"=扩展I+II(贵族),
-    //            "tibs"=扩展I+II+Tibs 自制(超集)
-    this.expansion = !!expansion && expansion !== "none";
-    this.expansionNobles = expansion === "nobles" || expansion === "tibs";
-    this.expansionTibs = expansion === "tibs";
+    // —— 5 个独立扩展模块开关（可任意组合）；旧字符串经 normalizeModules 映射为累积集合 ——
+    const mods = Game.normalizeModules(expansion, buccaneer);
+    this.mods = mods;
+    this.modNewBuildings  = mods.newBuildings;   // 新建筑(24-37) + 建筑轮抽
+    this.modNobles        = mods.nobles;         // 贵族棋子机制 + 贵族建筑(38-45)（同一开关，避免“有贵族建筑无贵族棋子”）
+    this.modTibsBuildings = mods.tibsBuildings;  // Tibs 自制建筑(46-53)（寄宿屋48取代济贫院11）
+    this.modFestival      = mods.festival;       // 节庆竞速目标
+    this.modBuccaneer     = mods.buccaneer;      // 第 8 角色海盗（仅人类）
+    // 旧字段名保留为派生别名（下游 ~40 处 expansion*/module* 读取无需改动）：
+    this.expansion       = this.modNewBuildings;   // 语义收窄：只 gate 新建筑池(24-37)+轮抽
+    this.expansionNobles = this.modNobles;         // 1:1
+    this.expansionTibs   = this.modTibsBuildings;  // 语义收窄：只代表 Tibs 建筑池(46-53)
     // 新建筑扩展：把全局 BUILDINGS 从纯净基础副本复原（轮抽可能改过它），启用时追加扩展建筑。
     // （BUILDINGS 是市场/库存/sim 的唯一建筑来源；构造时控制它即可整体开关扩展。）
     BUILDINGS.length = 0;
@@ -430,7 +460,7 @@ class Game {
     this.roleCards = usedNames.slice(0, this.roleCount).map(n => ({ name: n, money: 0, taken: false, takenBy: null }));
     // Tibs 海盗模块：额外加 1 张 Buccaneer 角色卡（仅人类可选，AI/ sim 不参与，避免冲击 7 角色 AI）
     this._buccaneerReward = -1; // 持有奖励币的玩家(=不可再选 Buccaneer)，-1=无
-    if (buccaneer && this.expansionTibs) {
+    if (this.modBuccaneer) {
       this.roleCards.push({ name: "Buccaneer", money: 0, taken: false, takenBy: null });
     }
 
@@ -458,10 +488,10 @@ class Game {
     const startMoney = { 1: 2, 2: 3 }[numPlayers] ?? (numPlayers - 1);
     for (let p of this.players) p.money = startMoney;
 
-    // Tibs 节庆模块（随 tibs 扩展启用）：3 个竞速目标
-    this.moduleFestival = this.expansionTibs;
-    // Tibs 海盗模块（独立开关，因为加第 8 个角色）：由 startGame 传入 buccaneer 标志
-    this.moduleBuccaneer = this.expansionTibs && !!buccaneer;
+    // 节庆模块（独立开关）：3 个竞速目标
+    this.moduleFestival = this.modFestival;
+    // 海盗模块（独立开关）：第 8 个角色海盗（仅人类可选）
+    this.moduleBuccaneer = this.modBuccaneer;
     this.log = [];
     this.logEvent(`游戏开始：${numPlayers} 玩家`);
     this.logEvent(`抽选首任总督：${this.players[this.governor].name}`, 'role');
@@ -1103,10 +1133,16 @@ function startGame() {
   const name = document.getElementById("player-name").value || "玩家";
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = (n >= 2) && !!document.getElementById("all-ai")?.checked;
-  const expSel = document.getElementById("expansion-select")?.value || "none";
-  const buccaneer = !!document.getElementById("buccaneer-toggle")?.checked; // Tibs 海盗模块
-  G = new Game(n, name, expSel, buccaneer); // "none" | "newbuildings" | "nobles" | "tibs"
-  G.expansionType = expSel;
+  // 5 个独立扩展模块，可任意组合勾选
+  const mods = {
+    newBuildings:  !!document.getElementById("mod-newbuildings")?.checked,
+    nobles:        !!document.getElementById("mod-nobles")?.checked,
+    tibsBuildings: !!document.getElementById("mod-tibs")?.checked,
+    festival:      !!document.getElementById("mod-festival")?.checked,
+    buccaneer:     !!document.getElementById("mod-buccaneer")?.checked,
+  };
+  G = new Game(n, name, mods); // 第 4 参省略，海盗已在 mods 内
+  G.expansionType = mods;
   let needsNN = false;
   // 读取每个 CPU 的独立难度
   G.players.forEach((p, i) => {
@@ -1235,6 +1271,17 @@ document.querySelectorAll(".qs-btn").forEach(btn => {
         sel.value = String((idx % 6) + 1);
       }
     });
+  });
+});
+// 扩展模块预设按钮（基础 / 官方新建筑+贵族 / 全开含Tibs）——一键勾选 5 个独立模块复选框
+document.querySelectorAll("[data-mods]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const set = (id, on) => { const el = document.getElementById(id); if (el) el.checked = on; };
+    const p = btn.dataset.mods;
+    const cfg = p === "official" ? [1, 1, 0, 0, 0]
+              : p === "all"      ? [1, 1, 1, 1, 1]
+              :                    [0, 0, 0, 0, 0]; // none
+    ["mod-newbuildings", "mod-nobles", "mod-tibs", "mod-festival", "mod-buccaneer"].forEach((id, i) => set(id, !!cfg[i]));
   });
 });
 // 初次渲染
@@ -4597,7 +4644,8 @@ function aiPickBuilding(p, options, isChooser) {
     // 基因选"不买"。DNA 染色体只覆盖基础 23 建筑，看不见扩展建筑。
     // 基础局：保持 pass（忠于 VBA）。扩展局：若有可买的【扩展建筑(>=24)】，落到下方启发式补一手，
     // 让 L2 也能用上扩展建筑（不再完全无视扩展），但基础局行为不变。
-    if (!(G.expansion && options.some(o => o.b.id >= 24))) return -1;
+    // 注：判“有无扩展建筑可买”用选项本身(id>=24)即可——独立模块下任一扩展(新建筑/贵族/Tibs)都覆盖到。
+    if (!options.some(o => o.b.id >= 24)) return -1;
   }
   const phase = gamePhase();
   // 全局规划：心仪的大紫块（单张，错过被抢）。mid/late 且契合度高才进入"规划"。

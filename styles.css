@@ -76,6 +76,15 @@ body {
   font-size: 13px;
 }
 .qs-btn:hover { background: #4a6580; }
+.module-select {
+  border: 1px solid #4a6580; border-radius: 6px;
+  padding: 8px 14px; margin: 12px 0; max-width: 460px;
+}
+.module-select legend { font-size: 14px; color: #f3c969; padding: 0 6px; }
+.module-select label { display: block !important; margin: 7px 0 !important; font-size: 14px !important; cursor: pointer; }
+.module-select input[type="checkbox"] { margin-right: 7px; }
+.module-presets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.module-presets span { font-size: 13px; color: #b5c2cc; }
 .setup-box select, .setup-box input { font-size: 18px; padding: 4px 8px; margin-left: 8px; }
 .setup-box button {
   background: #c0392b; color: white; border: 0;
