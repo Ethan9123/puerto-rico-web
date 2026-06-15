@@ -148,7 +148,7 @@ const NOBLE_BUILDINGS = [
   { id:38, name:"Land Office",     cn:"地产办公室", img:"",  type:"violet",       cost:2,  men:1, vp:1, size:1, qty:2, tier:1, effect:"land_office" },
   { id:39, name:"Chapel",          cn:"礼拜堂",     img:"",  type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:1, effect:"chapel" },
   { id:40, name:"Hunting Lodge",   cn:"狩猎小屋",   img:"",  type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"hunting_lodge" },
-  { id:41, name:"Zoning Office",   cn:"规划办公室", img:"",  type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" },
+  { id:41, name:"Construction Office", cn:"营建办公室", img:"",  type:"violet",   cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"zoning_office" }, // 官方名 Construction Office（德 Bauamt；旧译 Zoning/规划办公室）
   { id:42, name:"Royal Supplier",  cn:"皇家供应商", img:"",  type:"violet",       cost:6,  men:1, vp:2, size:1, qty:2, tier:2, effect:"royal_supplier" },
   { id:43, name:"Villa",           cn:"别墅",       img:"",  type:"violet",       cost:7,  men:1, vp:3, size:1, qty:2, tier:3, effect:"villa" },
   { id:44, name:"Jeweler",         cn:"珠宝匠",     img:"",  type:"production",   cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"jeweler" }, // 官方定位=生产建筑：市政厅不计入、公会大厅按大型生产建筑计 2VP（特判）、2p 库存 2 栋
@@ -156,7 +156,7 @@ const NOBLE_BUILDINGS = [
 ];
 Object.assign(BLD_BY_ID, Object.fromEntries(NOBLE_BUILDINGS.map(b => [b.id, b])));
 Object.assign(TIER_BY_BID, { 38:1, 39:1, 40:2, 41:2, 42:2, 43:3, 44:3, 45:4 });
-Object.assign(BUILDING_EN, { 38:"Land Office", 39:"Chapel", 40:"Hunting Lodge", 41:"Zoning Office", 42:"Royal Supplier", 43:"Villa", 44:"Jeweler", 45:"Royal Garden" });
+Object.assign(BUILDING_EN, { 38:"Land Office", 39:"Chapel", 40:"Hunting Lodge", 41:"Construction Office", 42:"Royal Supplier", 43:"Villa", 44:"Jeweler", 45:"Royal Garden" });
 Object.assign(BUILDING_EFFECT_TEXT, {
   38:"商人阶段（可在卖货之外额外使用）：殖民者驻守→付 1 金从暗牌堆抽 1 张种植园放上岛；贵族驻守→弃 1 张种植园/森林（非采石场）得 1 金。",
   39:"工匠阶段：殖民者驻守→+1 金；贵族驻守→+1 VP。",
@@ -178,7 +178,7 @@ Object.assign(BUILDING_EFFECT_TEXT, {
   25:"建造阶段：建造时可还 1货 + 1殖民者(岸边或板块上,黑市自身除外) + 1VP 各抵 1 金（最多 -3，且建完不能剩钱）。",
   26:"拓殖阶段：可改拿「森林」——翻扣 1 张明牌种植园置于岛上；每 2 块森林使建造 -1 金（不受采石场列限、不上工人）。",
   27:"船长阶段末：除正常保留外，额外保留任意 3 个货物。",
-  28:"招待所(2 工人槽)：把最多 2 个殖民者停在此当「客工」，可在任意阶段开始时派往任意空位立即上岗（须工作到下个市长阶段）。",
+  28:"招待所(2 工人槽)：把最多 2 个殖民者停在此当「客工」。官方：客工可在任意阶段、任意时点派往任意空位立即上岗（本实现在每个非市长阶段开始时给出派遣机会）；上岗后须工作到下个市长阶段。",
   29:"商人阶段：可把 1 个货物卖给【自己的】贸易站（任意货、含重复、即使公共站满），按价得金，货入供应区（市场不加成）。",
   30:"建造阶段：建造时按建筑列额外 +0/1/2 VP。",
   31:"船长阶段：自有船；装运货物每 2 个 = 1 VP（货入供应区）。",
@@ -1564,7 +1564,7 @@ async function runRolePhase(roleName, chooserIdx) {
   for (let i = 0; i < G.numPlayers; i++) {
     order.push((chooserIdx + i) % G.numPlayers);
   }
-  // 扩展：招待所(28) — 客工可在（市长以外的）每个阶段开始时派往任意空位，上岗后须留到下个市长阶段
+  // 扩展：招待所(28) — 官方允许客工在任意阶段任意时点派出；本实现于（市长以外的）每个阶段开始时给出派遣机会，上岗后须留到下个市长阶段
   if (roleName !== "Mayor") {
     for (const i of order) {
       const p = G.players[i];
