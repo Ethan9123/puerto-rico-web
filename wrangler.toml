@@ -1,0 +1,9 @@
+# Cloudflare 配置：Workers + 静态资源（Static Assets）
+# 纯静态站点，无需构建步骤；`wrangler deploy` 会把 directory 下的文件作为静态资源上传，
+# 以「仅资源 Worker」形式部署，自动在 / 提供 index.html。
+# 非网页文件由同目录的 .assetsignore 排除。
+name = "puerto-rico-web"
+compatibility_date = "2026-06-16"
+
+[assets]
+directory = "."
