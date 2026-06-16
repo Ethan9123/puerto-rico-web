@@ -11,6 +11,8 @@
 ### En ligne
 **👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** (GitHub Pages)
 
+Miroirs (utilisez celui qui se charge) : [Cloudflare Workers](https://puerto-rico-web.ethanfu95.workers.dev/) · [Vercel](https://puerto-rico-web.vercel.app/)
+
 ### Hors ligne (sans installation, sans serveur)
 1. Récupérez l'archive `puerto-rico-web-{date}.zip` (~6,8 Mo).
 2. Décompressez-la où vous voulez.

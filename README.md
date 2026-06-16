@@ -32,7 +32,7 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 | 链接 | 备注 |
 |---|---|
 | https://puerto-rico-web.vercel.app/ | Vercel，部分 ISP/时段可用 |
-| https://puerto-rico-web.kids1995eva.workers.dev/ | Cloudflare Workers，国际节点 |
+| https://puerto-rico-web.ethanfu95.workers.dev/ | Cloudflare Workers；海外/翻墙可用，**国内被墙**（需绑自定义域名，详见 [CN-ACCESS.md](CN-ACCESS.md)） |
 | https://ethan9123.github.io/puerto-rico-web/ | GitHub Pages，多数被墙 |
 
 哪个能开用哪个；都不行就走上面的"微信发离线包"。

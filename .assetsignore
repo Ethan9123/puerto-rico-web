@@ -1,0 +1,11 @@
+# 部署到 Cloudflare Pages 时排除非网页文件（保持线上目录干净）
+.git
+.github
+tests
+tools
+train
+*.bat
+*.py
+*.md
+sim_az.js
+mcts_value.json

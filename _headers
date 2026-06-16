@@ -1,0 +1,20 @@
+# Cloudflare Pages 响应头配置
+# 静态资源长缓存；HTML / AI 数据短缓存，保证更新及时生效
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*.js
+  Cache-Control: public, max-age=86400
+
+/*.css
+  Cache-Control: public, max-age=86400
+
+/mcts_value_nn.json
+  Cache-Control: public, max-age=31536000, immutable
+
+/ai_dna.json
+  Cache-Control: public, max-age=3600
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

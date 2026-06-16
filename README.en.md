@@ -11,6 +11,8 @@
 ### Play online
 **👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** (GitHub Pages)
 
+Mirrors (use whichever loads): [Cloudflare Workers](https://puerto-rico-web.ethanfu95.workers.dev/) · [Vercel](https://puerto-rico-web.vercel.app/)
+
 ### Play offline (no install, no server)
 1. Grab the offline zip `puerto-rico-web-{date}.zip` (~6.8 MB).
 2. Unzip it anywhere.
