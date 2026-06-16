@@ -19,8 +19,8 @@ tests/_nn_ref.json
 puerto-rico-web-offline.zip
 puerto-rico-web-*.zip
 
-# 模型备份(本地)
+# 模型备份/被否决的候选网(本地)
 mcts_value_nn-*.json
-mcts_value_nn_rank.json
+mcts_value_nn_*.json
 tests/_az_ref.json
 mcts_value_az.json

@@ -33,13 +33,20 @@
       </div>
       <label><input type="checkbox" id="all-ai"> 全部 AI 对战（看 AI 互打）</label>
       <label><input type="checkbox" id="live-cast" checked> 🎙️ 实况解说台（激情解说你和 AI 的每一手）</label>
-      <label>🏛️ 扩展：
-        <select id="expansion-select">
-          <option value="none" selected>无扩展（基础游戏）</option>
-          <option value="newbuildings">新建筑扩展（14 个新建筑）</option>
-          <option value="nobles">新建筑+贵族扩展（22 个新建筑 + 20 贵族）</option>
-        </select>
-      </label>
+      <fieldset id="module-select" class="module-select">
+        <legend>🏛️ 扩展模块（可任意组合，单独或叠加）</legend>
+        <div class="module-presets">
+          <span>预设：</span>
+          <button type="button" class="qs-btn" data-mods="none">基础</button>
+          <button type="button" class="qs-btn" data-mods="official">官方(新建筑+贵族)</button>
+          <button type="button" class="qs-btn" data-mods="all">全开(含Tibs)</button>
+        </div>
+        <label title="14 个新建筑(24-37)，启用建筑轮抽"><input type="checkbox" id="mod-newbuildings"> 新建筑扩展（14 建筑）</label>
+        <label title="贵族棋子机制 + 8 个贵族建筑(38-45)。建议同时勾「新建筑」（官方扩展 1+2 常合卖）"><input type="checkbox" id="mod-nobles"> 贵族扩展（贵族棋子 + 8 建筑）</label>
+        <label title="Tibs 同人 8 建筑(46-53)。寄宿屋取代济贫院"><input type="checkbox" id="mod-tibs"> Tibs 自制建筑（8 建筑）</label>
+        <label title="开局随机 3 个竞速目标（种植/生产/建造），完全独立"><input type="checkbox" id="mod-festival"> 节庆模块（竞速目标）</label>
+        <label title="第 8 个角色「海盗」，仅人类可选（AI 跳过，避免影响 AI 强度）"><input type="checkbox" id="mod-buccaneer"> 🏴‍☠️ 海盗角色（仅人类）</label>
+      </fieldset>
       <label>AI 思考时间（L5/L6）：
         <select id="ai-think-budget">
           <option value="fast">快速（0.1s · 看 AI 互打）</option>
@@ -49,6 +56,13 @@
         </select>
       </label>
       <button id="btn-start">开始游戏</button>
+      <div class="tutorial-entry">
+        <span>📖 新手教程：</span>
+        <button type="button" class="tut-btn" data-tour="base">基础玩法</button>
+        <button type="button" class="tut-btn" data-tour="newbuildings">新建筑扩展</button>
+        <button type="button" class="tut-btn" data-tour="nobles">贵族扩展</button>
+        <button type="button" class="tut-btn" data-tour="tibs">Tibs 扩展</button>
+      </div>
     </div>
     <div class="rules-link">
       <details>
@@ -70,6 +84,7 @@
       <div id="action-bar"></div>
       <div id="resources-info"></div>
       <button id="btn-show-rules" class="small">规则</button>
+      <button id="btn-tutorial-ingame" class="small">教程</button>
       <button id="btn-restart" class="small">重开</button>
     </header>
 
@@ -119,6 +134,8 @@
 <script src="sim.js"></script>
 <script src="sim_features.js"></script>
 <script src="sim_nn.js"></script>
+<script src="sim_solve.js"></script>
 <script src="trace.js"></script>
+<script src="tutorial.js"></script>
 </body>
 </html>

@@ -1,0 +1,364 @@
+##### SaveName: Puerto Rico (Tibs Edition) #####
+
+===== TabStates (笔记本/规则页) =====
+--- Tab "Changes" ---
+=== SCRIPTED CHANGES TO OFFICIAL RULES ===
+
+The scripted setup applies the following deviations from the official rules (not counting unofficial custom buildings and modules):
+
+1. Scenarios beside Scenario 1 use a modified center board with exactly 6 beige building for each of the first three columns. This was designed to allow for more buildings in a game as inspired by Expansion 2 (Nobles), but does not have precisely the correct number of spaces in each column, because the Expert game randomly selects buildings from all sets, rather than always using the Expansion 2 buildings.
+
+2. Prices of many buildings change based on player number, to account for the fact that buildings were designed around a four-player setup, and may be more or less useful with different numbers of players. All versions of priced buildings are available on the table before the script is run. The officially-priced buildings are located farther back on the table, with the alternate prices positioned beneath.
+
+More subtly, Factory is always assumed to cost 8 and University to cost 7: these prices are used when randomly selecting buildings for the Expert scenario, rather than changing the prices after selection. That is: University, Lighthouse, and Villa won't all be in the same game because they are considered to cost 7 before adjustment, and there is only room for two 7-cost buildings at most.
+
+3. Players who start with a Corn plantation receive one fewer doubloon at setup. This is the Chris Gibbs variant, and was formulated after about a million game simulations in an attempt to better balance game setup.
+
+4. Small changes with large implications are made to the two-player game. The official 2p variant was developed after the first release of Puerto Rico, and it changes a number of rules from other player numbers, so it's thought not to be as thoroughly tested.
+
+The scripted setup gives each player one fewer doubloon, under the assumption that they will select five roles per round rather than six (thus accumulating twice the doubloons between rounds).
+
+
+=== CHANGES TO ASSETS ===
+
+This Puerto Rico module is a combination of assets from the original 2002 release, the 2011 Anniversary Edition, and the 2020 redesign. On top of that, many official assets have been changed by me for clarity. In order of decreasing significance:
+
+1. All island and building tiles were reconstructed using high-res scans, allowing me to capitalize names, change descriptions, and change some names from previous releases for the sake of clarity:
+
+"Indigo Plant" became "Large Indigo Plant"
+"Sugar Mill" became "Large Sugar Mill"
+"Hospice" became "Boarding House"
+"Office" became "Commercial Office"
+"Tobacco Storage" became "Tobacco Barn"
+"Guesthouse" became "Guest House"
+"Construction Office" became "Zoning Office"
+"Court Supplier" became "Royal Supplier"
+"Commercial Harbor" became "Customs Station"
+"Gardens" became "Royal Garden"
+
+2. The cargo ship spaces are now semi-opaque octagons for visual clarity.
+
+3. The goods barrels are an original barrel model I created in Blender. The hardest part was color-picking the barrel colors!
+
+4. Doubloons are from the 2011 release, but I tried modifying them into a model texture in Blender so that I could make (artificial) normal maps for a more textured metallic feel. Don't examine them too closely.
+
+5. The Jeweler border was changed from pink (2011) to its original gold. It is a goldsmith shop, after all. I can only assume the original change was to avoid confusion about whether this is a production building for corn. Any players confused about this should not be playing with expansions, and possibly shouldn't be playing Puerto Rico at all.
+
+6. Player boards are the 2011 design, but use the included 2002 role cards' graphics in their role summary area.
+
+7. The Festival card and its rules are an unofficial translation, though I feel it to be faithful. The graphics were based on a photograph so the color space is not guaranteed to be correct.
+
+8. Some parts of the colonist house had to be re-drawn without reference because the scan was missing sections.
+
+9. The Buccaneer rules were transcribed from a photograph of what is assumed to be an official rules sheet. Some terms and grammatical mistakes were changed for clarity (example: the "warehouse" should really refer to the "Trading House" card). Many action names do not match between the buccaneer card and the rules, but it was usually be unambiguous which action the player is performing.
+
+--- Tab "Set up" ---
+To use the scripted setup, simply select a scenario and click "Set up game" when two to five players are seated. Modules are always optional.
+
+The setup script will move components into position, remove unused components, duplicate components to their required counts, and randomize sets as required. Some component counts may be different from the official game: see the "Changes" section for a listing of differences.
+
+After the game is set up, the module plays 100% manually, like a real game of Puerto Rico. To reset the workshop module and pick a new scenario, you must load the workshop module again.
+
+
+=== THE SCENARIOS ===
+
+The selected scenario will primarily determine which beige buildings, and how many, will be used in the game.
+
+
+SCENARIO 1:
+The original center board is used (four beige buildings per column). Every base game building is used. No expansion buildings are used.
+
+Aside from minor changes from the official game (see "Changes"), this plays like an original release of Puerto Rico. This scenario is best as an introduction to the game itself.
+
+
+SCENARIO 2:
+Tibs's New Bank board is used (six beige buildings per column). The Nobles pieces are used, so the regular colonists are assumed to be infinite. An infinite colonist bag is provided.
+
+All Expansion 1 buildings are used except the Church*. Most Expansion 2 buildings are used except the Zoning Office* and Jeweler**. Very few base game buildings are used again. No unofficial (Tibs) buildings are used. 
+
+This scenario is intended to be an introduction to the expansion buildings and associated mechanics (i.e. Nobles).
+
+*These were moved to Scenario 3 to allow/disallow certain building combinations and to allow as few buildings as possible to be present in consecutive games.
+**I highly discourage Villa and Jeweler from being in the same game. They are fair alone, but broken in combination.
+
+
+SCENARIO 3:
+Tibs's New Bank board and the Nobles are used like in Scenario 2.
+
+All of Tibs's buildings are included. The remaining official buildings that were unused in previous scenarios are included here. All other included buildings were selected to minimize the number of buildings used in the previous scenario, so they are mostly base-game buildings.
+
+Tibs's "Workers" module is used. It will be automatically added on the Modules interface when Scenario 3 is selected. The Buccaneer and Festival are not used.
+
+This scenario was designed to be showcase of all of the components I've designed for Puerto Rico in one place: illustrated building tiles, price-adjusted buildings, the expanded center board, my custom buildings, and my add-on Workers module. It is essentially the way I prefer to play: the "Expert game," except without randomly-chosen buildings during setup.
+
+
+EXPERT GAME:
+Tibs's New Bank board and the Nobles are used like in Scenarios 2 and 3.
+
+All beige buildings to be used in the game are selected randomly, aside from a few restrictions:
+
+-Hacienda and Forest House are never in the same game.
+-Commerical Office and Trading Post are never in the same game.
+-Villa and Jeweler are never in the same game.
+-Royal Garden is always in the game.
+
+Buildings are chosen to fill the depicted price spaces on the New Bank board, which has some either/or prices; so the number of e.g. 5-cost buildings can vary from game to game. Buildings are chosen based on their prices before any player-number-based adjustments are applied (see "Changes").
+
+
+DELETE THIS INTERFACE AND SET UP MANUALLY:
+This functions exactly as described. Selecting this and clicking "Set up game" will delete the scenario and module interfaces, and allow the players to set up the game however they choose with the provided components.
+
+Please note that players will have to unlock, clone, and delete objects to set the game up this way.
+
+
+=== THE MODULES ===
+
+The modules are always independent and optional. Selecting Scenarios 1–3 will automatically choose recommended modules, but they can be changed before clicking "Set up game."
+
+
+WORKERS mini-expansion (2010):
+
+Unofficial module by Tibs. Each player places a jobs strip onto their player boards in the section that summarizes the role cards. The Job Token is placed onto the Mayor role card.
+
+Players may place colonists/nobles onto the top slot (Surveyor) if it's emtpy during the Mayor phase. Selecting the role card with the Job Token currently on it will cause all of your colonists to advance one space downward on the strip; you then relocate the Job Token to another unselected role card and perform the selected role as usual.
+
+Different spaces grant different small bonuses to the player during the corresponding role phase. Colonists/nobles on this strip may not be removed by the player by normal means; they instead relocate elsewhere on the player's island once they reach the bottom of the strip (and also grant a doubloon/VP).
+
+
+The BUCCANEER role card (2019):
+
+A functionally unique Buccaneer role card is added to the ordinarily available roles.
+
+A player who selects Buccaneer chooses one of four actions to do, which usually involves clearing goods/colonists off of ships/houses and gaining some reward for it. You can also hold another role ransom, which rewards you if another player selects it, or lets you solely perform its action if nobody does.
+
+Unlike other roles, the Buccaneer does not grant effects to all players, and does not accumulate doubloons between rounds if not chosen.
+
+Players who choose Buccaneer also take the Reward token. A player may not take Buccaneer again as long as he still has the Reward token, effectively requiring another player to select Buccaneer before he can take it again.
+
+
+
+The FESTIVAL promotional card (2019):
+
+An additional Festival card is added to the game, which lists three objectives that grant a reward to the first player to achieve each of them. The objectives are established by adding random pieces to the Festival card. Pieces are returned to the supply when their objectives are completed.
+
+Plantation Objective: add a random plantation from the supply*. The first player to have three of this plantation completes the objective and gains 3 colonists.
+
+Production Objective: add three different random goods barrels from the supply**. The first player to produce all three types at once completes the objective and gains 3 doubloons.
+
+Building Objective: add a random building from Column 3***. It can be the tobacco/coffee building, so long as the plantation selected for Objective 1 isn't tobacco/coffee respectively. The first player to build the depicted building† completes the objective and receives 3 VP. 
+
+*The scripted setup does this AFTER players have received their starting indigo/corn plantations, in order to make those types slightly less likely.
+
+**The scripted setup chooses from the whole pool of goods, so indigo/sugar are slightly more likely than tobacco/coffee.
+
+***The scripted setup considers each Col 3 building with equal likelihood: it does not weight the productions buildings heavier because there are more of them.
+
+†Two-player games only have one copy of each beige building available, so a second copy is placed on the Festival for reference. It should be removed from the game, or otherwise remain unused, when the objective is completed.
+
+--- Tab "Link" ---
+Tibs's New Bank board:
+https://boardgamegeek.com/filepage/44628/new-bank-board-random-treasure-chest-buildings
+
+Tibs's illustrated PR buildings:
+https://boardgamegeek.com/filepage/49554/tibss-puerto-rico-buildings
+
+Tibs's "Workers" mini-expansion:
+https://boardgamegeek.com/filepage/58610/workers-mini-expansion
+
+Tibs's PR Price Adjustments:
+https://boardgamegeek.com/filepage/63089/puerto-rico-price-adjustments
+
+Chris Gibbs 1-Coin Corn Fix:
+https://boardgamegeek.com/thread/726020/article/7876579
+
+Variations on the 2-player game:
+https://www.boardgamegeek.com/filepage/62907/two-player-variant-rules
+
+
+Background is "High Noon At Bottom Bay" by Blochi. Location is Barbados, not Puerto Rico, but you take what you can get; it's close enough.
+http://hdrlabs.com/sibl/archive.html
+
+===== 顶层 LuaScript (前 4000 字) =====
+--[[ Lua code. See documentation: https://api.tabletopsimulator.com/ --]]
+
+----------------------
+-- NATIVE FUNCTIONS --
+----------------------
+function onLoad()
+    
+end
+
+--[[ The onUpdate event is called once per frame. --]]
+function onUpdate()
+    --[[ print('onUpdate loop!') --]]
+end
+
+===== 对象 Description / GMNotes (非空) =====
+[(无名)]
+  Lua:  --[[ Lua code. See documentation: https://api.tabletopsimulator.com/ --]]  ---------------------- -- NATIVE FUNCTIONS -- ---------------------- function onLoad()      end  --[[ The onUpdate event is called once per frame. --]] function onUpdate()     --[[ print('onUpdate loop!') --]] end
+[Small Market]
+  Desc: Goods sell to the Trading House for +1 doubloon.
+[Construction Hut]
+  Desc: You may take a Quarry instead of a face-up plantation even if you're not the Settler.
+[Hacidena]
+  Desc: Before selecting your face-up plantation, you may take a random plantation from the supply. You must keep the random tile if drawn.
+[Small Warehouse]
+  Desc: At the end of the Captain phase, in addition to your free barrel, you may store as many barrels as you like of a single type.
+[Boarding House]
+  Desc: Each face-up plantation or quarry you obtain comes staffed with a colonist from the supply (or the colonist house if none remain).
+[Commercial Office]
+  Desc: You may sell a good to the Trading House of a type that's already there. You may not sell if there is no room, as normal.
+[Large Market]
+  Desc: Goods sell to the Trading House for +2 doubloons.
+[Large Warehouse]
+  Desc: At the end of the Captain phase, in addition to your free barrel, you may store as many barrels as you like of two types.
+[University]
+  Desc: Each building you build comes staffed with a colonist from the supply (or the colonist house if none remain).
+[Factory]
+  Desc: When you craft N different kinds of goods, you receive N-1 doubloons (or 5 doubloons for crafting all five).
+[Harbor]
+  Desc: Each set of goods you load during the Captain phase gives you 1 additional VP.
+[Wharf]
+  Desc: Once per Captain phase, you may load your goods directly back to the supply instead of onto a cargo ship.
+[City Hall]
+  Desc: At the end of the game, score 1 VP for each beige building (including this one).
+[Fortress]
+  Desc: At the end of the game, score 1 VP for every 3 colonists (including nobles) on your island.
+[Guild Hall]
+  Desc: At the end of the game, score 1 VP for each "Small" production building you own, and 2 VP for each other production building.
+[Residence]
+  Desc: At the end of the game, score 4VP if you have 0 to 9 used island spaces (plantations, quarries, and forests). They do not need to be occupied.
+        
+        Score an additional VP for  each used island space beyond 9, to a maximum of 7 VP for all 12 used island spaces.
+[Aqueduct]
+  Desc: If you produce indigo with a Large Indigo Plant (not Small), gain 1 additional indigo. Similarly with sugar and a Large Sugar Mill.
+        
+        You may gain both if you produced both.
+[Black Market]
+  Desc: You may discard up to 1 colonist, 1 good, and/or 1 VP chip to reduce the cost of a building by 1 each. You may not use this ability if you have any doubloons left.
+[Forest House]
+  Desc: Whenever you obtain a plantation, you may place it face-down as a "forest" instead.
+        
+        The cost of buildings is reduced by 1 for every 2 forests you have. There is no per-column limit.
+[Storehouse]
+  Desc: At the end of the Captain phase, in addition to your free barrel, you may store three barrels of any type or types.
+[Guest House]
+  Desc: At any time outside of the Mayor phase, you may move one or both colonists from this building onto other building/plantation/quarry circles.
+        
+        You may not repopulate the Guest House until another Mayor phase.
+[Church]
+  Desc: Whenever you build a building from columns 2 or 3, you gain 1 VP. Whenever you build a building from column 4, you gain 2 VP.
+[Trading Post]
+  Desc: During the Trader phase, you may sell your good directly back to the supply instead of to the Trading House. Small and Large Market bonuses thus do not apply.
+[Small Wharf]
+  Desc: Once per Captain phase, you may load any amount and combination of goods directly back to the supply instead of onto a cargo ship. You get 1VP per two barrels loaded this way.
+[Lighthouse]
+  Desc: Each set of goods you load during the Captain phase gives you 1 additional doubloon.
+        
+        You also get 1 doubloon for selecting the Captain role, whether or not you ship anything.
+[Specialty Factory]
+  Desc: Count the number of barrels of the type of good you produced the most of.
+        
+        For N goods produced of that type, you receive N-1 doubloons.
+        
+        You may not count corn.
+[Library]
+  Desc: Your role privileges are doubled.
+        
+        For the Settler, you may select a second face-up plantation after other players have selected theirs.
+        
+        In a 2-player game, you may only use the Library's ability once per round, not once for each role you select.
+[Union Hall]
+  Desc: Before your first shipment during the Captain phase, you receive 1 VP for every pair of same-type goods. You do not discard the goods to receive the points.
+[Cloister]
+  Desc: At the end of the game, score 1/3/6/10 VP for each set of triple plantations, quarries, or forests on your island.
+[Statue]
+  Desc: Confers no further abilities or bonuses. It's just for decoration.
+[Gold Mine]
+  Desc: Crafting:
+        You may relocate both colonists on your Gold Mine to your San Juan holding space and take 1 doubloon.
+        
+        This building does nothing when occupied by only one colonist.
+[Land Office]
+  Desc: On the Trader phase, instead or in addition to selling a good, you may...
+        
+        (If occupied by colonist) ...buy a random plantation for 1 doubloon. You may not discard it, but your Forest House may convert it into a forest.
+        
+        (If occupied by noble) ...sell a plantation or forest (not a quarry) for 1 doubloon. Any colonist on that tile goes to San Juan.
+[Well]
+  Desc: If you produce corn or indigo, you may produce one extra. You may not produce an extra of both.
+[Chapel]
+  Desc: When crafting, the Chapel produces 1 doubloon if occupied by a colonist. It instead produces 1 VP if occupied by a noble.
+[Hunting Lodge]
+  Desc: At the end of the Settler phase, you may...
+        
+        (If occupied by colonist) ...discard a plantation or forest (not a quarry) from your island. Any colonist on that tile goes to San Juan.
+        
+        (If occupied by a noble) ...gain 2 VP if you have more empty island squares (i.e. not settled with a tile) than every other player. You must have the most; you cannot tie.
+[Zoning Office]
+  Desc: If occupied by a colonist, you get a -1 discount on buildings in columns 1, 2, and 3.
+        
+        If occupied by a noble, you get a -2 discount on large buildings (column 4).
+[Tower]
+  Desc: When another player is Governor and selects a role, you also gain that role's privilege. This building does nothing when you are Governor.
+        
+        In a 2-player game, you may only use the Tower's ability once per round, not once for each role selected by the other player.
+[Royal Supplier]
+  Desc: Before your first shipment in a Captain phase, you may cart goods to the royal court (discard to the supply) and gain 1 VP for each.
+        
+        The goods must each be a different type, and you can't cart more goods than the number of nobles on your island.
+        
+        You gain no additional shipping or captain bonuses for this ability.
+[Villa]
+  Desc: During the mayor phase, you gain one additional noble from the supply (or a colonist from the house if none remain).
+[Jeweler]
+  Desc: When crafting, the Jeweler produces 1 doubloon for each noble on your island.
+[Royal Garden]
+  Desc: At the end of the game, score 1  VP for each noble on your island.
+[Buccaneer]
+  Desc: Choose one action:
+        
+        Piracy - Remove all goods from one cargo ship, and keep up to three of them.
+        
+        Plundering - Remove all goods from the trading house. Take 1VP for each good removed.
+        
+        Attack - Reduce the colonists in the colonist house to the minimum (1 per player). Keep and place up to three of them, but you may not put any in your holding supply.
+        
+        Hijacking - "Capture" an unclaimed role card in front of you, and take all its money. If another player wishes to use it, you receive 3 doubloons from the bank. If nobody uses it, at the end of the round, you play it as normal.
+[Reward token]
+  Desc: The player who takes the Buccaneer role also takes this token. A player may not select Buccaneer again as long as they have this token.
+[1 VP chips]
+  Desc: Only use when you run out of chips and trigger the endgame
+[Gameplay Rules]
+  Desc: The sections explaining the beige buildings have been removed. Please refer to the "Building Rules" guide.
+[Archive]
+  Desc: At the end of the Captain phase, in addition to your free barrel, you may store one barrel of each type of good. You then receive 1 VP for each type of good stored.
+[Bank]
+  Desc: When building the Bank, you may immediately invest up to 8 of your unspent doubloons (place them onto the Bank).
+        
+        When occupied by a noble, you may invest up to one  doubloon accumulated onto any roles you take, to a maximum of 8 invested doubloons.
+        
+        Invested doubloons are no longer usable and don't count as tiebreaker. At the end of the game, score 1 VP for each invested doubloon.
+[Cathedral]
+  Desc: At the end of the game, score 2 VP for each large building owned by another player. Their buildings need not be occupied.
+[Customs House]
+  Desc: At the end of the game, score 1 VP for each 4 VPs you have in the form of chips.
+[Building Rules]
+  Desc: Summary of the specific rules, details, and interactions between all buildings available in this module
+[Tibs's Workers rules]
+  Desc: Rules for Tibs's "Workers" mini-expansion module
+[Festival rules]
+  Desc: Unofficial English translation. 
+        This is the best I could do—I think this is correct, but the rules also have many ambiguities. Your guess for some uncertain scenarios is as good as mine.
+        —Tibs
+[Buccaneer rules]
+  Desc: Reconstructed from official rules, with typo fixes.
+        
+        Ambiguities and terminology mismatches unfortunately are your issue to deal with.
+        —Tibs
+[Customs Station]
+  Desc: At the end of the Captain phase, each time a cargo ship empties its goods, you receive one of the emptied goods.
+        
+        This occurs after the storage portion of the Captain phase, so these goods are not subject to spoilage and do not grant any bonuses to buildings like e.g. the Archive.
+        
+        You also get 1 VP for selecting the Captain role, whether or not you ship anything.

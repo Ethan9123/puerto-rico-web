@@ -98,6 +98,9 @@
       let sets = 0; for (const k in cnt) sets += Math.floor(cnt[k] / 3);
       v += [0, 1, 3, 6, 10][Math.min(sets, 4)];
     }
+    // 贵族扩展(标量)：每名贵族终局 +1VP；皇家花园(45) 镇守时每名贵族再 +1VP
+    const nb = p.nobleCount || 0;
+    if (nb > 0) { v += nb; if (isManned(p, 45)) v += nb; }
     return v;
   }
   function finalScore(p) {
@@ -164,6 +167,7 @@
     const c = {
       numPlayers: st.numPlayers, governor: st.governor, turnNumber: st.turnNumber,
       gameOver: st.gameOver, endTriggered: st.endTriggered,
+      expansionNobles: st.expansionNobles, noblesLeft: st.noblesLeft, noblesOnShip: st.noblesOnShip, // 贵族扩展(标量)
       colonistsLeft: st.colonistsLeft, colonistsOnShip: st.colonistsOnShip, vpLeft: st.vpLeft,
       supply: Object.assign({}, st.supply), buildingStock: Object.assign({}, st.buildingStock),
       quarriesLeft: st.quarriesLeft,
@@ -178,6 +182,7 @@
         plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
         buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
+        nobleCount: p.nobleCount, // 贵族扩展(标量)
       })),
     };
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
@@ -404,6 +409,12 @@
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
     }
+    // 贵族扩展(标量近似)：每市长阶段 1 名贵族给选择者(既是工人也是终局VP)；别墅(43) 额外 +1
+    if (st.expansionNobles) {
+      const give = (pi) => { const p = st.players[pi]; p.unplaced = (p.unplaced || 0) + 1; p.nobleCount = (p.nobleCount || 0) + 1; };
+      if (st.noblesLeft > 0) { st.noblesLeft--; give(chooser); }
+      for (const i of ord) if (isManned(st.players[i], 43) && st.noblesLeft > 0) { st.noblesLeft--; give(i); }
+    }
     for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p); }
     let open = 0; for (const p of st.players) for (const b of p.buildings) open += (BLD[b.bid].men - b.men);
     const refill = Math.max(st.numPlayers, open);
@@ -477,7 +488,12 @@
       }
     }
     const fb = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 5 };
-    for (let i = 0; i < st.players.length; i++) { const p = st.players[i]; if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; } }
+    for (let i = 0; i < st.players.length; i++) {
+      const p = st.players[i];
+      if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; }
+      // 贵族扩展(标量)：珠宝匠(44) 每名贵族 +1金（强金币引擎）
+      if (st.expansionNobles && isManned(p, 44)) p.money += (p.nobleCount || 0);
+    }
     return perKinds[chooser]; // 规则：工匠特权只能拿"自己本回合产出"的种类
   }
   function doCraftsman(st, chooser) {
@@ -522,7 +538,7 @@
 
   function rankCaptain(cands, ships, phase) {
     const score = (c) => {
-      if (c.ship === "wharf") return -1;
+      if (c.ship === "wharf" || c.ship === "smallwharf") return -1; // 私人船(码头/小码头)优先级最低(先用货船吃 VP)
       const s = ships[c.ship]; const rem = s.capacity - s.count;
       let v = (s.good === c.good ? 1000 : 0) + rem * 10 + (c.amount || 0);
       if (phase && phase !== "late") v += (4 - PRICE[c.good]) * 60; // 早/中期弃廉价货、留咖啡/烟草
@@ -564,7 +580,7 @@
     }
     // 小码头：每 2 货 = 1VP
     let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
-    if (i === chooser && !bonusUsed.has(i)) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍
+    if (i === chooser && !bonusUsed.has(i) && loaded > 0) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍；选择者奖励仅在实际装货时
     if (isManned(p, 17)) vp += 1;
     // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
     if (isManned(p, 32)) p.money += 1; // 灯塔：与港口同理，每次装运（含码头/小码头）+1金
@@ -876,7 +892,11 @@
     //     有则替代 evalLeaf 的截断 rollout，直接用 NN 估值
     //   priorPolicyFn(st, perspectiveSeat) -> { [roleName]: prob }
     //     有则在每个节点用 PUCT 而非 UCT：score = Q/N + C * P * sqrt(N_parent) / (1 + N_child)
+    //   evalLeafVecFn(st) -> (persp => value) | null
+    //     向量版叶评估: 一次调用给出全部视角的价值(整条回传路径共享一次 NN 前向)。
+    //     返回 null 时回退 evalLeafFn(如 5 人局)。
     const evalLeafFn = opts.evalLeafFn || null;
+    const evalLeafVecFn = opts.evalLeafVecFn || null;
     const priorPolicyFn = opts.priorPolicyFn || null;
     if (currentChooser(rootState) < 0) return -1;
     const rootLegal = legalRoleIdxs(rootState);
@@ -926,7 +946,7 @@
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout / NN eval
       }
       let leafEval;
-      if (evalLeafFn) {
+      if (evalLeafFn || evalLeafVecFn) {
         // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
         // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
         // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
@@ -941,13 +961,21 @@
         if (isTerminal(st)) {
           leafEval = (persp) => reward(st, persp);
         } else {
-          leafEval = (persp) => {
-            try {
-              const v = evalLeafFn(st, persp);
-              if (typeof v !== "number" || !isFinite(v)) return 0;
-              return Math.max(-1, Math.min(1, v));
-            } catch (e) { return 0; }
-          };
+          let vecEval = null;
+          if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
+          if (vecEval) {
+            leafEval = vecEval; // 已含 clamp/容错
+          } else if (evalLeafFn) {
+            leafEval = (persp) => {
+              try {
+                const v = evalLeafFn(st, persp);
+                if (typeof v !== "number" || !isFinite(v)) return 0;
+                return Math.max(-1, Math.min(1, v));
+              } catch (e) { return 0; }
+            };
+          } else {
+            leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+          }
         }
       } else {
         leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
