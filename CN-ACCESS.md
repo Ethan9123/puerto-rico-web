@@ -65,11 +65,23 @@ GitHub Pages 在中国大陆经常被 GFW 干扰（DNS 污染 / IP 阻断），�
 ### Cloudflare Workers / Pages
 
 1. 注册 [cloudflare.com](https://www.cloudflare.com/)（邮箱 + 密码，免费）
-2. Dashboard 左侧 **Workers & Pages** → **Create** → **Pages** → **Connect to Git**
-3. 选 `puerto-rico-web` → Framework: **None** → Build command 留空 → Output: `/`
-4. 拿到 `https://<项目名>.pages.dev` 或 `<项目名>.<账号>.workers.dev`
+2. **Workers & Pages** → **Create** → **Connect to Git**（现已统一为 Workers + 静态资源流程）
+3. 选 `puerto-rico-web` → Build command 留空 → Deploy command `npx wrangler deploy` → Root `/`
+   （仓库已内置 `wrangler.toml`：`[assets] directory="."`，开箱即用）
+4. 拿到 `https://<项目名>.<账号>.workers.dev`
 
-CF 的 `*.workers.dev` 子域名国内访问性比 `*.vercel.app` 略差，不推荐作为首选。
+> ⚠️ **重点：`*.workers.dev` / `*.pages.dev` 在国内基本打不开** —— 不是"略差"，而是被 GFW
+> 按域名后缀做了 DNS 污染 + SNI 封锁，**默认子域名国内不可用**（海外/翻墙用户不受影响）。
+>
+> ✅ **让 CF 站国内可访问的正解：绑你自己的域名**（仍然不用备案）
+> 1. 买个便宜域名（避开 `.cn` 实名；`.com`≈¥70/年，`.xyz` 首年≈¥10）
+> 2. 域名 DNS 接入 Cloudflare（改 NS）
+> 3. Worker → **Settings → Domains & Routes → Add → Custom domain** 绑上去，证书自动签发
+> 4. 用自定义域名访问，国内通常即可打开
+>
+> 但即便绑了域名，CF 免费版 IP 在国内仍**时通时不通**（可能要"优选 IP"）。要 100% 稳定只能
+> ① 境内服务器/CDN + ICP 备案，或 ② CF 中国网络（需 ICP+联营）——都要备案。
+> 用 [itdog.cn](https://www.itdog.cn/) 多地 ping 可客观验证国内可达性。
 
 ---
 

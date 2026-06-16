@@ -62,10 +62,21 @@ Cloudflare 自带 Git 构建、而想用 GitHub Actions 时才需要：
 
 ---
 
-## 绑定自定义域名（可选）
+## 国内访问：`workers.dev` 被墙，需绑自定义域名
 
-Workers 项目 → **Settings → Domains & Routes** → 添加自定义域名；DNS 建议托管在 Cloudflare（免费），证书自动签发。
-**同样无需备案**：解析与服务都在 Cloudflare 境外节点完成。（`.cn` 域名注册本身有实名要求，用 `.com`/`.net` 可完全规避。）
+部署后拿到的 `*.workers.dev`（和 `*.pages.dev`）**在中国大陆基本打不开**——GFW 对这些共享子域名做了
+DNS 污染 + SNI 封锁，与你的部署是否正确无关。海外 / 翻墙用户不受影响。
+
+**让国内能访问的正解（仍不用备案）：绑你自己的域名**
+
+1. 买个便宜域名（避开 `.cn` 实名要求；`.com`≈¥70/年、`.xyz` 首年≈¥10）。
+2. 域名 DNS 接入 Cloudflare（把 NS 改到 CF 给的两个）。
+3. Workers 项目 → **Settings → Domains & Routes → Add → Custom domain** → 填你的域名，证书自动签发。
+4. 用自定义域名访问，国内通常即可打开。
+
+> ⚠️ 即便绑了域名，CF 免费版 IP 国内仍**时通时不通**（被干扰时要"优选 IP / 改 hosts"）。
+> 想 100% 稳定只有 ① 境内服务器/CDN + ICP 备案，或 ② CF 中国网络（需 ICP+联营）——都要备案。
+> **「不备案」与「国内稳定」本质上是矛盾的。** 用 [itdog.cn](https://www.itdog.cn/) 多地 ping 可验证可达性。
 
 ---
 
