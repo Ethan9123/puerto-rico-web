@@ -11,6 +11,8 @@
 ### En línea
 **👉 [https://ethan9123.github.io/puerto-rico-web/](https://ethan9123.github.io/puerto-rico-web/) 👈** (GitHub Pages)
 
+Espejos (usa el que cargue): [Cloudflare Workers](https://puerto-rico-web.ethanfu95.workers.dev/) · [Vercel](https://puerto-rico-web.vercel.app/)
+
 ### Sin conexión (sin instalación, sin servidor)
 1. Consigue el paquete `puerto-rico-web-{fecha}.zip` (~6,8 MB).
 2. Descomprímelo donde quieras.
