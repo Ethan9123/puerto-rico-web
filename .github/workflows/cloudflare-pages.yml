@@ -1,0 +1,34 @@
+name: Deploy to Cloudflare Pages
+
+# 自动把静态站点部署到 Cloudflare Pages（境外节点，无需 ICP 备案）。
+# 默认处于「关闭」状态，不会在每次推送时产生失败的 CI。
+# 启用方法（一次性）：
+#   1. 在仓库 Settings → Secrets and variables → Actions 添加两个 Secret：
+#        CLOUDFLARE_API_TOKEN  （Cloudflare 控制台创建，权限含 "Cloudflare Pages: Edit"）
+#        CLOUDFLARE_ACCOUNT_ID （Cloudflare 控制台右下角 Account ID）
+#   2. 在同页面 Variables 标签添加一个 Variable：CF_DEPLOY = true
+#   之后推送到 main 即自动部署；也可在 Actions 页手动 Run workflow。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    # 未配置 CF_DEPLOY=true 时整个 job 跳过（显示为 Skipped，而非失败）
+    if: ${{ vars.CF_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy . --project-name=puerto-rico-web --branch=main

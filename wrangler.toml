@@ -1,0 +1,5 @@
+# Cloudflare Pages 配置（供 `wrangler pages deploy` 与 GitHub Actions 使用）
+# 纯静态站点：构建产物目录即仓库根目录（无需构建步骤）
+name = "puerto-rico-web"
+compatibility_date = "2026-06-16"
+pages_build_output_dir = "."
