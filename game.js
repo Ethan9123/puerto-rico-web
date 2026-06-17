@@ -4999,7 +4999,7 @@ function render() {
   document.getElementById("resources-info").innerHTML = `
     <div class="resource-block">
       <span class="rb-title">货物供应</span>
-      ${GOODS.map(g => `<span class="rb-good good-${g}" title="${GOOD_NAMES[g]}">${G.supply[g]}</span>`).join("")}
+      ${GOODS.map(g => `<span class="rb-good good-${g}${G.supply[g] === 0 ? " rb-empty" : ""}" title="${GOOD_NAMES[g]}供应区剩 ${G.supply[g]}${G.supply[g] === 0 ? "（已耗尽，本回合无法生产/拿取该货，需装船或清贸易站回流）" : ""}">${plantEmoji(g)}${G.supply[g]}</span>`).join("")}
     </div>
     <div class="resource-block">
       <span class="rb-title">银行</span>

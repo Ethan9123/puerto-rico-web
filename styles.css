@@ -180,6 +180,8 @@ body {
 .rb-good.good-tobacco { background: linear-gradient(135deg, #c89060, #806040); }
 .rb-good.good-coffee  { background: linear-gradient(135deg, #6e3b1c, #3a1d0c); }
 .rb-good::before { content: ""; }  /* 抑制原 ::before 图标 */
+/* 供应区某货耗尽（=0）：醒目提示——本回合该货无法生产/拿取，需装船或清贸易站回流 */
+.rb-good.rb-empty { outline: 2px solid #e05050; opacity: .85; filter: grayscale(.3); font-weight: 700; }
 .rb-item { font-weight: bold; }
 .small { font-size: 12px; padding: 4px 10px; background: #555; color: white; border: 0; border-radius: 3px; cursor: pointer; }
 
