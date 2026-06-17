@@ -2938,7 +2938,8 @@ async function doCaptain(order, chooserIdx) {
         pick = sortedCandidates[idx];
       } else {
         // AI：早/中期弃廉价货、留咖啡/烟草给商人；后期全力运分
-        pick = rankCaptainForAI(candidates, G.ships, gamePhase())[0];
+        const sp = (typeof solverPickCaptain === "function") ? solverPickCaptain(p, candidates, chooserIdx, order, progress, chooserBonusUsed) : null;
+        pick = sp || rankCaptainForAI(candidates, G.ships, gamePhase())[0]; // 终局精确(opt-in) 否则启发式
       }
       // 执行装船
       const isWharf = pick.ship === "wharf";
@@ -3224,6 +3225,36 @@ function solverPickBuilding(p, options, isChooser) {
     if (sol.action < 0) return -1;                      // PASS = 不建造
     const idx = options.findIndex(o => o.b.id === sol.action);
     return idx >= 0 ? idx : null;
+  } catch (e) { return null; }
+}
+
+// 终局精确求解器接入 L6 *船长装船*子决策（opt-in: window._l6SolverCaptain，默认关闭；AI_STRENGTH §9）。
+// captain 是终局第二高分歧子决策(55%)，专家共识(BGA/BGG)也视装船为最关键决策。az captainCands 与
+// doCaptain 候选逐口径一致(base game)，captain 游标 {phase,chooser,ord,oi,progressed,chooserBonusUsed}
+// 可从 doCaptain 循环态精确重建(cphase 仅启发式 rankCaptain 用，精确 maxⁿ 求解不需要)。
+// 返回选中的候选对象，或 null 回退到 rankCaptainForAI。
+function solverPickCaptain(p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet) {
+  if (!window._l6SolverCaptain || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
+  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  try {
+    const st = buildSimState(G);
+    if (!st.endTriggered) return null;
+    const ord = order.slice();
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "captain", chooser: chooserIdx, ord, oi, progressed: !!passProgressed, chooserBonusUsed: chooserBonusUsedSet.has(chooserIdx) };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "captain" || dec.chooser !== p.idx) return null;
+    // game.js 候选编码为与 az 相同的 int（shipSlot*10 + goodIdx，wharf=3），逐一比对集合 → 不一致即回退
+    const enc = c => (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS.indexOf(c.good);
+    const gameCodes = candidates.filter(c => c.ship !== "smallwharf").map(enc).sort((a, b) => a - b);
+    const azCodes = dec.actions.slice().sort((a, b) => a - b);
+    if (gameCodes.length !== azCodes.length || gameCodes.some((c, i) => c !== azCodes[i])) return null;
+    const sol = PRSim.solveEndgame(st, window._l6SolverBuildCap || 2e6);
+    if (!sol || sol.action == null) return null;
+    const hit = candidates.find(c => c.ship !== "smallwharf" && enc(c) === sol.action);
+    return hit || null;
   } catch (e) { return null; }
 }
 
