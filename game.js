@@ -2339,7 +2339,8 @@ async function doBuilder(playerIdx, isChooser) {
     });
     if (pickIdx === null) return;
   } else {
-    pickIdx = aiPickBuilding(p, options, isChooser);
+    const sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
+    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser); // 终局精确(opt-in) 否则启发式
     if (pickIdx < 0) return;
   }
   const { b, cost } = options[pickIdx];
@@ -3187,6 +3188,41 @@ function buildSimState(G) {
     })),
   };
   return st;
+}
+
+// 终局精确求解器接入 L6 *建造*子决策（opt-in: window._l6SolverBuild，默认关闭；AI_STRENGTH §9）。
+// 依据：诊断显示终局 build 分歧最大(74%)，且 build 的因子化 az 游标最易从 mid-phase G 精确重建
+// （只需 phase/chooser/ord/oi）。sim 层配对已证「启发式+终局精确」对纯启发式 +2.2pp(z≈2.7)。
+// 仅基础局生效（az/求解器未完整建模黑市/塔楼/贵族/银行等扩展）。
+// 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
+function solverPickBuilding(p, options, isChooser) {
+  if (!window._l6SolverBuild || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
+  // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
+  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  try {
+    const st = buildSimState(G);
+    if (!st.endTriggered) return null;                 // 仅终局触发后
+    const bcard = st.roleCards.find(r => r.name === "Builder");
+    const chooser = bcard ? bcard.takenBy : null;
+    if (chooser == null) return null;
+    const N = st.numPlayers;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "builder", chooser, ord, oi };     // 重建建造阶段 az 游标，指向当前玩家
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
+    // 安全闸：az 重建的可建集合必须与 game.js doBuilder 完全一致，否则求解的是错模型 → 回退
+    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
+    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
+    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+    const sol = PRSim.solveEndgame(st, window._l6SolverCap || 1.5e5);   // 超预算→null→回退
+    if (!sol || sol.action == null) return null;
+    if (sol.action < 0) return -1;                      // PASS = 不建造
+    const idx = options.findIndex(o => o.b.id === sol.action);
+    return idx >= 0 ? idx : null;
+  } catch (e) { return null; }
 }
 
 function ismctsPickRole(p, available, tier) {
