@@ -9,7 +9,10 @@ AlphaZero 全决策探索的结论。所有数字均可用 `tools/` 下脚本复
 >
 > 2026-06 更新：配对评测基线 vs 3×L5 = **35.4%**(480 局, §6)；重训/调参/子决策调优
 > 六条路全部实测无增益(§7)，现役配置即角色选择架构下的最优。宗师实际机制 = **policy
-> 先验 × 完整 rollout**(value 头未参与决策, §1 修正)。唯一未证伪的方向是终局精确求解器。
+> 先验 × 完整 rollout**(value 头未参与决策, §1 修正)。
+>
+> 2026-06 突破：终局精确求解器接入 L6 **build 子决策**实测 **+3.3pp(z=3.75)** 真实增益并**默认开启**
+> ——整个战役**首个 game.js 真实层显著的 L6 增益**(§9)。剩 captain/settle 子决策待接入。
 
 ---
 
@@ -204,10 +207,26 @@ alphazeroPickRole, endTriggered 时用精确最优角色), 真实 vs 3×L5 480 �
 ~2-3 个角色决策且常被逼着选, (2)sim 层的 +1.7pp 来自控制一个座位**全部终局子决策**(build 分歧 74%),
 而 role 决策分歧只 46% 且很少翻盘。**价值在子决策(build/captain), 不在 role。**
 
-**下一步(待做, 唯一未尽方向)**：把求解器接入 L6 终局**子决策**(build/captain/settle 等)。
-难点: `buildSimState` 只表示角色边界, 子决策接入需从 mid-phase G 重建因子化 `az` 游标(见 §1 机制)。
-工程量中等但明确; sim 层已证 +1.7pp 上限。求解器/诊断工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/
-`tools/solver_disagree.js`)与 role-only 钩子(opt-in)已就位。
+**build 子决策接入 — 真实评测 ✅(战役首个 game.js 层显著增益)**：把求解器接入 L6 终局**建造**决策
+(`game.js solverPickBuilding`)。在 build 决策点用 `buildSimState(G)` + 重建 builder 因子化游标
+(`az={phase:"builder",chooser,ord,oi}`) → `solveEndgame` → 映射回 game.js 建筑选项。安全闸: 重建的可建
+集合须与 `doBuilder` 逐 id 一致否则回退启发式; 仅基础局; 超预算(cap 2e6)回退。
+
+真实对局同种子配对(`tools/eval_solverbuild.js`, 350 局, 1×L6 vs 3×L5, iters=40):
+
+| | 座位胜率 | 配对差 | z |
+|---|---|---|---|
+| build-solver ON vs OFF | 59.6% vs 56.3% | **+3.3pp ± 0.9** | **3.75 ✅显著** |
+
+- 整个战役**首个 game.js 真实层统计显著的 L6 增益**(此前 8 条路线全 null, role-only 也 null)。
+  build 接入成功的原因: 终局 build 分歧最高(74%)且决策数多; role 分歧仅 46% 且常被逼选。
+- **机制与搜索 iters 无关**: L5/L6 搜索只选角色, build 始终走同一启发式 → 求解器替换的对象在 iters=40
+  与部署 iters≈800 完全相同, 故 iters=40 测得的 +3.3pp 应在部署强度保持(待部署 iters 复核)。
+- **已默认开启**(`window._l6SolverBuild` 默认 ON, 设 `=false` 关闭; cap `_l6SolverBuildCap` 默认 2e6)。
+  仅基础局; 求解 ~0.43 次/局, 中位树小, 仅极少最坏局触发 cap 回退。
+
+**仍未尽**: captain(分歧 55%)/settle 子决策接入(captain 游标含多轮装船 chooserBonusUsed/cphase, 较 build 复杂)。
+工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/`tools/eval_solverbuild.js`/`tools/solver_disagree.js`)已就位。
 
 ---
 
