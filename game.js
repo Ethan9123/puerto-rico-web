@@ -1325,7 +1325,8 @@ function startGame() {
     fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800,  alphaIters: 100,  alphaMs: 600 },
     normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000, alphaIters: 400,  alphaMs: 2500 },
     deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000, alphaIters: 800,  alphaMs: 5000 },
-    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000, alphaIters: 1600, alphaMs: 10000 },
+    // 极限：迭代上限大幅抬高，让【时间预算】成为唯一约束 → AI 真的把整段时间用满、不停推演更多可能（L6 此前 1600 次常在 10s 前就停了）
+    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 40000, alphaMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
@@ -2181,6 +2182,7 @@ function aiReallocate(p) {
       case 15: return 10; // 工厂
       case 13: return 8;  // 大市场
       case 12: return 7;  // 办公室
+      case 42: return Math.max(5, G.nobleCount(p) * 3); // 皇家供应商：满人后每名贵族 +1VP/船长 → 按贵族数估值（贵族扩展）
       case 7:  return 6;  // 小市场
       case 16: return 6;  // 大学
       case 8: case 9: case 11: return 5; // 庄园/工地/济贫院
@@ -2241,6 +2243,8 @@ function aiReallocate(p) {
         if (facCap[bd.good] < fields[bd.good]) gain = prodUnit(bd.good) + CHAIN_DONE;
         else if (facCap[bd.good] < fieldsTotal[bd.good]) gain = prodUnit(bd.good);
         else gain = 0;
+      } else if (bd.id === 44) {
+        gain = Math.max(4, G.nobleCount(p) * 3); // 珠宝匠：满人后每名贵族 +1金/工匠 → 按贵族数估值（贵族扩展）
       } else if (bd.type === "production") {
         gain = prodUnit("corn"); // 玉米类生产建筑（实际不存在，占位）
       } else {
