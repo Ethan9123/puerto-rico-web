@@ -3191,15 +3191,13 @@ function buildSimState(G) {
   return st;
 }
 
-// 终局精确求解器接入 L6 *建造*子决策（默认开启，opt-out: window._l6SolverBuild=false；AI_STRENGTH §9）。
-// 依据：诊断显示终局 build 分歧最大(74%)，且 build 的因子化 az 游标最易从 mid-phase G 精确重建
-// （只需 phase/chooser/ord/oi）。真实对局配对 A/B（tools/eval_solverbuild.js，350 局）：1×L6 vs 3×L5
-// 座位胜率 +3.3pp ± 0.9（z=3.75，✅显著）—— 整个提升战役里 L6 首个统计显著的真实增益。
-// 机制与搜索 iters 无关（L5/L6 搜索只选角色，build 始终走同一启发式），故 iters=40 的增益应在部署强度保持。
-// 仅基础局生效（az/求解器未完整建模黑市/塔楼/贵族/银行等扩展）。
+// 终局精确求解器接入 L6 *建造*子决策（opt-in: window._l6SolverBuild，默认关闭；AI_STRENGTH §9）。
+// build 是终局最高分歧子决策(74%)。iters=40 配对 A/B 测得 +3.3pp(z=3.75)，但 iters=150 复核(110 局)
+// 仅 +0.9pp(z=1.0，不显著)且求解触发率 0.43→0.27/局——**增益随对弈变强而缩小**(更强的角色搜索改变了
+// 终局局面，求解器触发更少、修正更小)。未达 z>1.96 换挡标准 → 保持默认关闭。仅基础局生效。
 // 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
 function solverPickBuilding(p, options, isChooser) {
-  if (window._l6SolverBuild === false || p._aiLevel !== 6) return null;
+  if (!window._l6SolverBuild || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
   // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
   if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
