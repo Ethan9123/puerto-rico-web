@@ -12,7 +12,8 @@ AlphaZero 全决策探索的结论。所有数字均可用 `tools/` 下脚本复
 > 先验 × 完整 rollout**(value 头未参与决策, §1 修正)。
 >
 > 2026-06 突破：终局精确求解器接入 L6 **build 子决策**实测 **+3.3pp(z=3.75)** 真实增益并**默认开启**
-> ——整个战役**首个 game.js 真实层显著的 L6 增益**(§9)。剩 captain/settle 子决策待接入。
+> ——整个战役**首个 game.js 真实层显著的 L6 增益**(§9)。captain 子决策同范式已接入但边际 +0.6pp(z=1.64)
+> 不显著、默认关闭(build 已捕获主要红利); 剩 settle 与"贵族不盲 NN 重训"两条更大方向。
 
 ---
 
@@ -225,8 +226,22 @@ alphazeroPickRole, endTriggered 时用精确最优角色), 真实 vs 3×L5 480 �
 - **已默认开启**(`window._l6SolverBuild` 默认 ON, 设 `=false` 关闭; cap `_l6SolverBuildCap` 默认 2e6)。
   仅基础局; 求解 ~0.43 次/局, 中位树小, 仅极少最坏局触发 cap 回退。
 
-**仍未尽**: captain(分歧 55%)/settle 子决策接入(captain 游标含多轮装船 chooserBonusUsed/cphase, 较 build 复杂)。
-工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/`tools/eval_solverbuild.js`/`tools/solver_disagree.js`)已就位。
+**captain 子决策接入 — 已实现, 边际增益不显著(保持默认关闭)**: 同范式接入 captain(`game.js solverPickCaptain`,
+从 `doCaptain` 循环态重建 captain 游标 `{phase,chooser,ord,oi,progressed,chooserBonusUsed}`; 关键洞察: 精确
+maxⁿ 求解**不需要** `cphase`——它只供启发式 `rankCaptain`)。已验证 sim `captainCands` 与 `doCaptain` 候选逐口径
+一致(one-good-per-ship / load-maximum / wharf)。在 build-solver **已默认开启之上**的边际同种子配对 A/B
+(`tools/eval_solvercaptain.js`, 350 局, 1×L6 vs 3×L5):
+
+| | 座位胜率 | 配对差 | z |
+|---|---|---|---|
+| build+captain vs build-only | 60.2% vs 59.6% | **+0.6pp ± 0.3** | **1.64 ✗不显著** |
+
+- captain 求解 ~0.43 次/局、重建与候选校验正常; 趋势小正(+0.6pp/+0.16 分)但**未过 z>1.96**。
+- **解读**: build-solver 已捕获终局**主要**红利(+3.3pp), captain 在其上的边际很小——与"build 分歧 74% ≫ captain 55%"
+  的诊断一致。保持 **默认关闭**(`window._l6SolverCaptain` opt-in); 不做 run-until-significant(违背 §6 预设样本量原则)。
+
+**仍未尽**: settle 子决策(分歧更低, 预期增益更小), 以及一个量级更大的方向——重训对贵族/扩展不盲的 NN(§10)。
+工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/`tools/eval_solverbuild.js`/`tools/eval_solvercaptain.js`/`tools/solver_disagree.js`)已就位。
 
 ---
 
