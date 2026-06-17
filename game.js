@@ -2579,10 +2579,14 @@ async function doCraftsman(chooserIdx, order) {
   if (available.length > 0) {
     let g;
     if (chooser.isHuman) {
-      const producedList = [...ownKinds].map(k => GOOD_NAMES[k]).join("/");
+      // 已产出但供应区已空 → 规则上无法额外拿取（最常见：玉米流把 10 个玉米攥空了）。
+      // 明确标注，避免"我明明产了玉米却不让选"的误解（header 列了它、按钮按规则排除它）。
+      const blocked = [...ownKinds].filter(k => G.supply[k] <= 0).map(k => GOOD_NAMES[k]);
+      const availList = available.map(k => GOOD_NAMES[k]).join("/");
+      const blockedNote = blocked.length ? `　⚠ ${blocked.join("/")} 你已产出，但供应区已耗尽、本回合无法拿取（需装船/清贸易站回流）` : "";
       const labels = available.map(k => `${GOOD_NAMES[k]} (你本回合已产出)`);
       const idx = await humanPickFromList(
-        `工匠特权：仅可选你自己本回合产出的种类 [${producedList}]，额外 +1`,
+        `工匠特权：额外 +1，可选你本回合产出且供应区有货的种类 [${availList}]${blockedNote}`,
         labels, true
       );
       if (idx === null) { /* skip */ }
