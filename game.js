@@ -881,7 +881,8 @@ function assignCastNames() {
 //   思考更久(thinkMs，越久越强；上限压到 ≤8s，避免长考拖节奏)、建筑大师(build，启用终局精确建造，≈中性偏正)、
 //   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)、
 //   多样化产线(diverse，仅在有真人时触发；同 spite 闸，纯 AI 局零影响 → 基准里仍是纯 L6)、
-//   成套收集(collect，仅在有真人时触发；同 spite 闸 → 有田就配厂/喂厂、攒钱凑齐产业链)。
+//   成套收集(collect，仅在有真人时触发；同 spite 闸 → 有田就配厂/喂厂、攒钱凑齐产业链)、
+//   大建筑流(bigbuild，仅在有真人时触发；同 spite 闸 → 囤矿场，第8回合后攒钱抢自己加分最多的10元大建筑)。
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 // 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
@@ -896,6 +897,7 @@ const AI_PERSONAS = [
   { key: "sc",      name: "SC",   level: 6, thinkMs: 8000,  build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思+建造精算+偶尔阴你" },
   { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
   { key: "rafael",  name: "Rafael", level: 6, collect: 0.7,                         desc: "成套收集·有田就配厂、攒钱凑齐产业链（田↔厂）" },
+  { key: "feb",     name: "二月", level: 6, bigbuild: 0.7,                          desc: "矿场流·囤1-2矿场，第8回合后攒钱猛攻自己加分最多的10元大建筑（能买俩更好）" },
 ];
 const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
 function maybeAssignPersonas() {
@@ -1042,6 +1044,53 @@ function collectRolePick(p, available) {
     }
   }
   return null;
+}
+
+// 群友·二月：矿场流——囤 1-2 矿场（给大建筑打折），第 8 回合后攒钱抢"对自己加分最多"的 10 元大建筑，
+// 有空间/有货就接着买第二个。同 spite 人类闸：纯 AI 局零触发 → 基准里就是纯 L6，保证 ≥23%。
+function _bigbuildRoll(p) {
+  return !!(p._persona && p._persona.bigbuild && G.players.some(x => x.isHuman) && Math.random() < p._persona.bigbuild);
+}
+// 二月拓殖：还没囤够 2 个矿场就优先拿矿场（矿场折扣大建筑、最高费用列可减到 4）。
+function bigbuildPlantPick(p, options) {
+  const qCount = p.plantations.filter(pl => pl.good === "quarry").length;
+  if (qCount >= 2) return null;                       // 1-2 个就够，不贪
+  const qi = options.findIndex(o => o.kind === "quarry");
+  return qi >= 0 ? qi : null;
+}
+// 二月建造：第 8 回合后，能买大紫就立刻抢"对自己加分最多"的那个（已拥有的会跳过 → 支持买第二个）；
+// 买不起但只差一点（≤3 金）→ 跳过本次建造攒钱，绝不把钱浪费在小建筑上。
+function bigbuildBuildPick(p, options) {
+  if (G.turnNumber <= 8) return null;
+  let bestI = -1, bestS = -Infinity;
+  for (let k = 0; k < options.length; k++) {
+    if (options[k].b.type !== "large_violet") continue;
+    const s = estLargeVioletSpecial(p, options[k].b.id); // 对二月这块板子能加多少分
+    if (s > bestS) { bestS = s; bestI = k; }
+  }
+  if (bestI >= 0) return bestI;                       // 有可买大紫 → 买加分最高的
+  const tgt = bestLargeViolet(p);                     // 盯着的大紫还差一点 → 跳过攒钱(不买小建筑)
+  if (tgt) {
+    const cost = G.effectiveCost(p, BLD_BY_ID[tgt.id]);
+    if (p.money < cost && p.money >= cost - 3) return -1; // -1 = PASS（攒钱）
+  }
+  return null;
+}
+// 二月选角：第 8 回合后锁定加分最高的大建筑——买得起就抢建造(享 -1 折上折)，仅差 1-2 金才金矿主补齐；
+// 差得多就回退正常发育攒钱（不为 +1 金浪费选角）。
+function bigbuildRolePick(p, available) {
+  if (G.turnNumber <= 8) return null;
+  const tgt = bestLargeViolet(p);                     // 库存内/未拥有/有 2 格空间里终局分最高的大紫
+  if (!tgt) return null;
+  const cost = G.effectiveCost(p, BLD_BY_ID[tgt.id]); // 含矿场折扣
+  if (p.money >= cost) {
+    const bi = available.findIndex(r => r.name === "Builder");
+    if (bi >= 0) return bi;                            // 买得起 → 抢建造特权(再 -1 更省、且抢在对手前)
+  } else if (p.money >= cost - 2) {
+    const pi = available.findIndex(r => r.name === "Prospector");
+    if (pi >= 0) return pi;                            // 仅差 1-2 金 → 金矿主补齐
+  }
+  return null;                                          // 还差得多 → 正常发育攒钱
 }
 
 // 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
@@ -3346,6 +3395,11 @@ function aiPickRole(p, available) {
     const ci = collectRolePick(p, available);
     if (ci != null) return ci;
   }
+  // 群友·二月：第8回合后锁定加分最高的大建筑——买得起抢建造、差一点金矿主攒钱
+  if (_bigbuildRoll(p)) {
+    const bi = bigbuildRolePick(p, available);
+    if (bi != null) return bi;
+  }
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -5048,6 +5102,11 @@ function aiPickPlantation(p, options, isChooser) {
     const ci = collectPlantPick(p, options);
     if (ci != null) return ci;
   }
+  // 群友·二月：以 bigbuild 概率囤 1-2 个矿场（给大建筑打折）
+  if (_bigbuildRoll(p)) {
+    const bi = bigbuildPlantPick(p, options);
+    if (bi != null) return bi;
+  }
   // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
   if (p._dna && (lvl === 2 || lvl === 3)) {
     const idx = dnaPickPlantation(p, options, isChooser);
@@ -5099,6 +5158,11 @@ function aiPickBuilding(p, options, isChooser) {
   if (_collectRoll(p)) {
     const ci = collectBuildPick(p, options);
     if (ci != null) return ci;
+  }
+  // 群友·二月：第8回合后优先买"对自己加分最多"的 10 元大建筑
+  if (_bigbuildRoll(p)) {
+    const bi = bigbuildBuildPick(p, options);
+    if (bi != null) return bi;
   }
   // 进化(L2)：忠实按建筑染色体决策（从左到右买第一个想买且买得起的）
   if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
