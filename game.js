@@ -878,22 +878,24 @@ function assignCastNames() {
 //   - spite  ：恶心人类（以该概率抢人类想要的角色 / 偷人类的货田 / 占人类的装船道）
 // ============================================================
 // 设计准则：每位群友都是 L6 内核（=宗师强度），风格只用「不削弱实力」的杠杆表达——
-//   思考更久(thinkMs，越久越强)、建筑大师(build，启用终局精确建造，≈中性偏正)、
+//   思考更久(thinkMs，越久越强；上限压到 ≤8s，避免长考拖节奏)、建筑大师(build，启用终局精确建造，≈中性偏正)、
 //   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)、
-//   多样化产线(diverse，仅在有真人时触发；同 spite 闸，纯 AI 局零影响 → 基准里仍是纯 L6)。
+//   多样化产线(diverse，仅在有真人时触发；同 spite 闸，纯 AI 局零影响 → 基准里仍是纯 L6)、
+//   成套收集(collect，仅在有真人时触发；同 spite 闸 → 有田就配厂/喂厂、攒钱凑齐产业链)。
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 // 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
-  { key: "xixi",    name: "西西", level: 6, thinkMs: 30000, build: 1,                desc: "建筑大师·深思 30s——精算建造与终局" },
-  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                             desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
-  { key: "laoma",   name: "老马", level: 6, thinkMs: 25000,                          desc: "老马识途·算得最深（25s），稳如老狗" },
-  { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "行云流水·当机立断，节奏极快" },
-  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 15000,             desc: "隐忍仲达·伺机使绊，时不时阴你一手（15s）" },
-  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 15000,                desc: "建筑收藏家·把建造算到极致（15s）" },
-  { key: "chazong", name: "茶总", level: 6, thinkMs: 20000,                          desc: "茶总·财大气粗、深算 20s，稳扎稳打" },
-  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
-  { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
+  { key: "xixi",    name: "西西", level: 6, thinkMs: 8000,  build: 1,                desc: "建筑大师·深思精算建造与终局" },
+  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                            desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
+  { key: "laoma",   name: "老马", level: 6, thinkMs: 6000,                          desc: "老马识途·算得深，稳如老狗" },
+  { key: "xinliu",  name: "心流", level: 6, thinkMs: 3000,                          desc: "行云流水·当机立断，节奏极快" },
+  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 5000,            desc: "隐忍仲达·伺机使绊，时不时阴你一手" },
+  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 5000,               desc: "建筑收藏家·把建造算到极致" },
+  { key: "chazong", name: "茶总", level: 6, thinkMs: 6000,                          desc: "茶总·财大气粗、深算稳扎稳打" },
+  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 4000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
+  { key: "sc",      name: "SC",   level: 6, thinkMs: 8000,  build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思+建造精算+偶尔阴你" },
   { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
+  { key: "rafael",  name: "Rafael", level: 6, collect: 0.7,                         desc: "成套收集·有田就配厂、攒钱凑齐产业链（田↔厂）" },
 ];
 const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
 function maybeAssignPersonas() {
@@ -976,6 +978,70 @@ function diversePlantPick(p, options) {
     if (s > bestS) { bestS = s; bestI = i; }
   }
   return bestI >= 0 ? bestI : null;
+}
+
+// 群友·Rafael：成套收集（垂直整合）——有某货的田就配该货的厂、给已有厂的货加田喂厂、攒钱拿贵厂。
+// 同 spite 人类闸：纯 AI 局(基准)零触发 → Rafael 在基准里就是纯 L6，保证 ≥23%。
+const PROD_BLD_FOR_GOOD = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+function _collectRoll(p) {
+  return !!(p._persona && p._persona.collect && G.players.some(x => x.isHuman) && Math.random() < p._persona.collect);
+}
+// 列出 Rafael "有该货田、但还没有该货生产建筑" 的货种（缺厂的货）
+function _missingFactoryGoods(p) {
+  const out = [];
+  for (const g of ["indigo", "sugar", "tobacco", "coffee"]) {
+    const hasField = p.plantations.some(pl => pl.good === g);
+    const hasFactory = PROD_BLD_FOR_GOOD[g].some(id => G.ownsBuilding(p, id));
+    if (hasField && !hasFactory) out.push(g);
+  }
+  return out;
+}
+// Rafael 建造：优先给"有田没厂"的货补对应生产建筑(成套，贵货优先=攒钱拿咖啡厂)，其次升级到大厂(深化套)。
+function collectBuildPick(p, options) {
+  const prodBldGood = { 1: "indigo", 3: "indigo", 2: "sugar", 4: "sugar", 5: "tobacco", 6: "coffee" };
+  const fieldCount = {};
+  for (const pl of p.plantations) if (pl.good && pl.good !== "quarry") fieldCount[pl.good] = (fieldCount[pl.good] || 0) + 1;
+  let bestI = -1, bestPr = -Infinity;
+  for (let k = 0; k < options.length; k++) {
+    const g = prodBldGood[options[k].b.id];
+    if (!g || !(fieldCount[g] > 0)) continue;          // 只配自己有田的货——没田的厂 Rafael 不要
+    const ownsAnyFactory = PROD_BLD_FOR_GOOD[g].some(id => G.ownsBuilding(p, id));
+    const base = ownsAnyFactory ? 1 : 4;               // 还没该货厂→成套补厂(最优)；已有→升大厂(深化，次优)
+    const pr = base + (GOOD_PRICE[g] || 0) + (fieldCount[g] || 0) * 0.5; // 贵货&田多者优先
+    if (pr > bestPr) { bestPr = pr; bestI = k; }
+  }
+  return bestI >= 0 ? bestI : null;
+}
+// Rafael 拓殖：优先给"已有厂的货"加田(喂厂成套)，其次深化已有货种(为成套铺垫)。
+function collectPlantPick(p, options) {
+  const fieldCount = {};
+  for (const pl of p.plantations) if (pl.good && pl.good !== "quarry") fieldCount[pl.good] = (fieldCount[pl.good] || 0) + 1;
+  let bestI = -1, bestS = -Infinity;
+  for (let i = 0; i < options.length; i++) {
+    const o = options[i];
+    if (o.kind !== "plant") continue;
+    const g = o.good;
+    let s = (GOOD_PRICE[g] || 0);
+    if (PROD_BLD_FOR_GOOD[g] && PROD_BLD_FOR_GOOD[g].some(id => G.ownsBuilding(p, id))) s += 6; // 有厂的货加田=喂厂成套(最优)
+    else if (fieldCount[g] > 0) s += 3;                                                          // 已有田的货深化(铺垫成套)
+    if (s > bestS) { bestS = s; bestI = i; }
+  }
+  return bestI >= 0 ? bestI : null;
+}
+// Rafael 选角：差一点就能买起对应贵厂(咖啡/烟草)时，倾向金矿主攒钱（"攒钱拿咖啡厂"）。
+function collectRolePick(p, available) {
+  const pi = available.findIndex(r => r.name === "Prospector");
+  if (pi < 0) return null;
+  for (const g of _missingFactoryGoods(p)) {
+    if (g !== "coffee" && g !== "tobacco") continue;   // 只为贵厂专门攒钱
+    for (const id of PROD_BLD_FOR_GOOD[g]) {
+      const b = BLD_BY_ID[id];
+      if (!b || G.buildingStock[id] <= 0) continue;
+      const cost = G.effectiveCost(p, b);
+      if (p.money < cost && p.money >= cost - 3) return pi; // 差≤3金 → 去拿金攒齐
+    }
+  }
+  return null;
 }
 
 // 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
@@ -3275,6 +3341,11 @@ function aiPickRole(p, available) {
     const si = spiteRolePick(p, available);
     if (si != null) return si;
   }
+  // 群友·Rafael：差一点就能买起贵厂时，倾向金矿主攒钱（"攒钱拿咖啡厂"）
+  if (_collectRoll(p)) {
+    const ci = collectRolePick(p, available);
+    if (ci != null) return ci;
+  }
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -4972,6 +5043,11 @@ function aiPickPlantation(p, options, isChooser) {
     const di = diversePlantPick(p, options);
     if (di != null) return di;
   }
+  // 群友·Rafael：以 collect 概率给"已有厂的货"加田(喂厂成套)/深化已有货种
+  if (_collectRoll(p)) {
+    const ci = collectPlantPick(p, options);
+    if (ci != null) return ci;
+  }
   // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
   if (p._dna && (lvl === 2 || lvl === 3)) {
     const idx = dnaPickPlantation(p, options, isChooser);
@@ -5018,6 +5094,11 @@ function aiPickBuilding(p, options, isChooser) {
   if (_diverseRoll(p)) {
     const di = diverseBuildPick(p, options);
     if (di != null) return di;
+  }
+  // 群友·Rafael：以 collect 概率给"有田没厂"的货补对应生产建筑(成套，贵货优先)
+  if (_collectRoll(p)) {
+    const ci = collectBuildPick(p, options);
+    if (ci != null) return ci;
   }
   // 进化(L2)：忠实按建筑染色体决策（从左到右买第一个想买且买得起的）
   if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
