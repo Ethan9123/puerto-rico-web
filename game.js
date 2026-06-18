@@ -887,19 +887,19 @@ function assignCastNames() {
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 // 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
-  { key: "xixi",    name: "西西", level: 6, thinkMs: 8000,  build: 1,                desc: "建筑大师·深思精算建造与终局" },
-  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                            desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
-  { key: "laoma",   name: "老马", level: 6, thinkMs: 6000,                          desc: "老马识途·算得深，稳如老狗" },
-  { key: "xinliu",  name: "心流", level: 6, thinkMs: 3000,                          desc: "行云流水·当机立断，节奏极快" },
-  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 5000,            desc: "隐忍仲达·伺机使绊，时不时阴你一手" },
-  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 5000,               desc: "建筑收藏家·把建造算到极致" },
-  { key: "chazong", name: "茶总", level: 6, thinkMs: 6000,                          desc: "茶总·财大气粗、深算稳扎稳打" },
-  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 4000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
-  { key: "sc",      name: "SC",   level: 6, thinkMs: 8000,  build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思+建造精算+偶尔阴你" },
-  { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
-  { key: "rafael",  name: "Rafael", level: 6, collect: 0.7,                         desc: "成套收集·有田就配厂、攒钱凑齐产业链（田↔厂）" },
-  { key: "feb",     name: "二月", level: 6, bigbuild: 0.7,                          desc: "矿场流·囤1-2矿场，第8回合后攒钱猛攻自己加分最多的10元大建筑（能买俩更好）" },
-  { key: "ethan",   name: "Ethan", level: 6, coin: 0.8,                            desc: "钱币敏感·哪个角色卡攒了2~3枚币，就大概率去抢那笔奖励币" },
+  { key: "xixi",    name: "西西", level: 6, thinkMs: 8000,  build: 1,                desc: "建筑大师·想得最久(8s)，终局建造步步精算" },
+  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                            desc: "专坑你·高概率抢你角色、偷你的田、堵你的船" },
+  { key: "laoma",   name: "老马", level: 6, thinkMs: 6000,                          desc: "老马识途·算得深(6s)、稳扎稳打" },
+  { key: "xinliu",  name: "心流", level: 6, thinkMs: 3000,                          desc: "行云流水·当机立断、出手最快(3s)" },
+  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 5000,            desc: "隐忍仲达·伺机使绊、偶尔阴你一手" },
+  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 5000,               desc: "建筑收藏家·终局精确建造，把建造算到极致" },
+  { key: "chazong", name: "茶总", level: 6, thinkMs: 6000,                          desc: "财大气粗·深算(6s)、稳健不浪" },
+  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 4000,                          desc: "堂堂正正·纯实力，不使绊子" },
+  { key: "sc",      name: "SC",   level: 6, thinkMs: 8000,  build: 0.6, spite: 0.35, desc: "全能型·又强又阴：深思(8s)＋精算建造＋偶尔阴你" },
+  { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种货，专收工厂等多货生金建筑" },
+  { key: "rafael",  name: "Rafael", level: 6, collect: 0.7,                         desc: "成套收集·有田就配厂、给厂喂田，凑齐田↔厂产业链" },
+  { key: "feb",     name: "二月", level: 6, bigbuild: 0.7,                          desc: "矿场流·囤1~2矿场，中后期猛攻最值钱的10元大建筑(能买俩更好)" },
+  { key: "ethan",   name: "Ethan", level: 6, coin: 0.8,                            desc: "钱币敏感·角色卡攒到2~3枚币就大概率去抢那笔奖励" },
 ];
 const PERSONA_CHANCE = 0.12; // 每个群友各自独立掷 12% 决定本局是否登场（→ 约 81% 的局至少 1 位）
 function maybeAssignPersonas() {
