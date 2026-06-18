@@ -881,6 +881,7 @@ function assignCastNames() {
 //   思考更久(thinkMs，越久越强)、建筑大师(build，启用终局精确建造，≈中性偏正)、
 //   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)。
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
+// 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
   { key: "xixi",    name: "西西", level: 6, thinkMs: 30000, build: 1,                desc: "建筑大师·深思 30s——精算建造与终局" },
   { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                             desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
