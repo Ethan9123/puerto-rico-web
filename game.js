@@ -871,7 +871,7 @@ function assignCastNames() {
 }
 
 // ============================================================
-// 群友人格 NPC：在专家(L5)/宗师(L6) 局里，13 位群友各自独立掷 8% 决定本局是否登场，
+// 群友人格 NPC：在专家(L5)/宗师(L6) 局里，13 位群友各自独立掷 12% 决定本局是否登场，
 // 各有独门玩法。调试/演示可在控制台 window._forcePersona = "苦寒"（或 key）强制出现一位。
 //   - thinkMs：自定义思考时长（让时间预算成为搜索约束 → 真的多想）
 //   - build  ：建筑大师（启用终局精确建造求解器，建造更优）
@@ -901,7 +901,7 @@ const AI_PERSONAS = [
   { key: "feb",     name: "二月", level: 6, bigbuild: 0.7,                          desc: "矿场流·囤1-2矿场，第8回合后攒钱猛攻自己加分最多的10元大建筑（能买俩更好）" },
   { key: "ethan",   name: "Ethan", level: 6, coin: 0.8,                            desc: "钱币敏感·哪个角色卡攒了2~3枚币，就大概率去抢那笔奖励币" },
 ];
-const PERSONA_CHANCE = 0.08; // 每个群友各自独立掷 8% 决定本局是否登场
+const PERSONA_CHANCE = 0.12; // 每个群友各自独立掷 12% 决定本局是否登场（→ 约 81% 的局至少 1 位）
 function maybeAssignPersonas() {
   const forced = window._forcePersona;
   // 可分配群友的 AI 席位：仅专家/宗师对手
