@@ -877,16 +877,20 @@ function assignCastNames() {
 //   - build  ：建筑大师（启用终局精确建造求解器，建造更优）
 //   - spite  ：恶心人类（以该概率抢人类想要的角色 / 偷人类的货田 / 占人类的装船道）
 // ============================================================
+// 设计准则：每位群友都是 L6 内核（=宗师强度），风格只用「不削弱实力」的杠杆表达——
+//   思考更久(thinkMs，越久越强)、建筑大师(build，启用终局精确建造，≈中性偏正)、
+//   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)。
+// 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 const AI_PERSONAS = [
-  { key: "xixi",    name: "西西", level: 6, thinkMs: 30000, build: 1,                desc: "建筑大师·深思 30s（终局精确算建造）" },
-  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                             desc: "专坑你——不管座位都想恶心你" },
-  { key: "laoma",   name: "老马", level: 6, thinkMs: 18000,                          desc: "老马识途·稳健深算（18s）" },
-  { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "心流·一气呵成（12s）" },
-  { key: "zhongda", name: "仲达", level: 6, spite: 0.4, thinkMs: 15000,              desc: "隐忍仲达·伺机使绊（15s）" },
-  { key: "shiguang",name: "拾光", level: 6, build: 0.6,                              desc: "拾光者·爱囤建筑与 VP" },
-  { key: "zhazong", name: "查总", level: 6, thinkMs: 15000,                          desc: "查总·稳扎稳打（15s）" },
-  { key: "kuankuan",name: "宽宽", level: 6,                                          desc: "宽厚·堂堂正正、不使绊子" },
-  { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, spite: 0.35, build: 0.5, desc: "SC·又强又阴的全能型（30s）" },
+  { key: "xixi",    name: "西西", level: 6, thinkMs: 30000, build: 1,                desc: "建筑大师·深思 30s——精算建造与终局" },
+  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                             desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
+  { key: "laoma",   name: "老马", level: 6, thinkMs: 25000,                          desc: "老马识途·算得最深（25s），稳如老狗" },
+  { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "行云流水·当机立断，节奏极快" },
+  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 15000,             desc: "隐忍仲达·伺机使绊，时不时阴你一手（15s）" },
+  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 15000,                desc: "建筑收藏家·把建造算到极致（15s）" },
+  { key: "zhazong", name: "查总", level: 6, thinkMs: 20000,                          desc: "查总·财大气粗、深算 20s，稳扎稳打" },
+  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
+  { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
 ];
 const PERSONA_CHANCE = 0.03;
 function maybeAssignPersonas() {
@@ -912,6 +916,11 @@ function maybeAssignPersonas() {
     if (persona.thinkMs) p._thinkMs = persona.thinkMs;
     G._hasPersona = true;
   }
+}
+// spite 只在「场上有真人可坑」时才掷骰 → 纯 AI 局(含 1群友vs3宗师基准)里 spite 路径零触发、
+// 与纯 L6 逐字节一致，保证群友在基准里就是宗师强度。
+function _spiteRoll(p) {
+  return !!(p._persona && p._persona.spite && G.players.some(x => x.isHuman) && Math.random() < p._persona.spite);
 }
 // 苦寒/仲达 的"恶心"招之一：以 spite 概率 snatch 人类此刻最想要的角色（牺牲一点最优换膈应人类）。
 function spiteRolePick(p, available) {
@@ -2999,7 +3008,7 @@ async function doCaptain(order, chooserIdx) {
       } else {
         // 群友·苦寒/仲达：把人类货量最大的那种货塞进货船，占道恶心人类装船（每种货只能在一艘船）
         let spite = null;
-        if (p._persona && p._persona.spite && Math.random() < p._persona.spite) {
+        if (_spiteRoll(p)) {
           const human = G.players.find(x => x.isHuman);
           if (human) {
             let want = null, mx = 0; for (const gg of GOODS) if (human.goods[gg] > mx) { mx = human.goods[gg]; want = gg; }
@@ -3214,7 +3223,7 @@ function aiPickRole(p, available) {
   if (G.expansionNobles && lvl >= 4) lvl = 3;
   updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
   // 群友·苦寒/仲达：以 spite 概率抢人类最想要的角色（恶心人类，牺牲一点最优）
-  if (p._persona && p._persona.spite && Math.random() < p._persona.spite) {
+  if (_spiteRoll(p)) {
     const si = spiteRolePick(p, available);
     if (si != null) return si;
   }
@@ -4902,7 +4911,7 @@ function l6h(p, key) {
 function aiPickPlantation(p, options, isChooser) {
   const lvl = p._aiLevel || 3;
   // 群友·苦寒/仲达：以 spite 概率抢人类最依赖的那种货田（恶心人类的产业链）
-  if (p._persona && p._persona.spite && Math.random() < p._persona.spite) {
+  if (_spiteRoll(p)) {
     const human = G.players.find(x => x.isHuman);
     if (human) {
       const cnt = {}; for (const pl of human.plantations) if (pl.good && pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1;
