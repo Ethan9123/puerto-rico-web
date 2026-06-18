@@ -1,9 +1,22 @@
 # Cloudflare 配置：Workers + 静态资源（Static Assets）
-# 纯静态站点，无需构建步骤；`wrangler deploy` 会把 directory 下的文件作为静态资源上传，
-# 以「仅资源 Worker」形式部署，自动在 / 提供 index.html。
-# 非网页文件由同目录的 .assetsignore 排除。
+# `wrangler deploy` 把 directory 下的文件作为静态资源上传；worker/index.js 处理
+# /collect、/dump、/stats 三个 API，其余路径回退到静态资源（env.ASSETS）。
+# 非网页文件由同目录的 .assetsignore 排除（含 worker/ 源码本身）。
 name = "puerto-rico-web"
 compatibility_date = "2026-06-16"
+main = "worker/index.js"
 
 [assets]
 directory = "."
+binding = "ASSETS"
+
+# ── 训练数据收集（真人胜局）后端 ─────────────────────────────────────────
+# 默认未启用：未配置下面的 KV 时，/collect、/dump、/stats 返回 503，站点照常工作。
+# 启用步骤（详见 RECORDING.md）：
+#   1) wrangler kv namespace create PR_TRACES      → 复制返回的 id
+#   2) 取消下面 4 行注释并填入 id
+#   3) wrangler secret put DUMP_TOKEN              → 设置 /dump、/stats 访问口令
+#   4) wrangler deploy
+# [[kv_namespaces]]
+# binding = "PR_TRACES"
+# id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

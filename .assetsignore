@@ -7,5 +7,6 @@ train
 *.bat
 *.py
 *.md
+worker
 sim_az.js
 mcts_value.json

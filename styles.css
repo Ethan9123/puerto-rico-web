@@ -180,6 +180,10 @@ body {
 .rb-good.good-tobacco { background: linear-gradient(135deg, #c89060, #806040); }
 .rb-good.good-coffee  { background: linear-gradient(135deg, #6e3b1c, #3a1d0c); }
 .rb-good::before { content: ""; }  /* 抑制原 ::before 图标 */
+/* 供应区某货耗尽（=0）：醒目提示——本回合该货无法生产/拿取，需装船或清贸易站回流 */
+.rb-good.rb-empty { outline: 2px solid #e05050; opacity: .85; filter: grayscale(.3); font-weight: 700; }
+/* 群友人格 NPC 徽章（专家/宗师局 3% 概率出现的"群友"对手） */
+.persona-badge { font-size: 11px; padding: 1px 6px; border-radius: 9px; background: linear-gradient(135deg,#b5651d,#7a3e0f); color: #ffe9c8; border: 1px solid #e0a060; cursor: help; white-space: nowrap; }
 .rb-item { font-weight: bold; }
 .small { font-size: 12px; padding: 4px 10px; background: #555; color: white; border: 0; border-radius: 3px; cursor: pointer; }
 
@@ -492,6 +496,8 @@ body {
 .modal-box button:hover { background: #3498db; }
 .modal-box button.primary { background: #c0392b; }
 .modal-box button.primary:hover { background: #e74c3c; }
+.modal-box button.confirm { background: #27ae60; }
+.modal-box button.confirm:hover { background: #2ecc71; }
 .modal-box button.disabled { background: #555; cursor: not-allowed; }
 
 /* ---- Log ---- */

@@ -9,7 +9,12 @@ AlphaZero 全决策探索的结论。所有数字均可用 `tools/` 下脚本复
 >
 > 2026-06 更新：配对评测基线 vs 3×L5 = **35.4%**(480 局, §6)；重训/调参/子决策调优
 > 六条路全部实测无增益(§7)，现役配置即角色选择架构下的最优。宗师实际机制 = **policy
-> 先验 × 完整 rollout**(value 头未参与决策, §1 修正)。唯一未证伪的方向是终局精确求解器。
+> 先验 × 完整 rollout**(value 头未参与决策, §1 修正)。
+>
+> 2026-06 终局求解器：接入 L6 build 子决策在 iters=40 测得 +3.3pp(z=3.75)，但 iters=150 复核仅 +0.9pp(z=1.0)
+> ——**增益随对弈变强而缩小**(强搜索改变终局局面分布)，未过部署级换挡线 → 改回 opt-in/默认关闭(§9)。captain
+> 同范式边际 +0.6pp(z=1.64)亦不显著。**结论：终局精确求解在本架构/算力下非部署强度的确定增益**；唯一更大的未开发
+> 方向是"贵族/扩展不盲的 value-NN 重训"(§10)。
 
 ---
 
@@ -204,10 +209,41 @@ alphazeroPickRole, endTriggered 时用精确最优角色), 真实 vs 3×L5 480 �
 ~2-3 个角色决策且常被逼着选, (2)sim 层的 +1.7pp 来自控制一个座位**全部终局子决策**(build 分歧 74%),
 而 role 决策分歧只 46% 且很少翻盘。**价值在子决策(build/captain), 不在 role。**
 
-**下一步(待做, 唯一未尽方向)**：把求解器接入 L6 终局**子决策**(build/captain/settle 等)。
-难点: `buildSimState` 只表示角色边界, 子决策接入需从 mid-phase G 重建因子化 `az` 游标(见 §1 机制)。
-工程量中等但明确; sim 层已证 +1.7pp 上限。求解器/诊断工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/
-`tools/solver_disagree.js`)与 role-only 钩子(opt-in)已就位。
+**build 子决策接入 — 弱强度下显著、强强度下缩小(保持默认关闭)**：把求解器接入 L6 终局**建造**决策
+(`game.js solverPickBuilding`)。在 build 决策点用 `buildSimState(G)` + 重建 builder 因子化游标
+(`az={phase:"builder",chooser,ord,oi}`) → `solveEndgame` → 映射回 game.js 建筑选项。安全闸: 重建可建集合
+须与 `doBuilder` 逐 id 一致否则回退启发式; 仅基础局; 超预算(cap 2e6)回退。
+
+1×L6 vs 3×L5 同种子配对(`tools/eval_solverbuild.js`):
+
+| iters | 局数 | 座位胜率 ON vs OFF | 配对差 | z | 求解触发 |
+|---|---|---|---|---|---|
+| 40  | 350 | 59.6% vs 56.3% | **+3.3pp ± 0.9** | **3.75 ✅** | 0.43/局 |
+| 150 | 110 | 43.2% vs 42.3% | +0.9pp ± 0.9 | 1.00 ✗ | 0.27/局 |
+
+- **关键教训(自我证伪)**：起初据"机制与 iters 无关(L5/L6 搜索只选角色, build 走同一启发式)"在 iters=40 的
+  强结果上默认开启; 但 iters=150 复核**证伪了该论证**——更强的角色搜索改变了**终局局面分布**, 求解器触发率
+  0.43→0.27/局、每次修正也更小, 增益缩到 +0.9pp(不显著)。即"启发式不变 ≠ 增益不变", 因为启发式被应用的状态变了。
+- 部署级证据未过 z>1.96 → **改回默认关闭**(`window._l6SolverBuild` opt-in; cap `_l6SolverBuildCap` 默认 2e6)。
+  能力与工具链保留; 日后若做 properly-powered 高-iters(≥150, ≥400 局)测试过线再考虑开启。
+  build 仍是最高分歧子决策、弱强度下唯一显著者——但**不是部署强度下的确定增益**。
+
+**captain 子决策接入 — 已实现, 边际增益不显著(保持默认关闭)**: 同范式接入 captain(`game.js solverPickCaptain`,
+从 `doCaptain` 循环态重建 captain 游标 `{phase,chooser,ord,oi,progressed,chooserBonusUsed}`; 关键洞察: 精确
+maxⁿ 求解**不需要** `cphase`——它只供启发式 `rankCaptain`)。已验证 sim `captainCands` 与 `doCaptain` 候选逐口径
+一致(one-good-per-ship / load-maximum / wharf)。在 build-solver(评测时两臂均强制开启)之上的**边际**同种子配对 A/B
+(`tools/eval_solvercaptain.js`, 350 局, 1×L6 vs 3×L5):
+
+| | 座位胜率 | 配对差 | z |
+|---|---|---|---|
+| build+captain vs build-only | 60.2% vs 59.6% | **+0.6pp ± 0.3** | **1.64 ✗不显著** |
+
+- captain 求解 ~0.43 次/局、重建与候选校验正常; 趋势小正(+0.6pp/+0.16 分)但**未过 z>1.96**。
+- **解读**: build-solver 已捕获终局**主要**红利(+3.3pp), captain 在其上的边际很小——与"build 分歧 74% ≫ captain 55%"
+  的诊断一致。保持 **默认关闭**(`window._l6SolverCaptain` opt-in); 不做 run-until-significant(违背 §6 预设样本量原则)。
+
+**仍未尽**: settle 子决策(分歧更低, 预期增益更小), 以及一个量级更大的方向——重训对贵族/扩展不盲的 NN(§10)。
+工具链(`sim_solve.js`/`tools/eval_solver_sim.js`/`tools/eval_solverbuild.js`/`tools/eval_solvercaptain.js`/`tools/solver_disagree.js`)已就位。
 
 ---
 

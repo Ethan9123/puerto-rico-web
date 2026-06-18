@@ -867,6 +867,73 @@ function assignCastNames() {
   for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
   let k = 0;
   for (const p of G.players) { if (!p.isHuman) p.name = pool[k++ % pool.length]; }
+  maybeAssignPersonas();
+}
+
+// ============================================================
+// 群友人格 NPC：在专家(L5)/宗师(L6) 局里，9 位群友各自独立掷 5% 决定本局是否登场，
+// 各有独门玩法。调试/演示可在控制台 window._forcePersona = "苦寒"（或 key）强制出现一位。
+//   - thinkMs：自定义思考时长（让时间预算成为搜索约束 → 真的多想）
+//   - build  ：建筑大师（启用终局精确建造求解器，建造更优）
+//   - spite  ：恶心人类（以该概率抢人类想要的角色 / 偷人类的货田 / 占人类的装船道）
+// ============================================================
+// 设计准则：每位群友都是 L6 内核（=宗师强度），风格只用「不削弱实力」的杠杆表达——
+//   思考更久(thinkMs，越久越强)、建筑大师(build，启用终局精确建造，≈中性偏正)、
+//   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)。
+// 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
+// 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
+const AI_PERSONAS = [
+  { key: "xixi",    name: "西西", level: 6, thinkMs: 30000, build: 1,                desc: "建筑大师·深思 30s——精算建造与终局" },
+  { key: "kuhan",   name: "苦寒", level: 6, spite: 0.75,                             desc: "专坑你——抢你的角色、偷你的田、堵你的船" },
+  { key: "laoma",   name: "老马", level: 6, thinkMs: 25000,                          desc: "老马识途·算得最深（25s），稳如老狗" },
+  { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "行云流水·当机立断，节奏极快" },
+  { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 15000,             desc: "隐忍仲达·伺机使绊，时不时阴你一手（15s）" },
+  { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 15000,                desc: "建筑收藏家·把建造算到极致（15s）" },
+  { key: "zhazong", name: "查总", level: 6, thinkMs: 20000,                          desc: "查总·财大气粗、深算 20s，稳扎稳打" },
+  { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
+  { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
+];
+const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
+function maybeAssignPersonas() {
+  const forced = window._forcePersona;
+  // 可分配群友的 AI 席位：仅专家/宗师对手
+  const slots = G.players.filter(p => !p.isHuman && (p._aiLevel || 0) >= 5);
+  if (!slots.length) return;
+  let si = 0;
+  const assign = (p, persona) => {
+    p._persona = persona;
+    p.name = persona.name;
+    p._aiLevel = Math.max(p._aiLevel || 5, persona.level);
+    if (persona.thinkMs) p._thinkMs = persona.thinkMs;
+    G._hasPersona = true;
+  };
+  // 强制指定（基准/调试 window._forcePersona）：占用第一个席位
+  if (forced && !G._personaForced) {
+    const persona = AI_PERSONAS.find(x => x.key === forced || x.name === forced);
+    if (persona) { assign(slots[si++], persona); G._personaForced = true; }
+  }
+  // 每个群友各自独立掷 PERSONA_CHANCE；命中且还有空席位就登场。
+  //   - 同一局不会出现相同群友：每个群友只掷一次、占一个独立席位。
+  //   - 同一局可出现不同群友：多个命中各占不同席位。
+  // 先打乱顺序，避免席位不够时总是偏向 AI_PERSONAS 前面的群友。
+  const pool = AI_PERSONAS.filter(x => !(forced && (x.key === forced || x.name === forced)));
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  for (const persona of pool) {
+    if (si >= slots.length) break;
+    if (Math.random() < PERSONA_CHANCE) assign(slots[si++], persona);
+  }
+}
+// spite 只在「场上有真人可坑」时才掷骰 → 纯 AI 局(含 1群友vs3宗师基准)里 spite 路径零触发、
+// 与纯 L6 逐字节一致，保证群友在基准里就是宗师强度。
+function _spiteRoll(p) {
+  return !!(p._persona && p._persona.spite && G.players.some(x => x.isHuman) && Math.random() < p._persona.spite);
+}
+// 苦寒/仲达 的"恶心"招之一：以 spite 概率 snatch 人类此刻最想要的角色（牺牲一点最优换膈应人类）。
+function spiteRolePick(p, available) {
+  const human = G.players.find(x => x.isHuman);
+  if (!human || typeof level2PickRoleNew !== "function") return null;
+  try { const idx = level2PickRoleNew(human, available); if (idx >= 0 && idx < available.length) return idx; } catch (e) {}
+  return null;
 }
 
 // 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
@@ -1325,7 +1392,8 @@ function startGame() {
     fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800,  alphaIters: 100,  alphaMs: 600 },
     normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000, alphaIters: 400,  alphaMs: 2500 },
     deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000, alphaIters: 800,  alphaMs: 5000 },
-    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 4000, expertMs: 12000, alphaIters: 1600, alphaMs: 10000 },
+    // 极限：迭代上限大幅抬高，让【时间预算】成为唯一约束 → AI 真的把整段时间用满、不停推演更多可能（L6 此前 1600 次常在 10s 前就停了）
+    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 40000, alphaMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   document.getElementById("setup-screen").classList.add("hidden");
@@ -1532,7 +1600,7 @@ async function runMainLoop() {
       if (player.isHuman) {
         // 实况解说：当众押注真人的选择（不阻塞，玩家想多久都行），选完再点评
         const castPred = castOn() ? commentaryPreRoleHuman(player, available) : null;
-        chosenIdx = await humanPickRole(available);
+        chosenIdx = await humanPickRole(available, player);
         if (castPred) commentaryPostRole(player, castPred, available[chosenIdx].name);
       } else {
         // 解说：开牌前预测（观战节奏慢、人机局节奏紧凑）；无解说时仅短暂延时给人类看清节奏
@@ -2181,6 +2249,7 @@ function aiReallocate(p) {
       case 15: return 10; // 工厂
       case 13: return 8;  // 大市场
       case 12: return 7;  // 办公室
+      case 42: return Math.max(5, G.nobleCount(p) * 3); // 皇家供应商：满人后每名贵族 +1VP/船长 → 按贵族数估值（贵族扩展）
       case 7:  return 6;  // 小市场
       case 16: return 6;  // 大学
       case 8: case 9: case 11: return 5; // 庄园/工地/济贫院
@@ -2241,6 +2310,8 @@ function aiReallocate(p) {
         if (facCap[bd.good] < fields[bd.good]) gain = prodUnit(bd.good) + CHAIN_DONE;
         else if (facCap[bd.good] < fieldsTotal[bd.good]) gain = prodUnit(bd.good);
         else gain = 0;
+      } else if (bd.id === 44) {
+        gain = Math.max(4, G.nobleCount(p) * 3); // 珠宝匠：满人后每名贵族 +1金/工匠 → 按贵族数估值（贵族扩展）
       } else if (bd.type === "production") {
         gain = prodUnit("corn"); // 玉米类生产建筑（实际不存在，占位）
       } else {
@@ -2339,7 +2410,8 @@ async function doBuilder(playerIdx, isChooser) {
     });
     if (pickIdx === null) return;
   } else {
-    pickIdx = aiPickBuilding(p, options, isChooser);
+    const sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
+    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser); // 终局精确(opt-in) 否则启发式
     if (pickIdx < 0) return;
   }
   const { b, cost } = options[pickIdx];
@@ -2574,10 +2646,14 @@ async function doCraftsman(chooserIdx, order) {
   if (available.length > 0) {
     let g;
     if (chooser.isHuman) {
-      const producedList = [...ownKinds].map(k => GOOD_NAMES[k]).join("/");
+      // 已产出但供应区已空 → 规则上无法额外拿取（最常见：玉米流把 10 个玉米攥空了）。
+      // 明确标注，避免"我明明产了玉米却不让选"的误解（header 列了它、按钮按规则排除它）。
+      const blocked = [...ownKinds].filter(k => G.supply[k] <= 0).map(k => GOOD_NAMES[k]);
+      const availList = available.map(k => GOOD_NAMES[k]).join("/");
+      const blockedNote = blocked.length ? `　⚠ ${blocked.join("/")} 你已产出，但供应区已耗尽、本回合无法拿取（需装船/清贸易站回流）` : "";
       const labels = available.map(k => `${GOOD_NAMES[k]} (你本回合已产出)`);
       const idx = await humanPickFromList(
-        `工匠特权：仅可选你自己本回合产出的种类 [${producedList}]，额外 +1`,
+        `工匠特权：额外 +1，可选你本回合产出且供应区有货的种类 [${availList}]${blockedNote}`,
         labels, true
       );
       if (idx === null) { /* skip */ }
@@ -2936,8 +3012,18 @@ async function doCaptain(order, chooserIdx) {
         const idx = await humanPickFromList("船长：装船", labels, false);
         pick = sortedCandidates[idx];
       } else {
+        // 群友·苦寒/仲达：把人类货量最大的那种货塞进货船，占道恶心人类装船（每种货只能在一艘船）
+        let spite = null;
+        if (_spiteRoll(p)) {
+          const human = G.players.find(x => x.isHuman);
+          if (human) {
+            let want = null, mx = 0; for (const gg of GOODS) if (human.goods[gg] > mx) { mx = human.goods[gg]; want = gg; }
+            if (want) spite = candidates.find(c => c.good === want && c.ship !== "wharf" && c.ship !== "smallwharf") || null;
+          }
+        }
         // AI：早/中期弃廉价货、留咖啡/烟草给商人；后期全力运分
-        pick = rankCaptainForAI(candidates, G.ships, gamePhase())[0];
+        const sp = (typeof solverPickCaptain === "function") ? solverPickCaptain(p, candidates, chooserIdx, order, progress, chooserBonusUsed) : null;
+        pick = spite || sp || rankCaptainForAI(candidates, G.ships, gamePhase())[0]; // 群友恶心 → 终局精确(opt-in) → 启发式
       }
       // 执行装船
       const isWharf = pick.ship === "wharf";
@@ -3142,6 +3228,11 @@ function aiPickRole(p, available) {
   // 贵族扩展：sim 引擎未建模贵族 → L4/L5/L6 回退到 L3 强启发式
   if (G.expansionNobles && lvl >= 4) lvl = 3;
   updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
+  // 群友·苦寒/仲达：以 spite 概率抢人类最想要的角色（恶心人类，牺牲一点最优）
+  if (_spiteRoll(p)) {
+    const si = spiteRolePick(p, available);
+    if (si != null) return si;
+  }
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -3189,6 +3280,72 @@ function buildSimState(G) {
   return st;
 }
 
+// 终局精确求解器接入 L6 *建造*子决策（opt-in: window._l6SolverBuild，默认关闭；AI_STRENGTH §9）。
+// build 是终局最高分歧子决策(74%)。iters=40 配对 A/B 测得 +3.3pp(z=3.75)，但 iters=150 复核(110 局)
+// 仅 +0.9pp(z=1.0，不显著)且求解触发率 0.43→0.27/局——**增益随对弈变强而缩小**(更强的角色搜索改变了
+// 终局局面，求解器触发更少、修正更小)。未达 z>1.96 换挡标准 → 保持默认关闭。仅基础局生效。
+// 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
+function solverPickBuilding(p, options, isChooser) {
+  // 群友·建筑大师(西西/拾光/SC)即使全局开关关闭也启用终局精确建造求解器
+  if ((!window._l6SolverBuild && !(p._persona && p._persona.build)) || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
+  // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
+  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  try {
+    const st = buildSimState(G);
+    if (!st.endTriggered) return null;                 // 仅终局触发后
+    const bcard = st.roleCards.find(r => r.name === "Builder");
+    const chooser = bcard ? bcard.takenBy : null;
+    if (chooser == null) return null;
+    const N = st.numPlayers;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "builder", chooser, ord, oi };     // 重建建造阶段 az 游标，指向当前玩家
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
+    // 安全闸：az 重建的可建集合必须与 game.js doBuilder 完全一致，否则求解的是错模型 → 回退
+    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
+    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
+    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+    const sol = PRSim.solveEndgame(st, window._l6SolverBuildCap || 2e6);   // 超预算→null→回退（2e6 即 A/B 验证档）
+    if (!sol || sol.action == null) return null;
+    if (sol.action < 0) return -1;                      // PASS = 不建造
+    const idx = options.findIndex(o => o.b.id === sol.action);
+    return idx >= 0 ? idx : null;
+  } catch (e) { return null; }
+}
+
+// 终局精确求解器接入 L6 *船长装船*子决策（opt-in: window._l6SolverCaptain，默认关闭；AI_STRENGTH §9）。
+// captain 是终局第二高分歧子决策(55%)，专家共识(BGA/BGG)也视装船为最关键决策。az captainCands 与
+// doCaptain 候选逐口径一致(base game)，captain 游标 {phase,chooser,ord,oi,progressed,chooserBonusUsed}
+// 可从 doCaptain 循环态精确重建(cphase 仅启发式 rankCaptain 用，精确 maxⁿ 求解不需要)。
+// 返回选中的候选对象，或 null 回退到 rankCaptainForAI。
+function solverPickCaptain(p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet) {
+  if (!window._l6SolverCaptain || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
+  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  try {
+    const st = buildSimState(G);
+    if (!st.endTriggered) return null;
+    const ord = order.slice();
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "captain", chooser: chooserIdx, ord, oi, progressed: !!passProgressed, chooserBonusUsed: chooserBonusUsedSet.has(chooserIdx) };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "captain" || dec.chooser !== p.idx) return null;
+    // game.js 候选编码为与 az 相同的 int（shipSlot*10 + goodIdx，wharf=3），逐一比对集合 → 不一致即回退
+    const enc = c => (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS.indexOf(c.good);
+    const gameCodes = candidates.filter(c => c.ship !== "smallwharf").map(enc).sort((a, b) => a - b);
+    const azCodes = dec.actions.slice().sort((a, b) => a - b);
+    if (gameCodes.length !== azCodes.length || gameCodes.some((c, i) => c !== azCodes[i])) return null;
+    const sol = PRSim.solveEndgame(st, window._l6SolverBuildCap || 2e6);
+    if (!sol || sol.action == null) return null;
+    const hit = candidates.find(c => c.ship !== "smallwharf" && enc(c) === sol.action);
+    return hit || null;
+  } catch (e) { return null; }
+}
+
 function ismctsPickRole(p, available, tier) {
   // sim.js 未加载时回退到强启发式
   if (typeof PRSim === "undefined" || !PRSim || !PRSim.ismctsPickRoleIdx) return level5Reactive(p, available);
@@ -3197,8 +3354,9 @@ function ismctsPickRole(p, available, tier) {
     // 健壮性：sim 当前决策者应等于 p；否则回退
     if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
     const b = window._aiThinkBudget || {};
-    const iters = tier === "hard" ? (b.hardIters || 120) : (b.expertIters || 1500);
-    const ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
+    let iters = tier === "hard" ? (b.hardIters || 120) : (b.expertIters || 1500);
+    let ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); } // 群友自定义思考时长
     // 专家档若已加载训练好的价值函数则启用价值制导（否则纯 rollout）
     const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
     // 困难档(两者结合)：截断 rollout 前瞻若干回合 + 手写"经济评估"做叶节点评估
@@ -3243,6 +3401,7 @@ function alphazeroPickRole(p, available) {
     // L6 用更少的 iters：NN 已"看远"，每次模拟更便宜的 NN eval 取代 rollout
     let iters = b.alphaIters || 800;
     let ms = b.alphaMs || 6000;
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); } // 群友自定义思考时长（让时间预算成为唯一约束 → 真的多想）
     // 终局增压：收官期(终局已触发/VP 池将尽/殖民者将尽)的决策决定 1-3 分的胜负毛差,
     // 提高这些少数关键决策的搜索预算。_alphaEndBoost 注入倍率(A/B 调参), 默认 1(关闭)。
     const endBoost = (window._alphaEndBoost != null ? window._alphaEndBoost : 1);
@@ -4757,6 +4916,15 @@ function l6h(p, key) {
 
 function aiPickPlantation(p, options, isChooser) {
   const lvl = p._aiLevel || 3;
+  // 群友·苦寒/仲达：以 spite 概率抢人类最依赖的那种货田（恶心人类的产业链）
+  if (_spiteRoll(p)) {
+    const human = G.players.find(x => x.isHuman);
+    if (human) {
+      const cnt = {}; for (const pl of human.plantations) if (pl.good && pl.good !== "quarry") cnt[pl.good] = (cnt[pl.good] || 0) + 1;
+      let want = null, mx = 0; for (const g in cnt) if (cnt[g] > mx) { mx = cnt[g]; want = g; }
+      if (want) { const oi = options.findIndex(o => o.kind === "plant" && o.good === want); if (oi >= 0) return oi; }
+    }
+  }
   // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
   if (p._dna && (lvl === 2 || lvl === 3)) {
     const idx = dnaPickPlantation(p, options, isChooser);
@@ -4855,12 +5023,106 @@ function resolveBoardSelect(idx) {
   r(idx);
 }
 
-function humanPickRole(available) {
-  return humanBoardSelect({
-    type: "role",
-    choices: available.map((r, i) => ({ key: i, role: r })),
-    promptText: "你必须选择一个角色 — 点击下方角色卡",
-    allowSkip: false,
+// 选角确认弹窗里的"本回合你将获得什么"预览——让玩家在落子前看清结果、不对就撤销。
+// p = 选择者（人类）；roleName = 待确认的角色。返回一段 HTML。
+function buildRolePreview(p, roleName) {
+  const warn = s => `<div style="color:#e74c3c;font-weight:bold;margin:4px 0">⚠ ${s}</div>`;
+  const ok = s => `<div style="color:#7fd77f;margin:4px 0">${s}</div>`;
+  const note = s => `<div style="color:#bbb;font-size:12px;margin:3px 0">${s}</div>`;
+  try {
+    if (roleName === "Builder") {
+      const space = 12 - G.buildingUsedSpaces(p);
+      const opts = [];
+      for (const b of BUILDINGS) {
+        if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(p, b.id) || space < b.size) continue;
+        const cost = G.effectiveCostWithRoleBonus(p, b, true); // 你是选择者：享 -1 折扣
+        if (p.money + G.blackMarketCapacity(p) < cost) continue;
+        opts.push({ b, cost });
+      }
+      if (space <= 0) return warn("你的城区已满（12格），无法再建造——建议撤销改选别的角色。");
+      if (opts.length === 0) return warn(`你只有 ${p.money} 金，买不起任何可建建筑（已含选择者 -1 折扣）——建议撤销。`);
+      opts.sort((a, b) => a.cost - b.cost);
+      const list = opts.map(o => `${BLD_BY_ID[o.b.id].cn}<span style="color:#f3c969">(${o.cost}金)</span>`).join("　");
+      return ok(`你有 ${p.money} 金（选择者 -1 折扣），可建造 ${opts.length} 种：`) + note(list);
+    }
+    if (roleName === "Craftsman") {
+      const lines = [];
+      for (const g of GOODS) {
+        const made = Math.min(G.productionCapacity(p, g), G.supply[g]);
+        if (made > 0) lines.push(`${plantEmoji(g)}${GOOD_NAMES[g]}×${made}`);
+      }
+      if (lines.length === 0) return warn("你当前的种植园/加工厂产不出任何货（或供应区已耗尽）——建议撤销。");
+      return ok(`预计你将生产：${lines.join("　")}`) + note("＋工匠特权：再额外拿 1 个「你本回合产过」的货（场上无人产出则没有）。实际产量受供应区余量与结算顺序影响。");
+    }
+    if (roleName === "Trader") {
+      const hasOffice = G.isManned(p, 12), hasPost = G.isManned(p, 29);
+      const houseFull = G.tradingHouse.length >= 4;
+      const chooserBonus = G.isManned(p, 33) ? 2 : 1; // 图书馆翻倍
+      const mkBonus = (G.isManned(p, 7) ? 1 : 0) + (G.isManned(p, 13) ? 2 : 0);
+      const opts = [];
+      if (!houseFull) for (const g of GOODS) if (p.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) opts.push(`贸易站卖${GOOD_NAMES[g]}(+${GOOD_PRICE[g] + chooserBonus + mkBonus}金)`);
+      if (hasPost) for (const g of GOODS) if (p.goods[g] > 0) opts.push(`驿站卖${GOOD_NAMES[g]}(+${GOOD_PRICE[g] + chooserBonus}金)`);
+      if (opts.length === 0) return warn(houseFull ? "贸易站已满，且你没有自家驿站——本回合卖不了货，建议撤销。" : "你没有可卖的货——建议撤销。");
+      return ok("你可出售（含选择者 +1 特权）：") + note(opts.join("　"));
+    }
+    if (roleName === "Mayor") {
+      const m = getMayorPreview();
+      if (!m) return note("拿殖民者。");
+      if (m.chooserTotal === 0) return warn("船上与供应区都没有殖民者可拿——本回合市长几乎没收益，建议撤销。");
+      return ok(`你将获得 ${m.chooserTotal} 名殖民者（船 +${m.chooserFromShip}，特权 +${m.chooserBonus}）。`);
+    }
+    if (roleName === "Settler") {
+      const pool = G.plantationPool || [];
+      if (pool.length === 0 && G.quarriesLeft <= 0) return warn("种植园池与采石场都空了——拿不到地，建议撤销。");
+      const cnt = {};
+      for (const g of pool) cnt[g] = (cnt[g] || 0) + 1;
+      const list = Object.keys(cnt).map(g => `${plantEmoji(g)}${GOOD_NAMES[g]}×${cnt[g]}`).join("　") || "（无）";
+      const quarry = G.quarriesLeft > 0 ? `；你可改拿 🪨采石场（剩${G.quarriesLeft}）` : "";
+      return ok("你将拿 1 张种植园。") + note(`明牌池：${list}${quarry}`);
+    }
+    if (roleName === "Captain") {
+      let myGoods = 0; for (const g of GOODS) myGoods += p.goods[g];
+      const c = getCaptainPreview();
+      if (myGoods === 0) return warn("你手上没有货可装船——本回合船长拿不到分，建议撤销。");
+      return ok(`你持有 ${myGoods} 个货，将尽量装船得 VP（首次装船 +1VP 特权）。`) + (c ? note(c.ships.join("　")) : "");
+    }
+    if (roleName === "Prospector") {
+      return ok("你将立即 +1 金。") + note("仅你执行，其他玩家本回合不行动。");
+    }
+    if (roleName === "Buccaneer") {
+      return note("海盗：从 4 个行动里选 1 个执行（仅你）。");
+    }
+  } catch (e) { /* 预览失败不应阻断游戏 */ }
+  return note(ROLE_BONUS[roleName] || "");
+}
+
+function humanPickRole(available, p) {
+  return new Promise(outerResolve => {
+    const attemptPick = () => {
+      humanBoardSelect({
+        type: "role",
+        choices: available.map((r, i) => ({ key: i, role: r })),
+        promptText: "选择角色 — 点击角色卡，选后可撤销",
+        allowSkip: false,
+      }).then(idx => {
+        const r = available[idx];
+        const rName = ROLE_NAME_CN[r.name];
+        const coinStr = r.money ? `，含 +${r.money} 金奖励` : "";
+        const preview = p ? buildRolePreview(p, r.name) : "";
+        showModal(
+          `确认选择「${rName}」？`,
+          `<p style="color:#ccc;font-size:13px;margin:4px 0">${ROLE_BONUS[r.name]}${coinStr}</p>` +
+          `<div style="border-top:1px solid #555;margin:8px 0 4px;padding-top:8px"><b style="color:#f3c969">本回合你将获得：</b></div>` +
+          preview +
+          `<p style="color:#999;font-size:12px;margin:8px 0 0">确认后该阶段立即开始；不对就点撤销重选。</p>`,
+          [
+            { label: "确认选择", confirm: true, fn: () => { hideModal(); outerResolve(idx); } },
+            { label: "🔙 撤销重选", fn: () => { hideModal(); attemptPick(); } },
+          ]
+        );
+      });
+    };
+    attemptPick();
   });
 }
 
@@ -4888,6 +5150,7 @@ function showModal(title, body, buttons) {
     btn.textContent = b.label;
     btn.onclick = b.fn;
     if (b.primary) btn.classList.add("primary");
+    if (b.confirm) btn.classList.add("confirm");
     bb.appendChild(btn);
   }
   document.getElementById("modal").classList.remove("hidden");
@@ -4907,6 +5170,14 @@ function render() {
   // 隐藏当前 tooltip：render() 会替换大量 DOM，旧的 mouseleave 可能永远不触发
   // 导致 tooltip 卡在屏幕上挡住选择 UI（如选种植园 / 选卖货种类）
   hideHoverTooltip();
+  // 群友人格首次登场：日志 + toast 揭晓（给你"不能输给苦寒"的动力）
+  if (G._hasPersona && !G._personaRevealed) {
+    G._personaRevealed = true;
+    for (const pp of G.players) if (pp._persona) {
+      G.logEvent(`⚡ 特殊对手登场：${pp._persona.name} —— ${pp._persona.desc}`, "role");
+      if (typeof showToast === "function") showToast(`<div class="t-title">⚡ 群友登场：${pp._persona.name}</div><div class="t-sub">${pp._persona.desc}</div>`, { kind: "role" });
+    }
+  }
   // Topbar
   const endLabel = G.endTriggered ? ' · ⚠ 末轮' : '';
   document.getElementById("game-info").textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}${endLabel}`;
@@ -4924,7 +5195,7 @@ function render() {
   document.getElementById("resources-info").innerHTML = `
     <div class="resource-block">
       <span class="rb-title">货物供应</span>
-      ${GOODS.map(g => `<span class="rb-good good-${g}" title="${GOOD_NAMES[g]}">${G.supply[g]}</span>`).join("")}
+      ${GOODS.map(g => `<span class="rb-good good-${g}${G.supply[g] === 0 ? " rb-empty" : ""}" title="${GOOD_NAMES[g]}供应区剩 ${G.supply[g]}${G.supply[g] === 0 ? "（已耗尽，本回合无法生产/拿取该货，需装船或清贸易站回流）" : ""}">${plantEmoji(g)}${G.supply[g]}</span>`).join("")}
     </div>
     <div class="resource-block">
       <span class="rb-title">银行</span>
@@ -5091,7 +5362,7 @@ function render() {
     const totalVP = p.vp + G.getDisplayVPs(p);
     div.innerHTML = `
       <div class="player-header">
-        <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${p.isHuman ? " (你)" : " (AI)"}</span>
+        <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${p.isHuman ? " (你)" : (p._persona ? ` <span class="persona-badge" title="群友 · ${p._persona.desc}">⚡群友</span>` : " (AI)")}</span>
         <span class="player-stats">
           <span class="stat" data-stat="money">💰${p.money}</span>
           <span class="stat" data-stat="vp">⭐${totalVP}</span>
