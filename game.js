@@ -1665,8 +1665,8 @@ document.querySelectorAll(".qs-btn").forEach(btn => {
       else if (set === "all5") sel.value = "5"; // 专家(MCTS深搜)
       else if (set === "all6") sel.value = "6"; // 宗师(AlphaZero)
       else if (set === "mixed") {
-        // 混合：1,2,3,4,5,6 循环 = 入门/进化/普通/困难/专家/宗师
-        sel.value = String((idx % 6) + 1);
+        // 混合：每点一次，每个 CPU 随机抽一档(L1~L6) → 每次都是一种新的随机难度组合
+        sel.value = String(SELECTABLE_LEVELS[Math.floor(Math.random() * SELECTABLE_LEVELS.length)].internal);
       }
     });
   });
