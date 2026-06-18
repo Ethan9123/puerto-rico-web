@@ -882,7 +882,8 @@ function assignCastNames() {
 //   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)、
 //   多样化产线(diverse，仅在有真人时触发；同 spite 闸，纯 AI 局零影响 → 基准里仍是纯 L6)、
 //   成套收集(collect，仅在有真人时触发；同 spite 闸 → 有田就配厂/喂厂、攒钱凑齐产业链)、
-//   大建筑流(bigbuild，仅在有真人时触发；同 spite 闸 → 囤矿场，第8回合后攒钱抢自己加分最多的10元大建筑)。
+//   大建筑流(bigbuild，仅在有真人时触发；同 spite 闸 → 囤矿场，第8回合后攒钱抢自己加分最多的10元大建筑)、
+//   钱币敏感(coin，仅在有真人时触发；同 spite 闸 → 哪个角色卡累计了≥2枚币就大概率去抢那笔奖励币)。
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 // 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
@@ -898,6 +899,7 @@ const AI_PERSONAS = [
   { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
   { key: "rafael",  name: "Rafael", level: 6, collect: 0.7,                         desc: "成套收集·有田就配厂、攒钱凑齐产业链（田↔厂）" },
   { key: "feb",     name: "二月", level: 6, bigbuild: 0.7,                          desc: "矿场流·囤1-2矿场，第8回合后攒钱猛攻自己加分最多的10元大建筑（能买俩更好）" },
+  { key: "ethan",   name: "Ethan", level: 6, coin: 0.8,                            desc: "钱币敏感·哪个角色卡攒了2~3枚币，就大概率去抢那笔奖励币" },
 ];
 const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
 function maybeAssignPersonas() {
@@ -1091,6 +1093,21 @@ function bigbuildRolePick(p, available) {
     if (pi >= 0) return pi;                            // 仅差 1-2 金 → 金矿主补齐
   }
   return null;                                          // 还差得多 → 正常发育攒钱
+}
+
+// 群友·Ethan：对角色卡上累计的奖励币很敏感——某张角色卡攒到 ≥2 枚币时，大概率直接去抢那张（拿走那笔币）。
+// 同 spite 人类闸：纯 AI 局零触发 → Ethan 在基准里就是纯 L6，保证 ≥23%。
+function _coinRoll(p) {
+  return !!(p._persona && p._persona.coin && G.players.some(x => x.isHuman) && Math.random() < p._persona.coin);
+}
+// 在可选角色里挑"累计金币最多"的一张；阈值 ≥2 枚才动心（攒到 2~3 枚时概率大大提高）。
+function coinRolePick(p, available) {
+  let bestI = -1, bestM = 1;                            // 初值 1 → 只有 money≥2 才会被选中
+  for (let i = 0; i < available.length; i++) {
+    const m = available[i].money || 0;
+    if (m > bestM) { bestM = m; bestI = i; }
+  }
+  return bestI >= 0 ? bestI : null;
 }
 
 // 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
@@ -3399,6 +3416,11 @@ function aiPickRole(p, available) {
   if (_bigbuildRoll(p)) {
     const bi = bigbuildRolePick(p, available);
     if (bi != null) return bi;
+  }
+  // 群友·Ethan：某角色卡攒到 ≥2 枚币 → 大概率直接抢那张拿币
+  if (_coinRoll(p)) {
+    const ci = coinRolePick(p, available);
+    if (ci != null) return ci;
   }
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
