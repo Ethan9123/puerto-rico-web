@@ -496,6 +496,8 @@ body {
 .modal-box button:hover { background: #3498db; }
 .modal-box button.primary { background: #c0392b; }
 .modal-box button.primary:hover { background: #e74c3c; }
+.modal-box button.confirm { background: #27ae60; }
+.modal-box button.confirm:hover { background: #2ecc71; }
 .modal-box button.disabled { background: #555; cursor: not-allowed; }
 
 /* ---- Log ---- */

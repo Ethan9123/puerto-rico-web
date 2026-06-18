@@ -5018,11 +5018,29 @@ function resolveBoardSelect(idx) {
 }
 
 function humanPickRole(available) {
-  return humanBoardSelect({
-    type: "role",
-    choices: available.map((r, i) => ({ key: i, role: r })),
-    promptText: "你必须选择一个角色 — 点击下方角色卡",
-    allowSkip: false,
+  return new Promise(outerResolve => {
+    const attemptPick = () => {
+      humanBoardSelect({
+        type: "role",
+        choices: available.map((r, i) => ({ key: i, role: r })),
+        promptText: "选择角色 — 点击角色卡，选后可撤销",
+        allowSkip: false,
+      }).then(idx => {
+        const r = available[idx];
+        const rName = ROLE_NAME_CN[r.name];
+        const coinStr = r.money ? `，含 +${r.money} 金奖励` : "";
+        showModal(
+          `确认选择「${rName}」？`,
+          `<p style="color:#ccc;font-size:13px;margin:4px 0">${ROLE_BONUS[r.name]}${coinStr}</p>` +
+          `<p style="color:#999;font-size:12px;margin:4px 0">选后该阶段将立即开始（其他玩家也会参与）</p>`,
+          [
+            { label: "确认选择", confirm: true, fn: () => { hideModal(); outerResolve(idx); } },
+            { label: "🔙 撤销重选", fn: () => { hideModal(); attemptPick(); } },
+          ]
+        );
+      });
+    };
+    attemptPick();
   });
 }
 
@@ -5050,6 +5068,7 @@ function showModal(title, body, buttons) {
     btn.textContent = b.label;
     btn.onclick = b.fn;
     if (b.primary) btn.classList.add("primary");
+    if (b.confirm) btn.classList.add("confirm");
     bb.appendChild(btn);
   }
   document.getElementById("modal").classList.remove("hidden");
