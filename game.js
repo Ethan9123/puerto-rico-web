@@ -879,7 +879,8 @@ function assignCastNames() {
 // ============================================================
 // 设计准则：每位群友都是 L6 内核（=宗师强度），风格只用「不削弱实力」的杠杆表达——
 //   思考更久(thinkMs，越久越强)、建筑大师(build，启用终局精确建造，≈中性偏正)、
-//   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)。
+//   恶心人类(spite，仅在有真人时触发；纯 AI 局零影响 → 1群友vs3宗师=纯L6≈25%)、
+//   多样化产线(diverse，仅在有真人时触发；同 spite 闸，纯 AI 局零影响 → 基准里仍是纯 L6)。
 // 因此每位在「1群友 vs 3宗师」里都 ≥ 宗师基线（≥23%），同时各有棋路。
 // 实测（200 局, 等算力 iters=100）：拾光 25.7% (95%CI [19.6,31.7])，与纯 L6 基线无显著差异 ✅。
 const AI_PERSONAS = [
@@ -889,9 +890,10 @@ const AI_PERSONAS = [
   { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "行云流水·当机立断，节奏极快" },
   { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 15000,             desc: "隐忍仲达·伺机使绊，时不时阴你一手（15s）" },
   { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 15000,                desc: "建筑收藏家·把建造算到极致（15s）" },
-  { key: "zhazong", name: "查总", level: 6, thinkMs: 20000,                          desc: "查总·财大气粗、深算 20s，稳扎稳打" },
+  { key: "chazong", name: "茶总", level: 6, thinkMs: 20000,                          desc: "茶总·财大气粗、深算 20s，稳扎稳打" },
   { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
   { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
+  { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
 ];
 const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
 function maybeAssignPersonas() {
@@ -934,6 +936,46 @@ function spiteRolePick(p, available) {
   if (!human || typeof level2PickRoleNew !== "function") return null;
   try { const idx = level2PickRoleNew(human, available); if (idx >= 0 && idx < available.length) return idx; } catch (e) {}
   return null;
+}
+// 群友·吾鱼：多样化产线（爱铺 3+ 种货）+ 收购"多货生产加钱"的建筑。与 spite 同理人类闸：
+// 纯 AI 局(含 1群友vs3宗师基准)里 diverse 路径零触发 → 吾鱼在基准里就是纯 L6，保证 ≥23%。
+function _diverseRoll(p) {
+  return !!(p._persona && p._persona.diverse && G.players.some(x => x.isHuman) && Math.random() < p._persona.diverse);
+}
+// 吾鱼建造偏好：先抢工厂(15，多货→金的招牌建筑)，其次给还不能产的货补一座生产建筑（扩产线种类），
+// 再次扩展的专业工厂(34)/档案馆(51)。返回 options 下标，或 null 表示无合适目标→回退普通启发式。
+function diverseBuildPick(p, options) {
+  const has = id => options.findIndex(o => o.b.id === id);
+  // 1) 工厂(15)：生产种类越多得金越多——吾鱼的核心
+  let i = has(15); if (i >= 0) return i;
+  // 2) 给"还没有对应生产建筑"的货补一座 → 让能产的货种类增多
+  const prodBldGood = { 1: "indigo", 3: "indigo", 2: "sugar", 4: "sugar", 5: "tobacco", 6: "coffee" };
+  const ownedProdGoods = new Set();
+  for (const b of p.buildings) { const g = prodBldGood[b.bid]; if (g) ownedProdGoods.add(g); }
+  const myPlantGoods = new Set(p.plantations.filter(pl => pl.good && pl.good !== "quarry").map(pl => pl.good));
+  let bestI = -1, bestPr = -1;
+  for (let k = 0; k < options.length; k++) {
+    const g = prodBldGood[options[k].b.id];
+    if (!g || ownedProdGoods.has(g)) continue;          // 没映射 / 已有这种货的厂 → 不增加种类
+    const pr = (myPlantGoods.has(g) ? 2 : 1) + (BLD_BY_ID[options[k].b.id].vp || 0) * 0.1; // 有该货田→能立刻产，优先
+    if (pr > bestPr) { bestPr = pr; bestI = k; }
+  }
+  if (bestI >= 0) return bestI;
+  // 3) 扩展：专业工厂(34)/档案馆(51) 同样奖励多货
+  for (const id of [34, 51]) { const j = has(id); if (j >= 0) return j; }
+  return null;
+}
+// 吾鱼拓殖偏好：优先拿"自己还没产的货种"的田，逼近 3+ 种产线。返回下标或 null。
+function diversePlantPick(p, options) {
+  const myGoods = new Set(p.plantations.filter(pl => pl.good && pl.good !== "quarry").map(pl => pl.good));
+  let bestI = -1, bestS = -Infinity;
+  for (let i = 0; i < options.length; i++) {
+    const o = options[i];
+    if (o.kind !== "plant" || myGoods.has(o.good)) continue; // 只看能新增货种的田
+    const s = (GOOD_PRICE[o.good] || 0);                     // 新货种里略偏贵货(多样化不亏价值)
+    if (s > bestS) { bestS = s; bestI = i; }
+  }
+  return bestI >= 0 ? bestI : null;
 }
 
 // 解说员"看穿"廉价确定型 AI 的真实决策（L1/L2/L3 复用其本级逻辑预判，命中率大增）。
@@ -4925,6 +4967,11 @@ function aiPickPlantation(p, options, isChooser) {
       if (want) { const oi = options.findIndex(o => o.kind === "plant" && o.good === want); if (oi >= 0) return oi; }
     }
   }
+  // 群友·吾鱼：以 diverse 概率拿"自己还没产的货种"的田，凑齐 3+ 种产线
+  if (_diverseRoll(p)) {
+    const di = diversePlantPick(p, options);
+    if (di != null) return di;
+  }
   // 进化/普通(L2,L3) 用基因选田(忠实于 DNA)；入门(L1,直觉发挥强项)与困难/专家(L4,L5)用带采石场/垄断意识的启发式。
   if (p._dna && (lvl === 2 || lvl === 3)) {
     const idx = dnaPickPlantation(p, options, isChooser);
@@ -4967,6 +5014,11 @@ function aiPickPlantation(p, options, isChooser) {
 }
 
 function aiPickBuilding(p, options, isChooser) {
+  // 群友·吾鱼：以 diverse 概率优先收购"多货→金"的建筑(工厂等)/补全产线货种
+  if (_diverseRoll(p)) {
+    const di = diverseBuildPick(p, options);
+    if (di != null) return di;
+  }
   // 进化(L2)：忠实按建筑染色体决策（从左到右买第一个想买且买得起的）
   if (p._aiLevel === 2 && p._dna && typeof dnaPickBuilding === "function") {
     const idx = dnaPickBuilding(p, options, isChooser);
