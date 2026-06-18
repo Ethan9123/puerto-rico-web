@@ -1600,7 +1600,7 @@ async function runMainLoop() {
       if (player.isHuman) {
         // 实况解说：当众押注真人的选择（不阻塞，玩家想多久都行），选完再点评
         const castPred = castOn() ? commentaryPreRoleHuman(player, available) : null;
-        chosenIdx = await humanPickRole(available);
+        chosenIdx = await humanPickRole(available, player);
         if (castPred) commentaryPostRole(player, castPred, available[chosenIdx].name);
       } else {
         // 解说：开牌前预测（观战节奏慢、人机局节奏紧凑）；无解说时仅短暂延时给人类看清节奏
@@ -5023,7 +5023,80 @@ function resolveBoardSelect(idx) {
   r(idx);
 }
 
-function humanPickRole(available) {
+// 选角确认弹窗里的"本回合你将获得什么"预览——让玩家在落子前看清结果、不对就撤销。
+// p = 选择者（人类）；roleName = 待确认的角色。返回一段 HTML。
+function buildRolePreview(p, roleName) {
+  const warn = s => `<div style="color:#e74c3c;font-weight:bold;margin:4px 0">⚠ ${s}</div>`;
+  const ok = s => `<div style="color:#7fd77f;margin:4px 0">${s}</div>`;
+  const note = s => `<div style="color:#bbb;font-size:12px;margin:3px 0">${s}</div>`;
+  try {
+    if (roleName === "Builder") {
+      const space = 12 - G.buildingUsedSpaces(p);
+      const opts = [];
+      for (const b of BUILDINGS) {
+        if (G.buildingStock[b.id] <= 0 || G.ownsBuilding(p, b.id) || space < b.size) continue;
+        const cost = G.effectiveCostWithRoleBonus(p, b, true); // 你是选择者：享 -1 折扣
+        if (p.money + G.blackMarketCapacity(p) < cost) continue;
+        opts.push({ b, cost });
+      }
+      if (space <= 0) return warn("你的城区已满（12格），无法再建造——建议撤销改选别的角色。");
+      if (opts.length === 0) return warn(`你只有 ${p.money} 金，买不起任何可建建筑（已含选择者 -1 折扣）——建议撤销。`);
+      opts.sort((a, b) => a.cost - b.cost);
+      const list = opts.map(o => `${BLD_BY_ID[o.b.id].cn}<span style="color:#f3c969">(${o.cost}金)</span>`).join("　");
+      return ok(`你有 ${p.money} 金（选择者 -1 折扣），可建造 ${opts.length} 种：`) + note(list);
+    }
+    if (roleName === "Craftsman") {
+      const lines = [];
+      for (const g of GOODS) {
+        const made = Math.min(G.productionCapacity(p, g), G.supply[g]);
+        if (made > 0) lines.push(`${plantEmoji(g)}${GOOD_NAMES[g]}×${made}`);
+      }
+      if (lines.length === 0) return warn("你当前的种植园/加工厂产不出任何货（或供应区已耗尽）——建议撤销。");
+      return ok(`预计你将生产：${lines.join("　")}`) + note("＋工匠特权：再额外拿 1 个「你本回合产过」的货（场上无人产出则没有）。实际产量受供应区余量与结算顺序影响。");
+    }
+    if (roleName === "Trader") {
+      const hasOffice = G.isManned(p, 12), hasPost = G.isManned(p, 29);
+      const houseFull = G.tradingHouse.length >= 4;
+      const chooserBonus = G.isManned(p, 33) ? 2 : 1; // 图书馆翻倍
+      const mkBonus = (G.isManned(p, 7) ? 1 : 0) + (G.isManned(p, 13) ? 2 : 0);
+      const opts = [];
+      if (!houseFull) for (const g of GOODS) if (p.goods[g] > 0 && (hasOffice || !G.tradingHouse.includes(g))) opts.push(`贸易站卖${GOOD_NAMES[g]}(+${GOOD_PRICE[g] + chooserBonus + mkBonus}金)`);
+      if (hasPost) for (const g of GOODS) if (p.goods[g] > 0) opts.push(`驿站卖${GOOD_NAMES[g]}(+${GOOD_PRICE[g] + chooserBonus}金)`);
+      if (opts.length === 0) return warn(houseFull ? "贸易站已满，且你没有自家驿站——本回合卖不了货，建议撤销。" : "你没有可卖的货——建议撤销。");
+      return ok("你可出售（含选择者 +1 特权）：") + note(opts.join("　"));
+    }
+    if (roleName === "Mayor") {
+      const m = getMayorPreview();
+      if (!m) return note("拿殖民者。");
+      if (m.chooserTotal === 0) return warn("船上与供应区都没有殖民者可拿——本回合市长几乎没收益，建议撤销。");
+      return ok(`你将获得 ${m.chooserTotal} 名殖民者（船 +${m.chooserFromShip}，特权 +${m.chooserBonus}）。`);
+    }
+    if (roleName === "Settler") {
+      const pool = G.plantationPool || [];
+      if (pool.length === 0 && G.quarriesLeft <= 0) return warn("种植园池与采石场都空了——拿不到地，建议撤销。");
+      const cnt = {};
+      for (const g of pool) cnt[g] = (cnt[g] || 0) + 1;
+      const list = Object.keys(cnt).map(g => `${plantEmoji(g)}${GOOD_NAMES[g]}×${cnt[g]}`).join("　") || "（无）";
+      const quarry = G.quarriesLeft > 0 ? `；你可改拿 🪨采石场（剩${G.quarriesLeft}）` : "";
+      return ok("你将拿 1 张种植园。") + note(`明牌池：${list}${quarry}`);
+    }
+    if (roleName === "Captain") {
+      let myGoods = 0; for (const g of GOODS) myGoods += p.goods[g];
+      const c = getCaptainPreview();
+      if (myGoods === 0) return warn("你手上没有货可装船——本回合船长拿不到分，建议撤销。");
+      return ok(`你持有 ${myGoods} 个货，将尽量装船得 VP（首次装船 +1VP 特权）。`) + (c ? note(c.ships.join("　")) : "");
+    }
+    if (roleName === "Prospector") {
+      return ok("你将立即 +1 金。") + note("仅你执行，其他玩家本回合不行动。");
+    }
+    if (roleName === "Buccaneer") {
+      return note("海盗：从 4 个行动里选 1 个执行（仅你）。");
+    }
+  } catch (e) { /* 预览失败不应阻断游戏 */ }
+  return note(ROLE_BONUS[roleName] || "");
+}
+
+function humanPickRole(available, p) {
   return new Promise(outerResolve => {
     const attemptPick = () => {
       humanBoardSelect({
@@ -5035,10 +5108,13 @@ function humanPickRole(available) {
         const r = available[idx];
         const rName = ROLE_NAME_CN[r.name];
         const coinStr = r.money ? `，含 +${r.money} 金奖励` : "";
+        const preview = p ? buildRolePreview(p, r.name) : "";
         showModal(
           `确认选择「${rName}」？`,
           `<p style="color:#ccc;font-size:13px;margin:4px 0">${ROLE_BONUS[r.name]}${coinStr}</p>` +
-          `<p style="color:#999;font-size:12px;margin:4px 0">选后该阶段将立即开始（其他玩家也会参与）</p>`,
+          `<div style="border-top:1px solid #555;margin:8px 0 4px;padding-top:8px"><b style="color:#f3c969">本回合你将获得：</b></div>` +
+          preview +
+          `<p style="color:#999;font-size:12px;margin:8px 0 0">确认后该阶段立即开始；不对就点撤销重选。</p>`,
           [
             { label: "确认选择", confirm: true, fn: () => { hideModal(); outerResolve(idx); } },
             { label: "🔙 撤销重选", fn: () => { hideModal(); attemptPick(); } },
