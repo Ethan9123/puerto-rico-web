@@ -890,7 +890,7 @@ const AI_PERSONAS = [
   { key: "xinliu",  name: "心流", level: 6, thinkMs: 12000,                          desc: "行云流水·当机立断，节奏极快" },
   { key: "zhongda", name: "仲达", level: 6, spite: 0.45, thinkMs: 15000,             desc: "隐忍仲达·伺机使绊，时不时阴你一手（15s）" },
   { key: "shiguang",name: "拾光", level: 6, build: 1, thinkMs: 15000,                desc: "建筑收藏家·把建造算到极致（15s）" },
-  { key: "zhazong", name: "查总", level: 6, thinkMs: 20000,                          desc: "查总·财大气粗、深算 20s，稳扎稳打" },
+  { key: "chazong", name: "茶总", level: 6, thinkMs: 20000,                          desc: "茶总·财大气粗、深算 20s，稳扎稳打" },
   { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
   { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
   { key: "wuyu",    name: "吾鱼", level: 6, diverse: 0.7,                            desc: "样样都来·爱铺 3+ 种产线，专收工厂等多货生金建筑" },
