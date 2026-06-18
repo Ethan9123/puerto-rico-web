@@ -893,29 +893,34 @@ const AI_PERSONAS = [
   { key: "kuankuan",name: "宽宽", level: 6, thinkMs: 12000,                          desc: "宽厚·堂堂正正、纯实力，不使绊子" },
   { key: "sc",      name: "SC",   level: 6, thinkMs: 30000, build: 0.6, spite: 0.35, desc: "全能·又强又阴：深思30s + 建造精算 + 偶尔阴你" },
 ];
-const PERSONA_CHANCE = 0.03;
+const PERSONA_CHANCE = 0.05; // 每个群友各自独立掷 5% 决定本局是否登场
 function maybeAssignPersonas() {
-  const used = new Set();
   const forced = window._forcePersona;
-  for (const p of G.players) {
-    if (p.isHuman || (p._aiLevel || 0) < 5) continue;        // 仅专家/宗师对手
-    let persona = null;
-    if (forced && !G._personaForced) {
-      persona = AI_PERSONAS.find(x => x.key === forced || x.name === forced);
-      if (persona) G._personaForced = true;
-    }
-    if (!persona) {
-      if (Math.random() >= PERSONA_CHANCE) continue;
-      const poolP = AI_PERSONAS.filter(x => !used.has(x.key));
-      if (!poolP.length) continue;
-      persona = poolP[Math.floor(Math.random() * poolP.length)];
-    }
-    used.add(persona.key);
+  // 可分配群友的 AI 席位：仅专家/宗师对手
+  const slots = G.players.filter(p => !p.isHuman && (p._aiLevel || 0) >= 5);
+  if (!slots.length) return;
+  let si = 0;
+  const assign = (p, persona) => {
     p._persona = persona;
     p.name = persona.name;
     p._aiLevel = Math.max(p._aiLevel || 5, persona.level);
     if (persona.thinkMs) p._thinkMs = persona.thinkMs;
     G._hasPersona = true;
+  };
+  // 强制指定（基准/调试 window._forcePersona）：占用第一个席位
+  if (forced && !G._personaForced) {
+    const persona = AI_PERSONAS.find(x => x.key === forced || x.name === forced);
+    if (persona) { assign(slots[si++], persona); G._personaForced = true; }
+  }
+  // 每个群友各自独立掷 PERSONA_CHANCE；命中且还有空席位就登场。
+  //   - 同一局不会出现相同群友：每个群友只掷一次、占一个独立席位。
+  //   - 同一局可出现不同群友：多个命中各占不同席位。
+  // 先打乱顺序，避免席位不够时总是偏向 AI_PERSONAS 前面的群友。
+  const pool = AI_PERSONAS.filter(x => !(forced && (x.key === forced || x.name === forced)));
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  for (const persona of pool) {
+    if (si >= slots.length) break;
+    if (Math.random() < PERSONA_CHANCE) assign(slots[si++], persona);
   }
 }
 // spite 只在「场上有真人可坑」时才掷骰 → 纯 AI 局(含 1群友vs3宗师基准)里 spite 路径零触发、
