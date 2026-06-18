@@ -1,8 +1,8 @@
-# 对局记录 → 训练 JSONL（真人胜局采集）
+# 对局记录 → 训练 JSONL（真人对局采集）
 
-把**真人在网站上打赢 AI**的每一局，自动转成与现有训练管线**逐字段一致**的 JSONL，
-通过一个轻量 Cloudflare Worker 端点集中收集；你打开一个网址即可一次性取回全部胜局数据，
-直接喂给 `train/`，用于分析"人类怎么赢的"以及做模仿学习 / 最佳回应（exploiter）训练。
+把**真人在网站上和 AI 对战**的每一局（胜负都收），自动转成与现有训练管线**逐字段一致**的
+JSONL，通过一个轻量 Cloudflare Worker 端点集中收集；你打开一个网址即可一次性取回全部对局
+数据，直接喂给 `train/`，用于分析真人怎么走、以及做模仿学习 / 最佳回应（exploiter）训练。
 
 ## 数据格式（与训练管线对齐）
 
@@ -26,15 +26,15 @@ python train/train.py data/human-wins.jsonl
 ## 客户端行为（`trace.js`）
 
 - 每次"选角色"已由现有 `PRTrace.recordPick` 用 `buildSimState(G)` 存快照；终局 `PRTrace.finish` 记录分数与胜负。
-- **真人获胜时**：自动把该局转成上面的 JSONL，并 `POST /collect`（用 `navigator.sendBeacon`，即使随后刷新/跳转也能送达）。
-- **只上传真人胜局**，且只含训练用的局面/动作/结果——**不含昵称、IP、设备信息**。
+- **真人对局结束时**：自动把该局转成上面的 JSONL，并 `POST /collect`（用 `navigator.sendBeacon`，即使随后刷新/跳转也能送达）。
+- **胜负局都上传**（`uploadOnlyWins:false`；`v` 按真实终局结果标注，败局即为负值），且只含训练用的局面/动作/结果——**不含昵称、IP、设备信息**。只想收胜局可设 `PRTrace.config.uploadOnlyWins=true`。
 - 可配置 / 退出：
   - 端用户退出：URL 加 `?collect=0`（会被浏览器记住）。
   - 控制台：`PRTrace.config.upload = false`。
   - 改 value 口径：`?valuemode=rank`（或 `PRTrace.config.valueMode`）。
 - 纯客户端导出（不依赖后端）：
   - 右下角"🎯 训练 JSONL"按钮，或控制台 `PRTrace.exportJSONL()`，或网址 `?export=jsonl`。
-  - 默认只导出本浏览器里的真人胜局。
+  - 默认导出本浏览器里的真人对局（胜负都含）。
 
 ## 后端设置（Cloudflare Worker + KV）
 
@@ -89,6 +89,6 @@ wrangler deploy
 
 ## 隐私说明
 
-- 仅上传真人**获胜**的对局；payload 只有训练张量（特征/动作/价值）+ 轻量元数据（玩家数、回合数、终局分数）。
+- 上传真人**参与**的对局（胜负都收）；payload 只有训练张量（特征/动作/价值）+ 轻量元数据（玩家数、回合数、终局分数）。
 - 不收集昵称、账号、IP（Cloudflare 边缘会看到请求 IP，但 Worker 不读取、不存储）。
 - 端用户可用 `?collect=0` 永久退出。

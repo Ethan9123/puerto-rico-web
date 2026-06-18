@@ -19,20 +19,20 @@
   let cur = null;                 // 当前进行中的对局
 
   // ---- 训练数据采集配置 ----------------------------------------------------
-  // 把「真人打赢 AI」的对局转成与现有训练管线一致的 JSONL（{f,a,v,vv,n}），
+  // 把「真人参与」的对局转成与现有训练管线一致的 JSONL（{f,a,v,vv,n}），
   // 并（可选）自动 POST 到后端 /collect，便于在 /dump 一次性取回喂 train/。
-  // 默认开启上传：本项目部署方明确希望集中收集胜局数据用于分析/训练。
-  // 隐私：仅上传「真人获胜」的对局；仅含训练用的局面特征/动作/终局结果，
-  //       不含昵称/IP/设备信息（CF 边缘会看到 IP，但后端不存）。
+  // 默认开启上传：本项目部署方明确希望集中收集真实对局数据用于分析/训练。
+  // 隐私：上传「真人参与」的对局（胜负都收，value 按真实终局结果标注）；仅含训练用的
+  //       局面特征/动作/终局结果，不含昵称/IP/设备信息（CF 边缘会看到 IP，但后端不存）。
   // 端用户可随时退出：URL 加 ?collect=0（会被记住），或控制台 PRTrace.config.upload=false。
   const CFG_KEY = "pr_trace_cfg_v1";
   const VVDIM = 4;                 // value 向量维度，对齐 train/load_data.py
   const SCHEMA_VER = 1;
   const config = {
-    upload: true,                 // 真人获胜后自动上传到 endpoint
+    upload: true,                 // 真人对局结束后自动上传到 endpoint
     endpoint: "/collect",         // 后端收集端点（与站点同源）
     valueMode: "margin",          // margin | rank | vsbest（口径对齐 selfplay_dump.js）
-    uploadOnlyWins: true,         // 仅上传真人胜局
+    uploadOnlyWins: false,        // false=胜负局都收（数据量大、训练信号更全）；true=仅真人胜局
   };
   (function _applyCfg() {
     try { Object.assign(config, JSON.parse(root.localStorage.getItem(CFG_KEY)) || {}); } catch (e) {}
