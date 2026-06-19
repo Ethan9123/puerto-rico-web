@@ -10,13 +10,10 @@ main = "worker/index.js"
 directory = "."
 binding = "ASSETS"
 
-# ── 训练数据收集（真人胜局）后端 ─────────────────────────────────────────
-# 默认未启用：未配置下面的 KV 时，/collect、/dump、/stats 返回 503，站点照常工作。
-# 启用步骤（详见 RECORDING.md）：
-#   1) wrangler kv namespace create PR_TRACES      → 复制返回的 id
-#   2) 取消下面 4 行注释并填入 id
-#   3) wrangler secret put DUMP_TOKEN              → 设置 /dump、/stats 访问口令
-#   4) wrangler deploy
-# [[kv_namespaces]]
-# binding = "PR_TRACES"
-# id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+# ── 训练数据收集（真人对局）后端 ─────────────────────────────────────────
+# 已启用：绑定 KV 命名空间 PR_TRACES，/collect 入库、/dump 取回、/stats 统计。
+# 取回受保护：设置 Secret DUMP_TOKEN 后，/dump、/stats 需 ?token= 才能访问
+#   （控制台 Workers → Settings → Variables and Secrets，或 `wrangler secret put DUMP_TOKEN`）。
+[[kv_namespaces]]
+binding = "PR_TRACES"
+id = "3da4d4a9bae449d88f7aa1cf4a477aee"
