@@ -80,7 +80,8 @@ async function handleCollect(request, env) {
   for (const ln of body.lines) { const s = sanitizeLine(ln); if (s) clean.push(s); }
   if (!clean.length) return json({ ok: false, error: "no valid samples" }, 400);
 
-  const ts = (body.ts | 0) || Date.now();
+  // 毫秒时间戳不能用 `| 0`（会被截成 32 位整数 → 负数/乱码，破坏 /stats 与 /dump?since=）
+  const ts = Number.isFinite(+body.ts) && +body.ts > 0 ? Math.floor(+body.ts) : Date.now();
   const key = `g:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const scores = Array.isArray(body.scores) ? body.scores.map((s) => ({ seat: s.seat | 0, total: s.total | 0 })) : [];
   // KV metadata ≤ 1024 字节：仅放轻量汇总，供 /stats、/dump?since 用，无需读取大 value。
