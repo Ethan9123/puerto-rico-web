@@ -38,8 +38,12 @@ python train/train.py data/human-wins.jsonl
 
 ## 后端设置（Cloudflare Worker + KV）
 
-后端默认**未启用**：未配置 KV 时 `/collect`、`/dump`、`/stats` 返回 503，站点照常工作。
-启用四步（需 `wrangler` 且站点以 **Cloudflare Workers** 部署）：
+**现状：已启用** —— `wrangler.toml` 已绑定 KV 命名空间 `PR_TRACES`，部署后 `/collect` 入库、
+`/dump` 取回、`/stats` 统计均生效。**仍需设置取回口令** `DUMP_TOKEN`（否则 `/dump`、`/stats` 无保护、
+任何人可拉走数据）：控制台 Workers → Settings → Variables and Secrets 加 Secret `DUMP_TOKEN`，
+或 `wrangler secret put DUMP_TOKEN`。
+
+（参考）当初启用四步（需 `wrangler` 且站点以 **Cloudflare Workers** 部署）：
 
 ```bash
 # 1) 建 KV 命名空间，复制返回的 id
