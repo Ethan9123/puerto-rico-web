@@ -649,3 +649,22 @@ body {
   #tutorial-bubble { font-size: 13px; padding: 12px 14px; }
   #tutorial-bubble .tb-title { font-size: 15px; }
 }
+
+/* 末轮（最后一轮）提示：整屏脉动红光 + 顶栏红字，避免玩家忽略「末轮」小字 */
+body.final-round::after {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  box-shadow: inset 0 0 0 3px rgba(231, 76, 60, 0.9),
+              inset 0 0 70px 14px rgba(231, 76, 60, 0.40);
+  animation: finalRoundPulse 1.4s ease-in-out infinite;
+}
+@keyframes finalRoundPulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+#game-info.final-round-label { color: #ff6b5e; font-weight: bold; }
+@media (prefers-reduced-motion: reduce) {
+  body.final-round::after { animation: none; opacity: 0.8; }
+}

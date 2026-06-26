@@ -5405,7 +5405,11 @@ function render() {
   }
   // Topbar
   const endLabel = G.endTriggered ? ' · ⚠ 末轮' : '';
-  document.getElementById("game-info").textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}${endLabel}`;
+  const gi = document.getElementById("game-info");
+  gi.textContent = `第 ${G.turnNumber} 回合 · 总督 👑 ${G.players[G.governor].name}${endLabel}`;
+  // 末轮提示：整屏脉动红光 + 顶栏红字（反馈：仅靠左上角小字「末轮」容易被忽略）
+  if (document.body) document.body.classList.toggle("final-round", !!G.endTriggered);
+  gi.classList.toggle("final-round-label", !!G.endTriggered);
   // BGA风格顶部 prompt: 当前角色 + 当前玩家 + 跳过按钮
   const actionBar = document.getElementById("action-bar");
   let html = "";
