@@ -116,7 +116,7 @@
         el("div", { class: "lobby-row" }, ["在房间里："]),
         playersList,
         el("div", { class: "lobby-row lobby-host-start hidden" }, [btnHostStart]),
-        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/难度/扩展）开一局；客人会实时观战你的对局。"]),
+        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/难度/扩展）开一局；在场客人按加入顺序分到座位一起玩，多余座位为 AI。"]),
         el("div", { class: "lobby-hint lobby-guest-wait hidden" }, ["⏳ 等待房主开始……开始后你将自动进入<b>实时观战</b>。"]),
         el("div", { class: "lobby-row" }, [btnLeave]),
       ]),

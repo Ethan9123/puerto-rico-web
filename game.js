@@ -1546,8 +1546,8 @@ function startGame(netOpts) {
   const name = document.getElementById("player-name").value || "玩家";
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = !online && (n >= 2) && !!document.getElementById("all-ai")?.checked;
-  // 5 个独立扩展模块，可任意组合勾选（联机暂统一基础规则）
-  const mods = online ? { newBuildings: false, nobles: false, tibsBuildings: false, festival: false, buccaneer: false } : {
+  // 5 个独立扩展模块，可任意组合勾选（联机也支持：每个扩展决策点已设 G._actingSeat 可正确路由）
+  const mods = {
     newBuildings:  !!document.getElementById("mod-newbuildings")?.checked,
     nobles:        !!document.getElementById("mod-nobles")?.checked,
     tibsBuildings: !!document.getElementById("mod-tibs")?.checked,
@@ -1870,6 +1870,7 @@ async function runDraft(G) {
     let chosen;
     if (p.isHuman) {
       G._currentPlayer = pidx;
+      G._actingSeat = pidx; // 联机：轮抽决策归属该座位
       G._currentPrompt = `🏛️ 轮抽建筑（第 ${t + 1}/${totalPicks}）：选 1 个进入本局`;
       render();
       const labels = pickable.map(b => `${b.cn} ${b.id >= 24 ? "🆕" : ""}（${b.cost}💰 ${b.vp}⭐）`);
@@ -2042,6 +2043,7 @@ function checkEndCondition() {
 async function runHuntingLodge(order) {
   for (const i of order) {
     const p = G.players[i];
+    G._actingSeat = i; // 联机：狩猎小屋弃田决策归属本座位
     // 贵族驻守：空岛格【独多】+2VP
     if (G.isNobleManned(p, 40)) {
       const myEmpty = 12 - p.plantations.length;
@@ -2078,6 +2080,7 @@ async function runHuntingLodge(order) {
 // 不给其他玩家特权、不累积金币。规则取自 mod 内嵌 Buccaneer 说明。
 async function doBuccaneer(chooserIdx) {
   const p = G.players[chooserIdx];
+  G._actingSeat = chooserIdx; // 联机：海盗行动决策归属选择者
   const ACTIONS = [
     "🏴‍☠️ 劫掠 Piracy：清空一艘货船，留最多 3 个货",
     "🏴‍☠️ 洗劫 Plundering：清空公共贸易站，每货 +1 VP",
@@ -2126,6 +2129,7 @@ async function doBuccaneer(chooserIdx) {
 // 注：建银行用的那张 Builder 卡的金币无法经此投资——取该卡时银行尚未建好/无贵族，触发条件不成立。
 async function bankNobleInvest(p, cardCoins) {
   if (cardCoins <= 0 || !G.expansionTibs || !G.isNobleManned(p, 52)) return;
+  if (G) G._actingSeat = p.idx; // 联机：银行投资决策归属本座位
   let inv = 0;
   if (p.isHuman) {
     inv = await humanPickFromList(
@@ -2852,6 +2856,7 @@ async function doBuilder(playerIdx, isChooser) {
 
 // 扩展：招待所(28) — 人类玩家在每个（非市长）阶段开始时可把客工派往任意空位（含紫色建筑）
 async function humanMoveGuests(p, roleName) {
+  if (G) G._actingSeat = p.idx; // 联机：招待所派客工决策归属本座位
   const gh = G.ownsBuilding(p, 28);
   if (!gh || gh.men <= 0) return;
   while (gh.men > 0) {
@@ -3154,6 +3159,7 @@ async function doTrader(playerIdx, isChooser) {
 // 殖民者驻守：付 1 金从暗牌堆抽 1 张种植园放上岛；贵族驻守：弃 1 张种植园/森林（非采石场）得 1 金
 async function runLandOffice(p) {
   if (!G.expansionNobles) return;
+  if (G) G._actingSeat = p.idx; // 联机：地产办公室决策归属本座位
   if (G.isColonistManned(p, 38)) {
     if (p.money < 1 || p.plantations.length >= 12 || G.plantationDeck.length === 0) return;
     let use;
