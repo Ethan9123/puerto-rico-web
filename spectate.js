@@ -78,6 +78,12 @@
 
   function applyState(snap) {
     if (!snap || typeof Game === "undefined") return;
+    // 远程出手进行中：客人正盯着自己的决策 UI，别被房主的 state 广播刷掉
+    if (typeof PRNetPlay !== "undefined" && PRNetPlay.guestBusy()) return;
+    // 联机对局：首次拿到带座位归属的状态时，把客人接入远程出手层
+    if (snap._online && snap._seatOwners && typeof PRNetPlay !== "undefined" && !PRNetPlay.isOnline() && root.PR_SESSION) {
+      PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myId: root.PR_SESSION.clientId, online: true });
+    }
     try {
       const g = Object.assign(Object.create(Game.prototype), snap);
       for (const p of (g.players || [])) {
@@ -92,7 +98,14 @@
       const screen = document.getElementById("game-screen");
       if (setup) setup.classList.add("hidden");
       if (screen) screen.classList.remove("hidden");
-      banner(`👀 观战中${hostName ? "（房主：" + esc(hostName) + "）" : ""} · 你看到的是房主的实时对局`);
+      let roleTag = "";
+      if (typeof PRNetPlay !== "undefined" && PRNetPlay.isOnline()) {
+        const seat = PRNetPlay.mySeat();
+        roleTag = seat >= 0 ? ` · 你在座位 ${seat + 1} 参战（轮到你时会弹出操作）` : " · 你在观战";
+      } else {
+        roleTag = " · 你看到的是房主的实时对局";
+      }
+      banner(`🌐 联机中${hostName ? "（房主：" + esc(hostName) + "）" : ""}${roleTag}`);
       if (typeof render === "function") render();
     } catch (e) { console.warn("[spectate] applyState failed:", e); }
   }

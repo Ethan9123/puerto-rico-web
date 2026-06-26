@@ -700,3 +700,29 @@ body.final-round::after {
   border-bottom: 1px solid rgba(243,201,105,.5);
 }
 #spectate-banner + #app, body:has(#spectate-banner) #game-screen { padding-top: 4px; }
+
+/* 联机对战 Phase 3：远程出手——房主等待浮层 */
+#netplay-overlay {
+  position: fixed; inset: 0; z-index: 9500;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(8, 12, 18, 0.55);
+}
+#netplay-overlay.show { display: flex; }
+#netplay-overlay .np-card {
+  background: #1f2a36; border: 1px solid rgba(243,201,105,.5); border-radius: 12px;
+  padding: 22px 28px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.55);
+  min-width: 240px;
+}
+#netplay-overlay .np-msg { color: #f3c969; font-size: 16px; font-weight: bold; margin: 6px 0 14px; }
+#netplay-overlay .np-spin {
+  width: 34px; height: 34px; margin: 0 auto 12px;
+  border: 3px solid rgba(243,201,105,.25); border-top-color: #f3c969; border-radius: 50%;
+  animation: npspin 0.9s linear infinite;
+}
+@keyframes npspin { to { transform: rotate(360deg); } }
+#netplay-overlay .np-takeover {
+  background: #34495e; color: #cdd9e3; border: 1px solid #4a6075;
+  padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+}
+#netplay-overlay .np-takeover:hover { background: #3f566b; color: #fff; }
+@media (prefers-reduced-motion: reduce) { #netplay-overlay .np-spin { animation: none; } }

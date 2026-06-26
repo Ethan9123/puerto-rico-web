@@ -54,8 +54,11 @@
         if (host) PRSpectate.startSpectating(session, { hostName: host.name });
       }
     };
-    // 收到房主广播：state（实时状态）/ gameover（终局）→ 交观战层重放
-    const onMessage = (msg) => { if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg); };
+    // 收到广播：input-request/response（远程出手）→ PRNetPlay；state/gameover（观战）→ PRSpectate
+    const onMessage = (msg) => {
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.handleMessage(msg);
+      if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg);
+    };
 
     const btnCreate = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["创建房间"]);
     const btnJoin = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["加入"]);
@@ -76,16 +79,23 @@
       }
       catch (e) { btnJoin.disabled = false; alert("加入房间失败：" + (e && e.message || e)); }
     };
-    // 房主：开始对战 —— 用设置页当前选项开一局，并把状态广播给客人观战
+    // 房主：开始对战 —— 座位 0=房主本地；在场客人按加入顺序占座位 1..k；其余=AI。
     const btnHostStart = el("button", { class: "qs-btn lobby-btn lobby-start-btn", type: "button" }, ["▶ 开始对战（房主）"]);
     btnHostStart.onclick = () => {
       if (!session || session.role !== "host") return;
+      const n = parseInt((document.getElementById("player-count") || {}).value) || 3;
+      const guests = (session.presence ? session.presence() : []).filter((m) => m && m.role === "guest");
+      const seatOwners = {}, names = {};
+      let seat = 1;
+      for (const g of guests) { if (seat >= n) break; seatOwners[seat] = g.clientId; names[seat] = g.name || ("玩家" + (seat + 1)); seat++; }
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, myId: session.clientId, online: true });
       if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
-      if (typeof startGame === "function") startGame(); // startGame 里的 render() 会广播首帧
+      if (typeof startGame === "function") startGame({ online: true, seatOwners, names }); // render() 会广播首帧
     };
     const btnLeave = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["离开房间"]);
     btnLeave.onclick = () => {
       if (typeof PRSpectate !== "undefined") { PRSpectate.stopHosting(); PRSpectate.stopSpectating(); }
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.teardown();
       if (session) { session.close(); session = null; } window.PR_SESSION = null;
       panel.querySelector(".lobby-room").classList.add("hidden"); panel.querySelector(".lobby-actions").classList.remove("hidden");
       btnCreate.disabled = false; btnJoin.disabled = false;
