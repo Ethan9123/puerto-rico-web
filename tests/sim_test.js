@@ -19,7 +19,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'..','sim.js'),'utf8'), sand
 const S = sandbox.PRSim;
 const GOODS = ["corn", "indigo", "sugar", "tobacco", "coffee"];
 const expectedGoods = { corn:10, indigo:12, sugar:11, tobacco:9, coffee:8 };
-const expectedCol = { 3:55, 4:75, 5:95 };
+const expectedCol = { 3:58, 4:79, 5:100 }; // 官方总数 = 供应池(55/75/95) + 初始殖民船(玩家数)
 
 function selfPlay(n) {
   let st = S.newState(n, [5,5,5,5,5]);
