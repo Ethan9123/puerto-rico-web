@@ -97,6 +97,19 @@
     return hasSupabase() ? SupabaseTransport(room, clientId) : LocalTransport(room, clientId);
   }
 
+  // 客人加入前确认房间里确实有房主。两种传输都是「按需创建」频道/命名空间，open() 对任何
+  // 房间码都会成功；若不校验，输错码或房间已散会进入一个空的「只有自己」的房间永远卡住。
+  // host-authoritative 设计下客人收不到状态、无法推进，所以这里等到 presence 出现 host 才放行。
+  async function waitForHost(transport, clientId, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 3500);
+    while (Date.now() < deadline) {
+      const list = (transport.presence ? transport.presence() : []) || [];
+      if (list.some((m) => m && m.role === "host" && m.clientId !== clientId)) return true;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return false;
+  }
+
   async function startSession(code, role, opts) {
     const clientId = makeId();
     const transport = makeTransport(code, clientId);
@@ -106,6 +119,10 @@
       onMessage: (msg) => { if (opts && opts.onMessage) opts.onMessage(msg); },
       onPresence: (list) => { presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
     });
+    if (role === "guest") {
+      const ok = await waitForHost(transport, clientId, 3500);
+      if (!ok) { try { transport.close(); } catch (e) {} throw new Error("房间不存在或房主不在线（请确认房间码）"); }
+    }
     return {
       code, role, clientId,
       transport: hasSupabase() ? "supabase" : "local",
