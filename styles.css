@@ -687,3 +687,16 @@ body.final-round::after {
 #lobby-panel .lobby-player { font-size: 14px; padding: 2px 0; color: #e6ddc4; }
 #lobby-panel .lobby-empty { font-size: 13px; color: #889; }
 #lobby-panel .lobby-join-code { font-size: 16px !important; padding: 4px 8px !important; margin: 0 !important; }
+
+/* 联机对战 Phase 2：实时观战 */
+#lobby-panel .lobby-start-btn { background: #c0392b; color: #fff; font-weight: bold; }
+#lobby-panel .lobby-start-btn:hover { background: #e74c3c; }
+#spectate-banner {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 9000;
+  background: linear-gradient(90deg, #2c3e50, #34495e);
+  color: #f3c969; text-align: center;
+  font-size: 14px; font-weight: bold; letter-spacing: .5px;
+  padding: 7px 12px; box-shadow: 0 2px 10px rgba(0,0,0,.45);
+  border-bottom: 1px solid rgba(243,201,105,.5);
+}
+#spectate-banner + #app, body:has(#spectate-banner) #game-screen { padding-top: 4px; }
