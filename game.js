@@ -721,6 +721,9 @@ class Game {
 // ============================================================
 let G = null;
 let pendingResolver = null; // 当 UI 在等待人玩家选择时的 promise resolver
+// G 是词法全局（let），独立脚本（spectate.js）无法直接赋值；暴露 setter 供观战层注入只读状态
+function setGlobalGame(g) { G = g; }
+if (typeof window !== "undefined") window.setGlobalGame = setGlobalGame;
 
 // 通用睡眠工具（用于 AI 节奏）
 function sleep(ms) {
@@ -5557,6 +5560,8 @@ function render() {
   // 隐藏当前 tooltip：render() 会替换大量 DOM，旧的 mouseleave 可能永远不触发
   // 导致 tooltip 卡在屏幕上挡住选择 UI（如选种植园 / 选卖货种类）
   hideHoverTooltip();
+  // 联机观战：房主每次渲染把当前状态广播给客人（非房主时 no-op，已节流）
+  if (typeof PRSpectate !== "undefined") PRSpectate.onHostRender();
   // 群友人格首次登场：日志 + toast 揭晓（给你"不能输给苦寒"的动力）
   if (G._hasPersona && !G._personaRevealed) {
     G._personaRevealed = true;
@@ -6072,4 +6077,6 @@ async function endGame() {
   showModal(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body, [
     { label: isSolo ? "再挑战一次" : "再玩一局", fn: () => location.reload(), primary: true },
   ]);
+  // 联机观战：把终局画面 + 结算面板广播给客人（非房主时 no-op）
+  if (typeof PRSpectate !== "undefined") PRSpectate.onHostGameOver(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body);
 }

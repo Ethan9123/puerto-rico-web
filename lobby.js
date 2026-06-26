@@ -23,13 +23,19 @@
     if (!presence.length) listEl.appendChild(el("div", { class: "lobby-empty" }, ["（暂无玩家）"]));
   }
 
-  function showRoom(panel, code) {
+  function showRoom(panel, code, role) {
     const mode = PRNet.crossDevice() ? "跨设备 (Supabase)" : "本机多标签 (本地测试)";
     panel.querySelector(".lobby-actions").classList.add("hidden");
     const room = panel.querySelector(".lobby-room");
     room.classList.remove("hidden");
     room.querySelector(".lobby-code").textContent = code;
     room.querySelector(".lobby-mode").textContent = mode;
+    // 房主可「开始对战」；客人显示「等待房主开始 → 自动进入观战」
+    const isHost = role === "host";
+    const startWrap = room.querySelector(".lobby-host-start");
+    const waitHint = room.querySelector(".lobby-guest-wait");
+    if (startWrap) startWrap.classList.toggle("hidden", !isHost);
+    if (waitHint) waitHint.classList.toggle("hidden", isHost);
   }
 
   function buildPanel() {
@@ -40,25 +46,50 @@
     const playersList = el("div", { class: "lobby-players" });
     const codeInput = el("input", { class: "lobby-join-code", maxlength: "6", placeholder: "房间码", style: "text-transform:uppercase;width:120px" });
 
-    const onPresence = (list) => renderPresence(playersList, list);
-    const onMessage = (msg) => { /* Phase 2：状态广播 / 远程出手将在此分发 */ };
+    const onPresence = (list) => {
+      renderPresence(playersList, list);
+      // 客人：把房主名字告诉观战层（横幅显示），房主在场时更新
+      if (session && session.role === "guest" && typeof PRSpectate !== "undefined") {
+        const host = list.find((m) => m && m.role === "host");
+        if (host) PRSpectate.startSpectating(session, { hostName: host.name });
+      }
+    };
+    // 收到房主广播：state（实时状态）/ gameover（终局）→ 交观战层重放
+    const onMessage = (msg) => { if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg); };
 
     const btnCreate = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["创建房间"]);
     const btnJoin = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["加入"]);
     btnCreate.onclick = async () => {
       btnCreate.disabled = true;
-      try { session = await PRNet.host({ name: myName(), onPresence, onMessage }); showRoom(panel, session.code); }
+      try { session = await PRNet.host({ name: myName(), onPresence, onMessage }); window.PR_SESSION = session; showRoom(panel, session.code, session.role); }
       catch (e) { btnCreate.disabled = false; alert("创建房间失败：" + (e && e.message || e)); }
     };
     btnJoin.onclick = async () => {
       const code = (codeInput.value || "").toUpperCase().trim();
       if (code.length < 4) { alert("请输入房间码"); return; }
       btnJoin.disabled = true;
-      try { session = await PRNet.join(code, { name: myName(), onPresence, onMessage }); showRoom(panel, session.code); }
+      try {
+        session = await PRNet.join(code, { name: myName(), onPresence, onMessage });
+        window.PR_SESSION = session;
+        if (typeof PRSpectate !== "undefined") PRSpectate.startSpectating(session, {});
+        showRoom(panel, session.code, session.role);
+      }
       catch (e) { btnJoin.disabled = false; alert("加入房间失败：" + (e && e.message || e)); }
     };
+    // 房主：开始对战 —— 用设置页当前选项开一局，并把状态广播给客人观战
+    const btnHostStart = el("button", { class: "qs-btn lobby-btn lobby-start-btn", type: "button" }, ["▶ 开始对战（房主）"]);
+    btnHostStart.onclick = () => {
+      if (!session || session.role !== "host") return;
+      if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
+      if (typeof startGame === "function") startGame(); // startGame 里的 render() 会广播首帧
+    };
     const btnLeave = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["离开房间"]);
-    btnLeave.onclick = () => { if (session) { session.close(); session = null; } panel.querySelector(".lobby-room").classList.add("hidden"); panel.querySelector(".lobby-actions").classList.remove("hidden"); btnCreate.disabled = false; btnJoin.disabled = false; };
+    btnLeave.onclick = () => {
+      if (typeof PRSpectate !== "undefined") { PRSpectate.stopHosting(); PRSpectate.stopSpectating(); }
+      if (session) { session.close(); session = null; } window.PR_SESSION = null;
+      panel.querySelector(".lobby-room").classList.add("hidden"); panel.querySelector(".lobby-actions").classList.remove("hidden");
+      btnCreate.disabled = false; btnJoin.disabled = false;
+    };
 
     const panel = el("fieldset", { class: "module-select", id: "lobby-panel" }, [
       el("legend", null, ["🌐 联机对战 (Beta)"]),
@@ -72,7 +103,9 @@
         el("div", { class: "lobby-row lobby-mode-row" }, [el("span", null, ["连接："]), el("span", { class: "lobby-mode" }, ["—"])]),
         el("div", { class: "lobby-row" }, ["在房间里："]),
         playersList,
-        el("div", { class: "lobby-hint" }, ["Phase 1：房间已打通。下一步接入「开始对战 / 实时观战 / 远程出手」。"]),
+        el("div", { class: "lobby-row lobby-host-start hidden" }, [btnHostStart]),
+        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/难度/扩展）开一局；客人会实时观战你的对局。"]),
+        el("div", { class: "lobby-hint lobby-guest-wait hidden" }, ["⏳ 等待房主开始……开始后你将自动进入<b>实时观战</b>。"]),
         el("div", { class: "lobby-row" }, [btnLeave]),
       ]),
     ]);
