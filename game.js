@@ -723,7 +723,10 @@ let G = null;
 let pendingResolver = null; // 当 UI 在等待人玩家选择时的 promise resolver
 // G 是词法全局（let），独立脚本（spectate.js）无法直接赋值；暴露 setter 供观战层注入只读状态
 function setGlobalGame(g) { G = g; }
-if (typeof window !== "undefined") { window.setGlobalGame = setGlobalGame; window.getGame = () => G; }
+// 安全取消挂起的棋盘选择（不 resolve promise，避免把 null 传进 humanPickRole 等下游导致崩溃）。
+// 供 netplay.js 在客人被 AI 接管时清掉残留的决策高亮。
+function cancelPendingSelect() { pendingSelect = null; if (G) G._currentPrompt = null; }
+if (typeof window !== "undefined") { window.setGlobalGame = setGlobalGame; window.getGame = () => G; window.cancelPendingSelect = cancelPendingSelect; }
 
 // 通用睡眠工具（用于 AI 节奏）
 function sleep(ms) {

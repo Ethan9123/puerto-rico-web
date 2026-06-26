@@ -726,3 +726,4 @@ body.final-round::after {
 }
 #netplay-overlay .np-takeover:hover { background: #3f566b; color: #fff; }
 @media (prefers-reduced-motion: reduce) { #netplay-overlay .np-spin { animation: none; } }
+#netplay-overlay .np-sub { color: #9fb0bd; font-size: 12px; margin: -6px 0 12px; }

@@ -48,6 +48,8 @@
 
     const onPresence = (list) => {
       renderPresence(playersList, list);
+      // 房主：客人掉线（离场）→ 立即由专家 AI 接管其座位
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.onPresence(list);
       // 客人：把房主名字告诉观战层（横幅显示），房主在场时更新
       if (session && session.role === "guest" && typeof PRSpectate !== "undefined") {
         const host = list.find((m) => m && m.role === "host");
