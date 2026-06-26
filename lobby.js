@@ -36,6 +36,27 @@
     const waitHint = room.querySelector(".lobby-guest-wait");
     if (startWrap) startWrap.classList.toggle("hidden", !isHost);
     if (waitHint) waitHint.classList.toggle("hidden", isHost);
+    // 房主：展示可分享的邀请链接（手机/群友打开即自动填好房间码）
+    const inviteWrap = room.querySelector(".lobby-invite");
+    if (inviteWrap) {
+      inviteWrap.classList.toggle("hidden", !isHost);
+      if (isHost) {
+        const link = inviteLink(code);
+        const linkEl = inviteWrap.querySelector(".lobby-invite-link");
+        linkEl.textContent = link;
+        linkEl.setAttribute("href", link);
+        const copyBtn = inviteWrap.querySelector(".lobby-copy");
+        copyBtn.onclick = () => {
+          const done = () => { copyBtn.textContent = "已复制 ✓"; setTimeout(() => (copyBtn.textContent = "复制链接"), 1500); };
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done).catch(() => prompt("复制此链接发给群友：", link));
+          else prompt("复制此链接发给群友：", link);
+        };
+      }
+    }
+  }
+  function inviteLink(code) {
+    try { return location.origin + location.pathname + "?room=" + encodeURIComponent(code); }
+    catch (e) { return "?room=" + code; }
   }
 
   function buildPanel() {
@@ -113,6 +134,11 @@
       el("div", { class: "lobby-room hidden" }, [
         el("div", { class: "lobby-row" }, [el("span", null, ["房间码："]), el("b", { class: "lobby-code", style: "font-size:22px;letter-spacing:3px;color:#f3c969" }, ["----"])]),
         el("div", { class: "lobby-row lobby-mode-row" }, [el("span", null, ["连接："]), el("span", { class: "lobby-mode" }, ["—"])]),
+        el("div", { class: "lobby-invite lobby-row hidden" }, [
+          el("span", null, ["邀请链接："]),
+          el("a", { class: "lobby-invite-link", target: "_blank", rel: "noopener", style: "color:#7fc7ff;word-break:break-all;font-size:12px" }, ["—"]),
+          el("button", { class: "qs-btn lobby-copy", type: "button", style: "font-size:12px;padding:3px 10px" }, ["复制链接"]),
+        ]),
         el("div", { class: "lobby-row" }, ["在房间里："]),
         playersList,
         el("div", { class: "lobby-row lobby-host-start hidden" }, [btnHostStart]),
@@ -125,6 +151,17 @@
     const startBtn = document.getElementById("btn-start");
     box.insertBefore(panel, startBtn || null);
     window.addEventListener("pagehide", () => { if (session) session.close(); });
+
+    // 邀请链接：?room=CODE 打开时，自动填好房间码并提示加入（房主需先建好房间）
+    let invited = null;
+    try { invited = new URLSearchParams(location.search).get("room"); } catch (e) {}
+    if (invited) {
+      codeInput.value = invited.toUpperCase().trim().slice(0, 6);
+      const hint = panel.querySelector(".lobby-actions .lobby-hint");
+      if (hint) hint.innerHTML = "🎟 你被邀请加入房间 <b style='color:#f3c969'>" + codeInput.value + "</b> —— 填好名字点「加入」即可（需房主已建好房间）。";
+      codeInput.scrollIntoView({ block: "center" });
+      btnJoin.classList.add("lobby-pulse");
+    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", buildPanel);
