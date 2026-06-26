@@ -727,3 +727,17 @@ body.final-round::after {
 #netplay-overlay .np-takeover:hover { background: #3f566b; color: #fff; }
 @media (prefers-reduced-motion: reduce) { #netplay-overlay .np-spin { animation: none; } }
 #netplay-overlay .np-sub { color: #9fb0bd; font-size: 12px; margin: -6px 0 12px; }
+
+/* 联机：重连交还——「认领座位」栏 */
+#netplay-reclaim {
+  position: fixed; left: 0; right: 0; top: 34px; z-index: 8999;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  background: rgba(40, 30, 12, 0.94); color: #f3c969;
+  padding: 6px 12px; font-size: 13px; border-bottom: 1px solid rgba(243,201,105,.4);
+}
+#netplay-reclaim .nr-label { font-weight: bold; }
+#netplay-reclaim .nr-btn {
+  background: #27ae60; color: #fff; border: 0; border-radius: 5px;
+  padding: 4px 12px; font-size: 13px; font-weight: bold; cursor: pointer;
+}
+#netplay-reclaim .nr-btn:hover { background: #2ecc71; }

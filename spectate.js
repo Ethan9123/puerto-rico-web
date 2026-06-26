@@ -107,6 +107,8 @@
       }
       banner(`🌐 联机中${hostName ? "（房主：" + esc(hostName) + "）" : ""}${roleTag}`);
       if (typeof render === "function") render();
+      // 刷新「认领座位」栏：若我无座位且有被 AI 接管的座位，显示认领按钮
+      if (typeof PRNetPlay !== "undefined" && PRNetPlay.refreshReclaimUI) PRNetPlay.refreshReclaimUI();
     } catch (e) { console.warn("[spectate] applyState failed:", e); }
   }
 
