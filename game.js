@@ -200,16 +200,16 @@ Object.assign(BUILDING_EFFECT_TEXT, {
 // ============================================================
 const TIBS_BUILDINGS = [
   { id:46, name:"Gold Mine",       cn:"金矿",   img:"46_gold_mine.jpg",       type:"violet",       cost:1,  men:2, vp:1, size:1, qty:2, tier:1, effect:"gold_mine" },
-  { id:47, name:"Well",            cn:"水井",   img:"47_well.jpg",            type:"violet",       cost:3,  men:1, vp:1, size:1, qty:2, tier:2, effect:"well" },
+  { id:47, name:"Well",            cn:"水井",   img:"47_well.jpg",            type:"violet",       cost:2,  men:1, vp:1, size:1, qty:2, tier:2, effect:"well" },
   { id:48, name:"Boarding House",  cn:"寄宿屋", img:"48_boarding_house.jpg",  type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"boarding_house" },
-  { id:49, name:"Tower",           cn:"塔楼",   img:"49_tower.jpg",           type:"violet",       cost:4,  men:1, vp:2, size:1, qty:2, tier:2, effect:"tower" },
+  { id:49, name:"Tower",           cn:"塔楼",   img:"49_tower.jpg",           type:"violet",       cost:5,  men:1, vp:2, size:1, qty:2, tier:2, effect:"tower" },
   { id:50, name:"Customs Station", cn:"海关站", img:"50_customs_station.jpg", type:"violet",       cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"customs_station" },
-  { id:51, name:"Archive",         cn:"档案馆", img:"51_archive.jpg",         type:"violet",       cost:8,  men:1, vp:3, size:1, qty:2, tier:3, effect:"archive" },
-  { id:52, name:"Bank",            cn:"银行",   img:"52_bank.jpg",            type:"violet",       cost:8,  men:1, vp:4, size:1, qty:2, tier:3, effect:"bank" },
+  { id:51, name:"Archive",         cn:"档案馆", img:"51_archive.jpg",         type:"violet",       cost:9,  men:1, vp:3, size:1, qty:2, tier:3, effect:"archive" },
+  { id:52, name:"Bank",            cn:"银行",   img:"52_bank.jpg",            type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"bank" },
   { id:53, name:"Cathedral",       cn:"大教堂", img:"53_cathedral.jpg",       type:"large_violet", cost:10, men:1, vp:4, size:2, qty:1, tier:4, effect:"cathedral" },
 ];
 Object.assign(BLD_BY_ID, Object.fromEntries(TIBS_BUILDINGS.map(b => [b.id, b])));
-Object.assign(TIER_BY_BID, { 46:1, 47:2, 48:2, 49:2, 50:3, 51:3, 52:3, 53:4 });
+Object.assign(TIER_BY_BID, { 46:1, 47:2, 48:2, 49:2, 50:3, 51:3, 52:4, 53:4 });
 Object.assign(BUILDING_EN, { 46:"Gold Mine", 47:"Well", 48:"Boarding House", 49:"Tower", 50:"Customs Station", 51:"Archive", 52:"Bank", 53:"Cathedral" });
 // 规则取自 mod 内嵌 Building Rules（Tibs 原文，权威）
 Object.assign(BUILDING_EFFECT_TEXT, {
@@ -219,7 +219,7 @@ Object.assign(BUILDING_EFFECT_TEXT, {
   49:"被动：当其他玩家选择某角色时，你也获得该角色的【特权】（你当总督起始位时除外）。镇守生效。",
   50:"船长阶段：选船长 +1 VP；阶段末每艘满货船清空时，你各得回 1 个该船的货（在存货之后，不腐坏、不触发档案馆等）。镇守生效。",
   51:"船长阶段末：除免费保留 1 桶外，每种货各可保留 1 桶，并立即按保留的货物种类数 +1 VP/种。镇守生效。",
-  52:"投资机制：建造银行时可投入≤8 枚未花的金币；贵族驻守时你每选 1 个角色可投 1 金（累计上限 8）。投入的金不可再用。终局每枚投资 +1 VP。",
+  52:"投资机制：建造银行时可投入≤8 枚未花的金币；贵族驻守时你每选 1 个角色可投 1 金（累计上限 8）。投入的金不可再用。终局每枚投资 +1 VP。大型紫色：占 2 格，需 1 工人镇守激活终局计分。",
   53:"终局：每个【其他玩家】拥有的大型建筑 +2 VP（无需镇守对方建筑）。占 2 格，需镇守本建筑。",
 });
 
@@ -2372,6 +2372,7 @@ function estLargeVioletSpecial(p, id) {
   if (id === 23) return p.buildings.filter(b => { const t = BLD_BY_ID[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
   if (id === 53) { let n = 0; for (const op of G.players) { if (op === p) continue; n += op.buildings.filter(b => BLD_BY_ID[b.bid].type === "large_violet").length; } return n * 2; } // Tibs 大教堂：对手大紫数 ×2
   if (id === 45) return G.nobleCount(p); // 贵族扩展 皇家花园：每名贵族再 +1VP
+  if (id === 52) return Math.max(p._invest || 0, Math.min(8, Math.max(0, (p.money || 0) - 4))); // Tibs 银行(大型)：终局每枚投资 +1VP（估可投金额）
   return 1;
 }
 
