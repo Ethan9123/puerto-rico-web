@@ -678,3 +678,12 @@ body.final-round::after {
   box-shadow: 0 0 0 2px rgba(46,204,113,0.4);
 }
 .resume-btn:hover { background: #2ecc71; }
+
+/* 联机对战大厅 (Phase 1) */
+#lobby-panel .lobby-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; flex-wrap: wrap; }
+#lobby-panel .lobby-btn { font-size: 14px; padding: 6px 14px; }
+#lobby-panel .lobby-hint { font-size: 12px; color: #b5c2cc; line-height: 1.5; margin-top: 6px; }
+#lobby-panel .lobby-players { background: rgba(0,0,0,0.25); border-radius: 4px; padding: 6px 10px; margin: 4px 0; min-height: 24px; }
+#lobby-panel .lobby-player { font-size: 14px; padding: 2px 0; color: #e6ddc4; }
+#lobby-panel .lobby-empty { font-size: 13px; color: #889; }
+#lobby-panel .lobby-join-code { font-size: 16px !important; padding: 4px 8px !important; margin: 0 !important; }
