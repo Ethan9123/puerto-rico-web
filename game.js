@@ -219,7 +219,7 @@ Object.assign(BUILDING_EFFECT_TEXT, {
   49:"被动：当其他玩家选择某角色时，你也获得该角色的【特权】（你当总督起始位时除外）。镇守生效。",
   50:"船长阶段：选船长 +1 VP；阶段末每艘满货船清空时，你各得回 1 个该船的货（在存货之后，不腐坏、不触发档案馆等）。镇守生效。",
   51:"船长阶段末：除免费保留 1 桶外，每种货各可保留 1 桶，并立即按保留的货物种类数 +1 VP/种。镇守生效。",
-  52:"投资机制：建造银行时可投入≤8 枚未花的金币；贵族驻守时你每选 1 个角色可投 1 金（累计上限 8）。投入的金不可再用。终局每枚投资 +1 VP。大型紫色：占 2 格，需 1 工人镇守激活终局计分。",
+  52:"投资机制：建造银行时可投入≤8 枚未花的金币；【贵族】驻守时，此后每次取到带金币的角色卡，可把卡上金币（全部或部分）立即投入银行（此渠道无 8 枚上限）。投入的金不可再用、不计平局。终局每枚投资 +1 VP（需镇守）。大型紫色：占 2 格，需 1 工人镇守激活终局计分。",
   53:"终局：每个【其他玩家】拥有的大型建筑 +2 VP（无需镇守对方建筑）。占 2 格，需镇守本建筑。",
 });
 
@@ -1813,6 +1813,9 @@ async function runMainLoop() {
       G._currentPlayer = playerIdx;
       render();
 
+      // Tibs 银行(贵族驻守)：取到带金币的角色卡后，可立即把卡上金币投入银行
+      await bankNobleInvest(player, bonusMoney);
+
       // 执行角色
       await runRolePhase(chosen.name, playerIdx);
       G._currentPrompt = null;
@@ -1956,9 +1959,31 @@ async function doBuccaneer(chooserIdx) {
     let pick = p.isHuman
       ? free[await humanPickFromList("劫持：占一个无人角色（拿其金币并执行）", free.map(r => `${ROLE_NAME_CN[r.name]}${r.money ? ` +${r.money}金` : ""}`), false)]
       : free[0];
+    const hijackCoins = pick.money;
     p.money += pick.money; pick.money = 0; pick.taken = true; pick.takenBy = chooserIdx;
     G.logEvent(`${p.name} 海盗·劫持 [${ROLE_NAME_CN[pick.name]}]：拿金币并执行该角色`, "action");
+    await bankNobleInvest(p, hijackCoins);
     await runRolePhase(pick.name, chooserIdx);
+  }
+}
+
+// Tibs 银行(52) 被【贵族】镇守：玩家取到带金币的角色卡后，可立即把卡上金币（全部或部分）投入银行。
+// 终局每枚投资 +1 VP（需镇守），投入后不可再用、不计平局。此渠道无 8 枚上限——上限只针对建造时的初始投资。
+// 注：建银行用的那张 Builder 卡的金币无法经此投资——取该卡时银行尚未建好/无贵族，触发条件不成立。
+async function bankNobleInvest(p, cardCoins) {
+  if (cardCoins <= 0 || !G.expansionTibs || !G.isNobleManned(p, 52)) return;
+  let inv = 0;
+  if (p.isHuman) {
+    inv = await humanPickFromList(
+      `银行（贵族驻守）：把刚拿到的 ${cardCoins} 枚角色卡金币投入银行？（终局每枚 +1VP，投入后不可再用）`,
+      Array.from({ length: cardCoins + 1 }, (_, k) => `投 ${k} 金`), false);
+  } else {
+    inv = Math.max(0, Math.min(cardCoins, p.money - 8)); // AI：保留 ≥8 金的建造缓冲，富余的卡上金币换成确定终局 VP
+  }
+  if (inv > 0) {
+    p.money -= inv; p._invest = (p._invest || 0) + inv;
+    G.logEvent(`${p.name} 银行（贵族）：投资 ${inv} 金（终局 +${inv}VP）`, "action");
+    if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">银行投资 +${inv} 金</div><div class="t-sub">终局 +${inv}VP（投入不可再用）</div>`, { kind: "gain" });
   }
 }
 
