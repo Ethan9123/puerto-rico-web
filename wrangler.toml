@@ -6,6 +6,15 @@ name = "puerto-rico-web"
 compatibility_date = "2026-06-16"
 main = "worker/index.js"
 
+# ── 自定义域名 ───────────────────────────────────────────────────────────
+# puerto-rico.try-board-game.uk 指向本 Worker（含联机；邀请链接用 location.origin 自动跟随）。
+# 前提：try-board-game.uk 已作为 zone 托管在同一 Cloudflare 账号下（已确认）。
+# 注意：custom_domain 只在【生产部署】生效（推到生产分支，通常是 main）；分支预览仍走
+# *.workers.dev 预览域。Cloudflare 会自动建 DNS 记录并签发证书（HTTPS）。
+routes = [
+  { pattern = "puerto-rico.try-board-game.uk", custom_domain = true }
+]
+
 [assets]
 directory = "."
 binding = "ASSETS"
