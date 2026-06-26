@@ -669,6 +669,16 @@ body.final-round::after {
   body.final-round::after { animation: none; opacity: 0.8; }
 }
 
+/* 「继续上一局」按钮（设置页顶部，绿色区别于红色「开始游戏」） */
+.resume-btn {
+  display: block; width: 100%;
+  background: #27ae60; color: #fff; border: 0;
+  padding: 12px 18px; margin: 0 0 14px;
+  font-size: 16px; font-weight: bold; border-radius: 6px; cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(46,204,113,0.4);
+}
+.resume-btn:hover { background: #2ecc71; }
+
 /* 联机对战大厅 (Phase 1) */
 #lobby-panel .lobby-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; flex-wrap: wrap; }
 #lobby-panel .lobby-btn { font-size: 14px; padding: 6px 14px; }
