@@ -3183,7 +3183,9 @@ async function doCaptain(order, chooserIdx) {
       let pick;
       if (p.isHuman) {
         const labels = sortedCandidates.map(c => c.ship === "wharf" ? `🚢码头 装全部 ${c.amount}个${GOOD_NAMES[c.good]}` : c.ship === "smallwharf" && c.good === "mix" ? `⛵小码头 装任意货物（共${c.amount}货，每2货=1VP）` : c.ship === "smallwharf" ? `⛵小码头 装 ${c.amount}个${GOOD_NAMES[c.good]}（每2个=1VP）` : `船${c.ship + 1} 装${c.amount}个${GOOD_NAMES[c.good]}`);
-        const idx = await humanPickFromList("船长：装船", labels, false);
+        // 弹窗内同步显示当前各船装载状态（弹窗会浮在棋盘上，让玩家不必关窗就能判断装哪艘）
+        const shipState = `<div class="ship-state-row">${G.ships.map((sh, si) => `<span class="ss-ship${sh.count >= sh.capacity ? " ss-full" : ""}">船${si + 1} ${sh.good ? plantEmoji(sh.good).repeat(sh.count) : "（空）"} <b>${sh.count}/${sh.capacity}</b></span>`).join("")}</div>`;
+        const idx = await humanPickFromList("船长：装船", labels, false, shipState);
         pick = sortedCandidates[idx];
       } else {
         // 群友·苦寒/仲达：把人类货量最大的那种货塞进货船，占道恶心人类装船（每种货只能在一艘船）
@@ -3255,7 +3257,8 @@ async function doCaptain(order, chooserIdx) {
         if (!p.isHuman) showToast(`<div class="t-title">${p.name} ${isPersonal ? shipLabel : "装船#" + (pick.ship + 1)} ${loaded}${goodLabel} (+${vpGain} VP)</div>`, { kind: "role" });
         else showToast(`<div class="t-title">你 ${isPersonal ? shipLabel : "装船#" + (pick.ship + 1)} ${loaded}${goodLabel} (+${vpGain} VP)</div>`, { kind: "gain" });
       }
-      if (!window._fastSpectator) await sleep(450);
+      // 实时刷新棋盘：每次装船后立即重绘，让人类看到各船被逐步装满（含 AI 装船），便于判断要装哪艘
+      if (!window._fastSpectator) { render(); await sleep(450); }
       progress = true;
     }
   }
@@ -5345,7 +5348,7 @@ function humanPickRole(available, p) {
   });
 }
 
-function humanPickFromList(title, labels, allowCancel) {
+function humanPickFromList(title, labels, allowCancel, bodyHtml = "") {
   return new Promise(resolve => {
     const buttons = labels.map((label, i) => ({
       label, fn: () => { hideModal(); resolve(i); }
@@ -5353,7 +5356,7 @@ function humanPickFromList(title, labels, allowCancel) {
     if (allowCancel) {
       buttons.push({ label: "跳过", fn: () => { hideModal(); resolve(null); } });
     }
-    showModal(title, "", buttons);
+    showModal(title, bodyHtml, buttons);
   });
 }
 
@@ -5584,7 +5587,8 @@ function render() {
         <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${p.isHuman ? " (你)" : (p._persona ? ` <span class="persona-badge" title="群友 · ${p._persona.desc}">⚡群友</span>` : " (AI)")}</span>
         <span class="player-stats">
           <span class="stat" data-stat="money">💰${p.money}</span>
-          <span class="stat" data-stat="vp">⭐${totalVP}</span>
+          <span class="stat" data-stat="vp" title="总胜利点（含建筑/特殊/船运）">⭐${totalVP}</span>
+          <span class="stat" data-stat="shipvp" title="船运 VP（来自装船，海关大楼按此结算）">🚢${p.shippingVP || 0}</span>
           <span class="stat" data-stat="colonists">👷${G.totalColonists(p) - G.nobleCount(p)}</span>${G.expansionNobles ? `<span class="stat" data-stat="nobles">🎩${G.nobleCount(p)}</span>` : ""}
         </span>
       </div>

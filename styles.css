@@ -499,6 +499,17 @@ body {
 .modal-box button.confirm { background: #27ae60; }
 .modal-box button.confirm:hover { background: #2ecc71; }
 .modal-box button.disabled { background: #555; cursor: not-allowed; }
+/* 船长装船弹窗内的实时船态 */
+.ship-state-row {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  justify-content: center; margin: 2px 0 10px;
+}
+.ship-state-row .ss-ship {
+  background: #22303f; border: 1px solid #3a4a5a;
+  border-radius: 6px; padding: 3px 8px; font-size: 13px; color: #cdd7e0;
+}
+.ship-state-row .ss-ship.ss-full { border-color: #f3c969; color: #f3c969; }
+.ship-state-row .ss-ship b { color: #fff; }
 
 /* ---- Log ---- */
 #log-panel {
