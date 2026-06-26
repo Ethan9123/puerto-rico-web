@@ -75,14 +75,15 @@
     for (const o of st.players) { if (o === me) continue; if (simProduces(o, g)) return true; }
     return false;
   }
-  function effectiveCost(p, bld) {
+  function effectiveCost(p, bld, np) {
     const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
       24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4 }[bld.id] || 1; // 含扩展 24-37
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
     const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
-    return Math.max(0, bld.cost - Math.min(q, maxQ) - forest);
+    const baseCost = (bld.id === 53 && np) ? (7 + np) : bld.cost; // Tibs 大教堂(53)：官方造价 7 + 玩家数（非固定 10）
+    return Math.max(0, baseCost - Math.min(q, maxQ) - forest);
   }
-  function effectiveCostBonus(p, bld, chooser) { let c = effectiveCost(p, bld); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
+  function effectiveCostBonus(p, bld, chooser, np) { let c = effectiveCost(p, bld, np); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
 
   function specialVPs(p) {
     let v = 0;
@@ -433,7 +434,7 @@
         if (st.buildingStock[b.id] <= 0) continue;
         if (ownsBuilding(p, b.id)) continue;
         if (12 - buildingUsedSpaces(p) < b.size) continue;
-        const cost = effectiveCostBonus(p, b, i === chooser);
+        const cost = effectiveCostBonus(p, b, i === chooser, st.numPlayers);
         const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
         if (p.money + bm < cost) continue;
         opts.push({ b, cost });
@@ -1033,7 +1034,7 @@
       if (st.buildingStock[b.id] <= 0) continue;
       if (ownsBuilding(p, b.id)) continue;
       if (12 - buildingUsedSpaces(p) < b.size) continue;
-      const cost = effectiveCostBonus(p, b, i === st.az.chooser);
+      const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
       if (p.money < cost) continue;
       opts.push(b.id);
     }
@@ -1156,7 +1157,7 @@
       const p = st.players[i];
       if (action !== AZ_PASS) {
         const b = BLD[action];
-        const cost = effectiveCostBonus(p, b, i === az.chooser);
+        const cost = effectiveCostBonus(p, b, i === az.chooser, st.numPlayers);
         p.money -= cost; st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
         if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
       }
@@ -1261,7 +1262,7 @@
       for (const a of dec.actions) {
         if (a === AZ_PASS) continue;
         const b = BLD[a];
-        const cost = effectiveCostBonus(p, b, i === st.az.chooser);
+        const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
         const s = evalBuilding(st, p, b, phase) - cost * 3 + (i === st.az.chooser ? 5 : 0);
         if (s > bestS) { bestS = s; best = a; }
       }

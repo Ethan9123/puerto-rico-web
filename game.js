@@ -229,10 +229,16 @@ function bldImgHtml(b) {
   return `<div class="img-placeholder" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;min-height:48px;background:linear-gradient(135deg,#6b5b8e,#4a3f63);color:#f0e6d2;font-size:12px;text-align:center;border-radius:4px;">🏛️<span>${b.cn}</span></div>`;
 }
 
+// Tibs 大教堂(53) 造价随人数：官方 = 7 + 玩家数（非固定 10；卡面印章即「7+ players」）。其余建筑用印刷成本。
+function baseBuildCost(b) {
+  if (b.id === 53 && typeof G !== "undefined" && G && G.numPlayers) return 7 + G.numPlayers;
+  return b.cost;
+}
+
 function buildBuildingTooltip(b) {
   return `
     <div class="tt-title">${b.cn} · ${BUILDING_EN[b.id]}</div>
-    <div class="tt-meta">成本 ${b.cost}💰 · ${b.vp}⭐ · ${b.men}工人槽 · ${TYPE_CN[b.type]}</div>
+    <div class="tt-meta">成本 ${baseBuildCost(b)}💰 · ${b.vp}⭐ · ${b.men}工人槽 · ${TYPE_CN[b.type]}</div>
     <div class="tt-meta">采石场折扣上限：${TIER_BY_BID[b.id]} 金币</div>
     <div class="tt-effect">${BUILDING_EFFECT_TEXT[b.id]}</div>
   `;
@@ -674,7 +680,7 @@ class Game {
     const colTier = TIER_BY_BID[bld.id] || 1;
     if (colTier <= 3 && this.isColonistManned(p, 41)) zoning = 1;
     if (colTier >= 4 && this.isNobleManned(p, 41)) zoning = 2;
-    return Math.max(0, bld.cost - Math.min(qManned, maxQuarries) - forestDiscount - zoning);
+    return Math.max(0, baseBuildCost(bld) - Math.min(qManned, maxQuarries) - forestDiscount - zoning);
   }
 
   // 玩家可用的"小奖励金"：当前选角色的玩家在 Builder 阶段额外 -1（图书馆 -2）
@@ -5551,7 +5557,7 @@ function render() {
     div.innerHTML = `
       ${bldImgHtml(b)}
       <div class="badge">×${left}</div>
-      <div class="info"><span>${b.cn}</span><span>${b.cost}💰 ${b.vp}⭐${costNote}</span></div>
+      <div class="info"><span>${b.cn}</span><span>${baseBuildCost(b)}💰 ${b.vp}⭐${costNote}</span></div>
     `;
     div.dataset.tooltipHtml = buildBuildingTooltip(b);
     row.appendChild(div);
