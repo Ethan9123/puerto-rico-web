@@ -1578,6 +1578,8 @@ function startGame() {
     extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 40000, alphaMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
+  G._thinkBudget = window._aiThinkBudget; // 随存档持久化，续局时恢复 AI 思考预算
+  clearSave(); // 开新局：丢弃旧存档（本地 + KV）
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
   // 观战解说台：仅真人观战全 AI 对战时显示，新开局先清空/隐藏
@@ -1700,6 +1702,129 @@ document.getElementById("btn-show-rules").onclick = () => {
 };
 
 // ============================================================
+// 存档 / 续局（退出重进继续进度）
+// 数据存 localStorage（同设备、每步即存）+ Cloudflare KV（跨设备、每回合同步 + 离开时 beacon）。
+// 难点不是数据（G 全可 JSON 化，方法挂原型上恢复时套回即可），而是 async 调用栈里的“进行到哪一步”——
+// 解法：只在【可重入安全点】(每个玩家选角色之前) 打快照，配合 runMainLoop 从 G._roundStep 续跑。
+// ============================================================
+const SAVE_VER = 3, SAVE_KEY = "pr_save_v1", DEVICE_KEY = "pr_device";
+function prDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id || !/^[a-z0-9]{8,40}$/.test(id)) { id = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).slice(0, 24); localStorage.setItem(DEVICE_KEY, id); }
+    return id;
+  } catch (e) { return "anon000000"; }
+}
+function serializeGame() {
+  if (!G || G.gameOver) return null;
+  // 丢弃：_dna(可由 _dnaMeta 重建)、_lastCraftKinds(Set 不可序列化且仅瞬时)、_persona(只存 key)
+  const snap = JSON.parse(JSON.stringify(G, (k, v) =>
+    (k === "_dna" || k === "_lastCraftKinds" || k === "_persona") ? undefined : v));
+  if (Array.isArray(snap.log)) snap.log = snap.log.slice(0, 60); // 日志只留最近，控制体积
+  if (Array.isArray(snap.players)) snap.players.forEach((p, i) => {
+    const src = G.players[i];
+    if (src && src._persona) p._personaKey = src._persona.key; // 恢复时按 key 接回 AI_PERSONAS
+  });
+  snap._saveVer = SAVE_VER;
+  snap._savedAt = Date.now();
+  return snap;
+}
+function restoreGame(str) {
+  let parsed;
+  try { parsed = typeof str === "string" ? JSON.parse(str) : str; } catch (e) { return false; }
+  if (!parsed || parsed._saveVer !== SAVE_VER || parsed.gameOver || !Array.isArray(parsed.players)) return false;
+  try {
+    const g = Object.assign(Object.create(Game.prototype), parsed);
+    for (const p of g.players) {
+      if (p._dnaMeta && p._dnaMeta.dna) { try { p._dna = splitDNA(joinDNA(p._dnaMeta.dna)); } catch (e) {} } // 与开局 loadDNA 同源重建
+      if (p._personaKey) { const pa = (typeof AI_PERSONAS !== "undefined") && AI_PERSONAS.find(x => x.key === p._personaKey); if (pa) p._persona = pa; delete p._personaKey; }
+    }
+    g._resumed = true;
+    G = g;
+    window._allAIMode = !g.players.some(p => p.isHuman);
+    window._aiThinkBudget = g._thinkBudget || window._aiThinkBudget || { L4: 1200, L5: 6000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 8000, alphaIters: 40000, alphaMs: 8000 };
+    return true;
+  } catch (e) { return false; }
+}
+// 同设备即时存档（每步）
+function saveGame() {
+  try {
+    const snap = serializeGame();
+    if (!snap) { clearSave(); return; }
+    localStorage.setItem(SAVE_KEY, JSON.stringify(snap));
+  } catch (e) { /* localStorage 满/禁用：忽略，不影响游戏 */ }
+}
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  kvDelete();
+}
+// 跨设备：同步到 Cloudflare KV（worker /game-save；本地无 worker 时静默失败）
+function kvSync() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return;
+    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: raw }) }).catch(() => {});
+  } catch (e) {}
+}
+function kvDelete() {
+  try { fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: "" }) }).catch(() => {}); } catch (e) {}
+}
+function kvSyncBeacon() { // 离开页面时最后一次同步（fetch 不可靠，用 sendBeacon）
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw || !navigator.sendBeacon) return;
+    navigator.sendBeacon("/game-save", new Blob([JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: raw })], { type: "application/json" }));
+  } catch (e) {}
+}
+async function kvLoad() {
+  try {
+    const r = await fetch("/game-load?id=" + encodeURIComponent(prDeviceId()));
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d && d.snap ? d.snap : null;
+  } catch (e) { return null; }
+}
+// 取“最新”存档：比较本地与 KV 的 _savedAt，新的为准（同设备多为本地新，换设备时取 KV）
+async function getBestSave() {
+  let local = null, localTs = 0;
+  try { local = localStorage.getItem(SAVE_KEY); if (local) localTs = JSON.parse(local)._savedAt || 0; } catch (e) { local = null; }
+  let remote = await kvLoad(), remoteTs = 0;
+  try { if (remote) remoteTs = JSON.parse(remote)._savedAt || 0; } catch (e) { remote = null; }
+  if (remote && remoteTs > localTs) { try { localStorage.setItem(SAVE_KEY, remote); } catch (e) {} return remote; }
+  return local;
+}
+function resumeGame(str) {
+  if (!restoreGame(str)) { showToast(`<div class="t-title">存档已失效</div><div class="t-sub">将重新开始</div>`, { kind: "warn" }); clearSave(); return; }
+  document.getElementById("setup-screen").classList.add("hidden");
+  document.getElementById("game-screen").classList.remove("hidden");
+  const cbox = document.getElementById("commentary-box"); if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }
+  if (G.players.some(p => (p._aiLevel || 0) >= 6) && typeof loadAlphaZeroNN === "function") loadAlphaZeroNN();
+  if (typeof PRTrace !== "undefined") PRTrace.begin(G); // 续局起新 trace（半局，采集端按需丢弃）
+  render();
+  runMainLoop();
+}
+// 进入设置页时：若有未完成存档，顶部显示「继续上一局」。异步检查（含 KV），不阻塞页面。
+async function maybeOfferResume() {
+  let best;
+  try { best = await getBestSave(); } catch (e) { return; }
+  if (!best) return;
+  let parsed; try { parsed = JSON.parse(best); } catch (e) { return; }
+  if (!parsed || parsed._saveVer !== SAVE_VER || parsed.gameOver) return;
+  const box = document.querySelector(".setup-box");
+  if (!box || document.getElementById("btn-resume")) return;
+  const btn = document.createElement("button");
+  btn.id = "btn-resume"; btn.className = "resume-btn";
+  const modeBits = [parsed.modNobles ? "贵族" : "", parsed.modTibsBuildings ? "Tibs" : "", (parsed.modNewBuildings || parsed.expansion) ? "新建筑" : ""].filter(Boolean).join("/");
+  btn.textContent = `▶ 继续上一局（第 ${parsed.turnNumber || 1} 回合 · ${parsed.numPlayers} 人${modeBits ? " · " + modeBits : ""}）`;
+  btn.onclick = () => resumeGame(best);
+  box.insertBefore(btn, box.firstChild);
+}
+// 离开页面 / 切后台时，把最新本地存档推一份到 KV（跨设备续局）
+window.addEventListener("pagehide", kvSyncBeacon);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") kvSyncBeacon(); });
+maybeOfferResume();
+
+// ============================================================
 // 主循环（async 形式）
 // ============================================================
 // 新建筑扩展：开局「轮抽选建筑」——从 24 小(基础12+新12)选 12、7 大(基础5+新2)选 5；生产建筑(1-6)恒在。
@@ -1755,10 +1880,12 @@ async function runMainLoop() {
   // 扩展：开局先轮抽决定哪些建筑进入本局
   if (G.expansion && !G._drafted) await runDraft(G);
   while (!G.gameOver) {
-    G.logEvent(`=== 第 ${G.turnNumber} 回合 — 总督: ${G.players[G.governor].name} ===`, "role");
-
-    // 重置 role taken
-    for (const r of G.roleCards) { r.taken = false; r.takenBy = null; }
+    // 续局：G._roundStep>0 表示从本回合中途恢复，跳过回合初始化（角色已部分被选）
+    if (!G._roundStep) {
+      G.logEvent(`=== 第 ${G.turnNumber} 回合 — 总督: ${G.players[G.governor].name} ===`, "role");
+      // 重置 role taken
+      for (const r of G.roleCards) { r.taken = false; r.takenBy = null; }
+    }
 
     // 角色轮转：从 governor 开始
     // 注意：endTriggered 在 checkEndCondition 设置，但 gameOver 只在本 for-loop 结束后设。
@@ -1766,7 +1893,9 @@ async function runMainLoop() {
     // "the game ends at the end of the round when..."
     // 每轮选角色次数：1p 闯关每轮选 3 个角色；2p 官方变体每人轮流选 3 个(共 6 次)再换总督；3-5p 每人 1 次
     const picksThisRound = { 1: 3, 2: 6 }[G.numPlayers] || G.numPlayers;
-    for (let step = 0; step < picksThisRound; step++) {
+    for (let step = G._roundStep || 0; step < picksThisRound; step++) {
+      G._roundStep = step;
+      saveGame(); // 可重入安全点：在该玩家选角色【之前】打快照（重进会从这一步干净重来）
       if (G.gameOver) break; // 安全网，正常流程下不会触发
       const playerIdx = (G.governor + step) % G.numPlayers;
       const player = G.players[playerIdx];
@@ -1824,6 +1953,7 @@ async function runMainLoop() {
       // 全 AI 观战：每个 AI 操作后停 5 秒，让观众看清这一手（_fastSpectator 时跳过，供无头测试用）
       if (window._allAIMode && !window._fastSpectator) await sleep(SPECTATOR_ACTION_DELAY);
     }
+    G._roundStep = 0; // 本回合所有角色选完，下一轮从干净的回合开头开始
 
     // 回合结束：未被选的角色卡 +1 金（Buccaneer 不累积金币）
     for (const r of G.roleCards) {
@@ -1846,6 +1976,7 @@ async function runMainLoop() {
     G.governor = (G.governor + 1) % G.numPlayers;
     G.turnNumber++;
     G.flipPlantations();
+    saveGame(); kvSync(); // 回合边界：刷新本地存档 + 跨设备 KV 同步（KV 写入按回合计，免费额度够用）
   }
 
   await endGame();
@@ -5822,6 +5953,7 @@ function soloRank(total) {
 }
 
 async function endGame() {
+  clearSave(); // 游戏结束：清除存档（本地 + KV），避免进设置页时仍提示「继续上一局」
   // 计算最终得分
   const scores = G.players.map(p => {
     const base = p.vp;

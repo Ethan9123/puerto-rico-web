@@ -4,10 +4,12 @@
 // 收集「真人打赢 AI」的对局训练样本，并提供一次性取回接口；其余路径回退到静态资源。
 //
 // 路由：
-//   POST /collect  接收一局训练样本 {ver,ts,n,humanSeat,turns,valueMode,scores,lines[]} → 存入 KV
-//   GET  /dump     取回聚合的训练 JSONL（需 ?token=；分页 ?cursor=&limit=；可 ?since=&download=1）
-//   GET  /stats    汇总统计（局数 / 样本数 / 按人数）
-//   其它           交给静态资源（env.ASSETS），站点照常工作
+//   POST /collect    接收一局训练样本 {ver,ts,n,humanSeat,turns,valueMode,scores,lines[]} → 存入 KV
+//   GET  /dump       取回聚合的训练 JSONL（需 ?token=；分页 ?cursor=&limit=；可 ?since=&download=1）
+//   GET  /stats      汇总统计（局数 / 样本数 / 按人数）
+//   POST /game-save  跨设备存档：{id,ts,snap} 写入 save:<id>（snap="" 则删除）；30 天过期
+//   GET  /game-load  取回某设备的存档：?id=<deviceId> → {ok,snap|null}
+//   其它             交给静态资源（env.ASSETS），站点照常工作
 //
 // 绑定（见 wrangler.toml）：
 //   KV     PR_TRACES   存储每局样本（未配置时 /collect、/dump、/stats 返回 503，站点不受影响）
@@ -39,6 +41,8 @@ export default {
       if (p === "/collect" && request.method === "POST") return await handleCollect(request, env);
       if (p === "/dump" && request.method === "GET") return await handleDump(url, env);
       if (p === "/stats" && request.method === "GET") return await handleStats(url, env);
+      if (p === "/game-save" && request.method === "POST") return await handleGameSave(request, env);
+      if (p === "/game-load" && request.method === "GET") return await handleGameLoad(url, env);
     } catch (e) {
       return json({ ok: false, error: String((e && e.message) || e) }, 500);
     }
@@ -136,4 +140,34 @@ async function handleStats(url, env) {
     cursor = list.list_complete ? null : list.cursor;
   } while (cursor);
   return json({ ok: true, games, samples, byPlayerCount: byN, firstTs: isFinite(minTs) ? minTs : null, lastTs: maxTs || null });
+}
+
+// ── 跨设备存档：每个 deviceId 一个槽（save:<id>），最后写入为准，30 天过期 ──────────────
+const MAX_SAVE = 600_000; // 单份存档上限 ~600KB
+function validDeviceId(id) { return typeof id === "string" && /^[a-z0-9]{8,40}$/.test(id); }
+
+// POST /game-save  body {id, ts, snap}  —— snap 为空串则删除该槽（开新局/游戏结束时）
+async function handleGameSave(request, env) {
+  if (!env.PR_TRACES) return json({ ok: false, error: "kv disabled" }, 503);
+  if (+(request.headers.get("content-length") || 0) > MAX_SAVE) return json({ ok: false, error: "too large" }, 413);
+  const text = await request.text();
+  if (text.length > MAX_SAVE) return json({ ok: false, error: "too large" }, 413);
+  let body;
+  try { body = JSON.parse(text); } catch (e) { return json({ ok: false, error: "bad json" }, 400); }
+  if (!validDeviceId(body && body.id)) return json({ ok: false, error: "bad id" }, 400);
+  const key = `save:${body.id}`;
+  if (typeof body.snap !== "string" || body.snap.length === 0) { await env.PR_TRACES.delete(key); return json({ ok: true, cleared: true }); }
+  if (body.snap.length > MAX_SAVE) return json({ ok: false, error: "snap too large" }, 413);
+  const ts = Number.isFinite(+body.ts) && +body.ts > 0 ? Math.floor(+body.ts) : Date.now();
+  await env.PR_TRACES.put(key, body.snap, { metadata: { ts }, expirationTtl: 60 * 60 * 24 * 30 }); // 30 天未续局自动清理
+  return json({ ok: true });
+}
+
+// GET /game-load?id=<deviceId>  →  {ok, snap|null}
+async function handleGameLoad(url, env) {
+  if (!env.PR_TRACES) return json({ ok: false, error: "kv disabled" }, 503);
+  const id = url.searchParams.get("id") || "";
+  if (!validDeviceId(id)) return json({ ok: false, error: "bad id" }, 400);
+  const snap = await env.PR_TRACES.get(`save:${id}`, "text");
+  return json({ ok: true, snap: snap || null });
 }
