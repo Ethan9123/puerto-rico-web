@@ -723,7 +723,10 @@ let G = null;
 let pendingResolver = null; // 当 UI 在等待人玩家选择时的 promise resolver
 // G 是词法全局（let），独立脚本（spectate.js）无法直接赋值；暴露 setter 供观战层注入只读状态
 function setGlobalGame(g) { G = g; }
-if (typeof window !== "undefined") window.setGlobalGame = setGlobalGame;
+// 安全取消挂起的棋盘选择（不 resolve promise，避免把 null 传进 humanPickRole 等下游导致崩溃）。
+// 供 netplay.js 在客人被 AI 接管时清掉残留的决策高亮。
+function cancelPendingSelect() { pendingSelect = null; if (G) G._currentPrompt = null; }
+if (typeof window !== "undefined") { window.setGlobalGame = setGlobalGame; window.getGame = () => G; window.cancelPendingSelect = cancelPendingSelect; }
 
 // 通用睡眠工具（用于 AI 节奏）
 function sleep(ms) {
@@ -1535,12 +1538,15 @@ function commentaryPostRole(me, pred, chosenRole) {
   commentarySay(html, kind);
 }
 
-function startGame() {
+function startGame(netOpts) {
+  // 联机房主开局：netOpts = { online, seatOwners:{seat:clientId}, names:{seat:name} }
+  // v1 仅基础规则（扩展联机留到 Phase 3.1）；座位 0 = 房主本地，seatOwners 中的座位 = 远程客人，其余 = AI
+  const online = !!(netOpts && netOpts.online && netOpts.seatOwners);
   const n = parseInt(document.getElementById("player-count").value);
   const name = document.getElementById("player-name").value || "玩家";
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
-  const allAI = (n >= 2) && !!document.getElementById("all-ai")?.checked;
-  // 5 个独立扩展模块，可任意组合勾选
+  const allAI = !online && (n >= 2) && !!document.getElementById("all-ai")?.checked;
+  // 5 个独立扩展模块，可任意组合勾选（联机也支持：每个扩展决策点已设 G._actingSeat 可正确路由）
   const mods = {
     newBuildings:  !!document.getElementById("mod-newbuildings")?.checked,
     nobles:        !!document.getElementById("mod-nobles")?.checked,
@@ -1564,6 +1570,18 @@ function startGame() {
       if (lvl === 6) needsNN = true;
     }
   });
+  if (online) {
+    // 把被客人占据的座位改回人类（远程），其余保持 AI；座位 0 是房主本地人类
+    G._online = true;
+    G._seatOwners = netOpts.seatOwners;
+    for (const s in netOpts.seatOwners) {
+      const seat = +s, p = G.players[seat];
+      if (!p) continue;
+      p.isHuman = true; p._remote = netOpts.seatOwners[s];
+      delete p._aiLevel; delete p._dna; delete p._dnaMeta;
+      if (netOpts.names && netOpts.names[seat]) p.name = netOpts.names[seat];
+    }
+  }
   window._allAIMode = !!allAI;
   window._liveCastOn = !!document.getElementById("live-cast")?.checked; // 人机对战实况解说开关
   assignCastNames(); // 给每位 AI 选手起一个昵称（解说要喊名字；难度由解说单独播报）
@@ -1751,6 +1769,7 @@ function restoreGame(str) {
 }
 // 同设备即时存档（每步）
 function saveGame() {
+  if (G && G._online) return; // 联机对局不走单机存档/续局
   try {
     const snap = serializeGame();
     if (!snap) { clearSave(); return; }
@@ -1851,6 +1870,7 @@ async function runDraft(G) {
     let chosen;
     if (p.isHuman) {
       G._currentPlayer = pidx;
+      G._actingSeat = pidx; // 联机：轮抽决策归属该座位
       G._currentPrompt = `🏛️ 轮抽建筑（第 ${t + 1}/${totalPicks}）：选 1 个进入本局`;
       render();
       const labels = pickable.map(b => `${b.cn} ${b.id >= 24 ? "🆕" : ""}（${b.cost}💰 ${b.vp}⭐）`);
@@ -1909,6 +1929,7 @@ async function runMainLoop() {
         (r.name !== "Buccaneer" || (player.isHuman && G._buccaneerReward !== playerIdx)));
       if (available.length === 0) break;
       G._currentPlayer = playerIdx; // 在选择前设置当前玩家
+      G._actingSeat = playerIdx;    // 联机：本次输入归属座位（远程客人时路由到该客人）
       render();
       let chosenIdx;
       if (player.isHuman) {
@@ -2022,6 +2043,7 @@ function checkEndCondition() {
 async function runHuntingLodge(order) {
   for (const i of order) {
     const p = G.players[i];
+    G._actingSeat = i; // 联机：狩猎小屋弃田决策归属本座位
     // 贵族驻守：空岛格【独多】+2VP
     if (G.isNobleManned(p, 40)) {
       const myEmpty = 12 - p.plantations.length;
@@ -2058,6 +2080,7 @@ async function runHuntingLodge(order) {
 // 不给其他玩家特权、不累积金币。规则取自 mod 内嵌 Buccaneer 说明。
 async function doBuccaneer(chooserIdx) {
   const p = G.players[chooserIdx];
+  G._actingSeat = chooserIdx; // 联机：海盗行动决策归属选择者
   const ACTIONS = [
     "🏴‍☠️ 劫掠 Piracy：清空一艘货船，留最多 3 个货",
     "🏴‍☠️ 洗劫 Plundering：清空公共贸易站，每货 +1 VP",
@@ -2106,6 +2129,7 @@ async function doBuccaneer(chooserIdx) {
 // 注：建银行用的那张 Builder 卡的金币无法经此投资——取该卡时银行尚未建好/无贵族，触发条件不成立。
 async function bankNobleInvest(p, cardCoins) {
   if (cardCoins <= 0 || !G.expansionTibs || !G.isNobleManned(p, 52)) return;
+  if (G) G._actingSeat = p.idx; // 联机：银行投资决策归属本座位
   let inv = 0;
   if (p.isHuman) {
     inv = await humanPickFromList(
@@ -2122,6 +2146,7 @@ async function bankNobleInvest(p, cardCoins) {
 }
 
 async function runRolePhase(roleName, chooserIdx) {
+  G._actingSeat = null; // 联机：进入新阶段先清空行动座位，避免上一步的远程归属残留
   // 顺时针从 chooser 开始
   const order = [];
   for (let i = 0; i < G.numPlayers; i++) {
@@ -2131,7 +2156,7 @@ async function runRolePhase(roleName, chooserIdx) {
   if (roleName !== "Mayor") {
     for (const i of order) {
       const p = G.players[i];
-      if (p.isHuman) await humanMoveGuests(p, roleName);
+      if (p.isHuman) { G._actingSeat = i; await humanMoveGuests(p, roleName); }
     }
   }
   switch (roleName) {
@@ -2140,6 +2165,7 @@ async function runRolePhase(roleName, chooserIdx) {
       // 扩展：图书馆(33) 拓殖特权翻倍 — 所有人选完后，chooser 再从剩余明牌池拿 1 张种植园(不能采石场)
       {
         const sc = G.players[chooserIdx];
+        G._actingSeat = chooserIdx; // 联机：图书馆+拓殖额外决策归属选择者
         if (G.isManned(sc, 33) && sc.plantations.length < 12) {
           // 图书馆+拓殖特权翻倍：再拿 1 张；若有森林屋可改拿森林
           const canForest = G.isManned(sc, 26);
@@ -2243,6 +2269,7 @@ async function runRolePhase(roleName, chooserIdx) {
 // ============================================================
 async function doSettler(playerIdx, isChooser) {
   const p = G.players[playerIdx];
+  G._actingSeat = playerIdx; // 联机：本座位的拓殖决策归属
   if (p.plantations.length >= 12) return; // 满
   // 扩展：森林屋(26) — 可改拿一块「森林」：从明牌池拿 1 张种植园（不能用采石场）反扣置于岛上
   // （规则书：取走的是明牌池里的实体板块，因此会减少其他玩家的可选明牌）
@@ -2404,6 +2431,7 @@ async function doMayor(chooserIdx, order) {
       let takeNoble;
       if (G.noblesOnShip > 0 && G.colonistsOnShip > 0) {
         if (p.isHuman) {
+          G._actingSeat = i; // 联机：本次「拿贵族/殖民者」决策归属
           const ti = await humanPickFromList(`市长：从船上拿哪一个？（船上 殖民者×${G.colonistsOnShip} / 贵族×${G.noblesOnShip}）`, ["🎩 贵族（终局 1 VP，可触发贵族建筑功能）", "👷 殖民者"], false);
           takeNoble = ti === 0;
         } else takeNoble = true; // AI 优先拿贵族
@@ -2454,6 +2482,7 @@ async function doMayor(chooserIdx, order) {
 }
 
 async function humanReallocate(p) {
+  G._actingSeat = p.idx; // 联机：市长分配决策归属本座位
   // FIX #31 + #33: 必须填满所有空位（如果有）；允许先"拿下"已上岗的殖民者/贵族到岸边重分配
   let remaining = p._unplacedMen;
   let remNobles = p._unplacedNobles || 0;
@@ -2730,6 +2759,7 @@ async function humanPayBlackMarket(p, gap) {
 
 async function doBuilder(playerIdx, isChooser) {
   const p = G.players[playerIdx];
+  G._actingSeat = playerIdx; // 联机：建造决策归属本座位
   if (G.buildingUsedSpaces(p) >= 12) return;
   // 列出可买且能负担的建筑
   const options = [];
@@ -2826,6 +2856,7 @@ async function doBuilder(playerIdx, isChooser) {
 
 // 扩展：招待所(28) — 人类玩家在每个（非市长）阶段开始时可把客工派往任意空位（含紫色建筑）
 async function humanMoveGuests(p, roleName) {
+  if (G) G._actingSeat = p.idx; // 联机：招待所派客工决策归属本座位
   const gh = G.ownsBuilding(p, 28);
   if (!gh || gh.men <= 0) return;
   while (gh.men > 0) {
@@ -2894,6 +2925,7 @@ function deployGuests(p) {
 }
 
 async function doCraftsman(chooserIdx, order) {
+  G._actingSeat = chooserIdx; // 联机：工匠的「额外拿 1 个货」决策归属选择者
   // 生产阶段：每人按生产能力生产货物（受供应限制）
   // 快照：人类玩家本阶段开始前的货物计数，便于阶段末计算"本轮生产"差量
   const humanForCraftToast = G.players.find(pp => pp.isHuman);
@@ -3087,6 +3119,7 @@ async function doCraftsman(chooserIdx, order) {
 
 async function doTrader(playerIdx, isChooser) {
   const p = G.players[playerIdx];
+  G._actingSeat = playerIdx; // 联机：商人卖货决策归属本座位
   const hasOffice = G.isManned(p, 12);
   const hasPost = G.isManned(p, 29);                 // 扩展：贸易驿站
   const houseFull = G.tradingHouse.length >= 4;
@@ -3126,6 +3159,7 @@ async function doTrader(playerIdx, isChooser) {
 // 殖民者驻守：付 1 金从暗牌堆抽 1 张种植园放上岛；贵族驻守：弃 1 张种植园/森林（非采石场）得 1 金
 async function runLandOffice(p) {
   if (!G.expansionNobles) return;
+  if (G) G._actingSeat = p.idx; // 联机：地产办公室决策归属本座位
   if (G.isColonistManned(p, 38)) {
     if (p.money < 1 || p.plantations.length >= 12 || G.plantationDeck.length === 0) return;
     let use;
@@ -3184,6 +3218,7 @@ async function runLandOffice(p) {
 
 // 扩展：小码头(31) — 人类玩家选择装船货物（可多选不同货物种类）
 async function humanSmallWharfLoad(p) {
+  if (G) G._actingSeat = p.idx; // 联机：小码头装船决策归属本座位
   const pool = {};
   for (const g of GOODS) if (p.goods[g] > 0) pool[g] = p.goods[g];
   if (Object.keys(pool).length === 0) return {};
@@ -3266,6 +3301,7 @@ async function doCaptain(order, chooserIdx) {
       if (owned.length === 0) continue;
       let picks = [];
       if (p.isHuman) {
+        G._actingSeat = i; // 联机：皇家供应商弃货决策归属本座位
         const pool2 = new Set(owned);
         while (picks.length < limit && pool2.size > 0) {
           const opts = [...pool2];
@@ -3296,6 +3332,7 @@ async function doCaptain(order, chooserIdx) {
     progress = false;
     for (const i of order) {
       const p = G.players[i];
+      G._actingSeat = i; // 联机：本次装船决策归属该座位
       // 找出该玩家能装的货物 (有货 + 有匹配的船 OR 任意未装船的)
       const candidates = [];
       for (let s = 0; s < G.ships.length; s++) {
@@ -3526,6 +3563,7 @@ async function doCaptain(order, chooserIdx) {
 }
 
 async function humanKeepGoods(p, kinds) {
+  if (G) G._actingSeat = p.idx; // 联机：弃货保留决策归属本座位
   // 简化：列出当前货物，玩家点击勾选要保留的几种
   const owned = GOODS.filter(g => p.goods[g] > 0);
   if (owned.length <= kinds) {
@@ -5398,6 +5436,8 @@ let pendingSelect = null;
 function humanBoardSelect({ type, choices, promptText, allowSkip }) {
   // type: 'role' | 'plantation' | 'building' | 'good' | 'slot'
   // choices: 数组，每项含 {key, ...具体数据}
+  // 联机：当前行动座位属于远程客人时，把这次选择外包给客人（返回 Promise 走网络）
+  if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("boardSelect", { type, choices, promptText, allowSkip }); if (r) return r; }
   return new Promise(resolve => {
     pendingSelect = { type, choices, resolve, allowSkip, promptText };
     G._currentPrompt = promptText;
@@ -5487,6 +5527,8 @@ function buildRolePreview(p, roleName) {
 }
 
 function humanPickRole(available, p) {
+  // 联机：远程客人的选角整步（选+确认）在客人端进行，只回传下标
+  if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("pickRole", { availableNames: available.map(x => x.name), seat: (p && p.idx) }); if (r) return r; }
   return new Promise(outerResolve => {
     const attemptPick = () => {
       humanBoardSelect({
@@ -5517,6 +5559,8 @@ function humanPickRole(available, p) {
 }
 
 function humanPickFromList(title, labels, allowCancel, bodyHtml = "") {
+  // 联机：远程客人座位 → 外包给客人（payload 全是字符串，天然可序列化）
+  if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("pickFromList", { title, labels, allowCancel: !!allowCancel, bodyHtml }); if (r) return r; }
   return new Promise(resolve => {
     const buttons = labels.map((label, i) => ({
       label, fn: () => { hideModal(); resolve(i); }
