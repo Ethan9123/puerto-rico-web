@@ -15,7 +15,7 @@
   const REFINE = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
 
   // ---------- 建表 ----------
-  const COL_TOTAL = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 };
+  const COL_TOTAL = { 1: 29, 2: 40, 3: 55, 4: 75, 5: 95 }; // 殖民者供应池(船上另置=玩家数, 不从池扣)
   const VP_TOTAL = { 1: 50, 2: 65, 3: 75, 4: 100, 5: 122 };
   const START_MONEY = (n) => ({ 1: 2, 2: 3 })[n] ?? (n - 1);
   // 每轮选角色次数：1p=3, 2p=6（官方变体每人 3 次），3-5p=玩家数
@@ -129,7 +129,7 @@
     const st = {
       numPlayers, governor: Math.floor((rnd ? rnd() : Math.random()) * numPlayers),
       turnNumber: 1, gameOver: false, endTriggered: false,
-      colonistsLeft: COL_TOTAL[numPlayers] - numPlayers, colonistsOnShip: numPlayers,
+      colonistsLeft: COL_TOTAL[numPlayers], colonistsOnShip: numPlayers,
       vpLeft: VP_TOTAL[numPlayers],
       supply: Object.assign({}, SUPPLY_BY_N[numPlayers] || { corn: 10, indigo: 12, sugar: 11, tobacco: 9, coffee: 8 }),
       buildingStock: {}, quarriesLeft: (numPlayers === 2) ? 5 : 8,

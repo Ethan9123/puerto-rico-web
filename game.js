@@ -411,7 +411,9 @@ class Game {
 
     // 资源池
     // 1p=单人闯关(缩放) / 2p=官方Alea变体(殖民者40+2=42,65VP) / 3-5p=原版
-    this.colonistsLeft = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 }[numPlayers] - numPlayers; // 减去船上人数
+    // 官方：殖民者供应池(3/4/5p=55/75/95；2p Alea变体=40；1p自定义=29)与初始殖民船(=玩家数)是【相加】关系，
+    // 船上的殖民者不从供应池扣（5p 正好 95池+5船=100，用满全套标记）。旧实现误减玩家数，3/4/5p 各少 n 名。
+    this.colonistsLeft = { 1: 29, 2: 40, 3: 55, 4: 75, 5: 95 }[numPlayers];
     this.colonistsOnShip = numPlayers;
     // 贵族扩展：20 名贵族；开局起殖民者船上 1 名贵族替换 1 名殖民者
     this.noblesLeft = 0; this.noblesOnShip = 0;
