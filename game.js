@@ -1276,13 +1276,24 @@ const CAST_COLOR = [
 ];
 function castColorMaybe() { return Math.random() < 0.22 ? ` ${castPick(CAST_COLOR)}` : ""; }
 
+// 联机：判断 p（座位 i）是否为当前浏览器的本地玩家
+// 房主：mySeat()=-1，本地 = 非远程（!_remote）；客人：mySeat()=N，本地 = 座位匹配
+function isLocalHuman(p, i) {
+  if (typeof PRNetPlay !== "undefined" && PRNetPlay.isOnline()) {
+    const ms = PRNetPlay.mySeat();
+    return ms >= 0 ? i === ms : !p._remote;
+  }
+  return p.isHuman;
+}
+
 // 连选执念：同一位选手反复拿同一张角色，是解说最爱的"人设"素材
 function castStreakNote(me, roleName) {
   G._castPicks = G._castPicks || {};
   const key = me.idx + ":" + roleName;
   const n = (G._castPicks[key] = (G._castPicks[key] || 0) + 1);
-  if (n === 3) return ` 注意——这已经是${me.isHuman ? "你" : "他"}本场<b>第 3 次</b>拿起 <b>${ROLE_NAME_CN[roleName]}</b>了，执念初现！`;
-  if (n >= 4) return ` <b>${ROLE_NAME_CN[roleName]}</b>×${n}！${me.isHuman ? "你对这张牌是真爱啊！" : `${me.name} 和这张牌怕不是签了终身合同！`}`;
+  const _isMe = isLocalHuman(me);
+  if (n === 3) return ` 注意——这已经是${_isMe ? "你" : "他"}本场<b>第 3 次</b>拿起 <b>${ROLE_NAME_CN[roleName]}</b>了，执念初现！`;
+  if (n >= 4) return ` <b>${ROLE_NAME_CN[roleName]}</b>×${n}！${_isMe ? "你对这张牌是真爱啊！" : `${me.name} 和这张牌怕不是签了终身合同！`}`;
   return "";
 }
 
@@ -2161,7 +2172,7 @@ async function bankNobleInvest(p, cardCoins) {
   if (inv > 0) {
     p.money -= inv; p._invest = (p._invest || 0) + inv;
     G.logEvent(`${p.name} 银行（贵族）：投资 ${inv} 金（终局 +${inv}VP）`, "action");
-    if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">银行投资 +${inv} 金</div><div class="t-sub">终局 +${inv}VP（投入不可再用）</div>`, { kind: "gain" });
+    if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">银行投资 +${inv} 金</div><div class="t-sub">终局 +${inv}VP（投入不可再用）</div>`, { kind: "gain" });
   }
 }
 
@@ -2207,8 +2218,8 @@ async function runRolePhase(roleName, chooserIdx) {
               const flipped2 = G.plantationPool.splice(fi2, 1)[0];
               sc.plantations.push({ good: "forest", manned: false });
               G.logEvent(`${sc.name} 图书馆+森林屋：翻扣 ${GOOD_NAMES[flipped2]} 再拿 1 块森林`, "action");
-              if (!sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+森林屋 再拿森林</div>`, { kind: "role" });
-              if (sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+森林屋：再拿 1 块森林</div>`, { kind: "gain" });
+              if (!isLocalHuman(sc) && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+森林屋 再拿森林</div>`, { kind: "role" });
+              if (isLocalHuman(sc) && !window._allAIMode) showToast(`<div class="t-title">图书馆+森林屋：再拿 1 块森林</div>`, { kind: "gain" });
               tookForest = true;
             }
           }
@@ -2228,8 +2239,8 @@ async function runRolePhase(roleName, chooserIdx) {
               const libPlant = { good: g2, manned: false };
               sc.plantations.push(libPlant);
               G.logEvent(`${sc.name} 图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田`, "action");
-              if (!sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+拓殖 再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "role" });
-              if (sc.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "gain" });
+              if (!isLocalHuman(sc) && !window._allAIMode) showToast(`<div class="t-title">${sc.name} 图书馆+拓殖 再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "role" });
+              if (isLocalHuman(sc) && !window._allAIMode) showToast(`<div class="t-title">图书馆+拓殖：再拿 ${GOOD_NAMES[g2]} 田</div>`, { kind: "gain" });
               // 规则书明确：济贫院只对第一张地块给殖民者，图书馆的第二张地块不触发
             }
           }
@@ -2267,7 +2278,7 @@ async function runRolePhase(roleName, chooserIdx) {
       pr.money += gold;
       G.logEvent(`${pr.name} 拿 ${gold} 金币`, "action");
       if (!window._allAIMode) {
-        if (pr.isHuman) showToast(`<div class="t-title">金矿主：你 +${gold}金</div>`, { kind: "gain" });
+        if (isLocalHuman(pr)) showToast(`<div class="t-title">金矿主：你 +${gold}金</div>`, { kind: "gain" });
         else showToast(`<div class="t-title">${pr.name} 金矿主：+${gold}金</div>`, { kind: "role" });
       }
       // Tibs 塔楼(49)：非选择者塔楼主也得金矿主特权 +1 金
@@ -2315,7 +2326,7 @@ async function doSettler(playerIdx, isChooser) {
       const flipped = G.plantationPool.splice(fi, 1)[0];
       p.plantations.push({ good: "forest", manned: false });
       G.logEvent(`${p.name} 森林屋：翻扣 ${GOOD_NAMES[flipped]} 田作为森林`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了森林（翻扣 ${GOOD_NAMES[flipped]}）</div>`, { kind: "role" });
+      if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了森林（翻扣 ${GOOD_NAMES[flipped]}）</div>`, { kind: "role" });
       // 规则书：济贫院持有者放置森林时，殖民者放到自己的风向标（岸边）
       if (G.isManned(p, 11)) {
         if (G.colonistsLeft > 0) { G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; G.logEvent(`${p.name} 济贫院+森林：殖民者放到岸边 (从供应区)`, "action"); }
@@ -2403,7 +2414,7 @@ async function doSettler(playerIdx, isChooser) {
     else if (G.colonistsOnShip > 0) { plantation.manned = true; G.colonistsOnShip--; G.logEvent(`${p.name} 寄宿屋：新地自带殖民者(船上)`, "action"); }
   }
   G.logEvent(`${p.name} 拓殖：${choice.kind === "quarry" ? "🪨采石场" : plantEmoji(choice.good) + GOOD_NAMES[choice.good]}`, "action");
-  if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了 ${choice.kind === "quarry" ? "采石场" : GOOD_NAMES[choice.good]} 田</div>`, { kind: "role" });
+  if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 拿了 ${choice.kind === "quarry" ? "采石场" : GOOD_NAMES[choice.good]} 田</div>`, { kind: "role" });
 }
 
 async function doMayor(chooserIdx, order) {
@@ -2416,7 +2427,7 @@ async function doMayor(chooserIdx, order) {
     while (take-- > 0 && G.colonistsLeft > 0) { G.colonistsLeft--; p._unplacedMen = (p._unplacedMen || 0) + 1; got++; }
     if (got > 0) {
       G.logEvent(`${p.name} 市长特权：从供应区+${got}殖民者`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 市长特权${got > 1 ? ' 图书馆 +2' : ' +1'} 殖民者</div>`, { kind: "role" });
+      if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 市长特权${got > 1 ? ' 图书馆 +2' : ' +1'} 殖民者</div>`, { kind: "role" });
     }
   }
   // Tibs 塔楼(49)：非选择者的塔楼主也得市长特权 +1 殖民者
@@ -2855,11 +2866,11 @@ async function doBuilder(playerIdx, isChooser) {
     if (invest > 0) {
       p.money -= invest; p._invest = (p._invest || 0) + invest;
       G.logEvent(`${p.name} 银行：投资 ${invest} 金`, "action");
-      if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">银行：投资 ${invest} 金（终局 +${invest}VP）</div>`, { kind: "gain" });
+      if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">银行：投资 ${invest} 金（终局 +${invest}VP）</div>`, { kind: "gain" });
     }
   }
   G.logEvent(`${p.name} 建造 ${b.cn} (花费${cost}金)`, "action");
-  if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 建造 ${b.cn} (花费 ${cost}金)</div>`, { kind: "role" });
+  if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 建造 ${b.cn} (花费 ${cost}金)</div>`, { kind: "role" });
   // 扩展：教堂(30) — 镇守时，建造其他建筑按列 +0/1/2 VP（建教堂本身不得分）
   if (b.id !== 30 && G.isManned(p, 30)) {
     const tier = TIER_BY_BID[b.id] || 1;
@@ -2868,8 +2879,8 @@ async function doBuilder(playerIdx, isChooser) {
       const got = Math.min(cVP, G.vpLeft);
       p.vp += got; G.vpLeft -= got;
       G.logEvent(`${p.name} 教堂：建造 +${got} VP`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 教堂：+${got} VP</div>`, { kind: "role" });
-      if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">教堂：建造奖励 +${got} VP</div>`, { kind: "gain" });
+      if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 教堂：+${got} VP</div>`, { kind: "role" });
+      if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">教堂：建造奖励 +${got} VP</div>`, { kind: "gain" });
     }
   }
 }
@@ -2939,8 +2950,8 @@ function deployGuests(p) {
   }
   if (moved > 0) {
     G.logEvent(`${p.name} 招待所：${moved} 名客工出动上岗`, "action");
-    if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 招待所：${moved}客工上岗</div>`, { kind: "role" });
-    if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">招待所：${moved} 名客工上岗生产</div>`, { kind: "gain" });
+    if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 招待所：${moved}客工上岗</div>`, { kind: "role" });
+    if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">招待所：${moved} 名客工上岗生产</div>`, { kind: "gain" });
   }
 }
 
@@ -2980,14 +2991,14 @@ async function doCraftsman(chooserIdx, order) {
       if (big3 && big3.men > 0 && perPlayerProducedCount[i].indigo > 0 && G.supply.indigo > 0) {
         p.goods.indigo++; G.supply.indigo--; perPlayerProducedCount[i].indigo++;
         G.logEvent(`${p.name} 引水渠：+1 靛蓝`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 靛蓝</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 靛蓝</div>`, { kind: "gain" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 靛蓝</div>`, { kind: "role" });
+        if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 靛蓝</div>`, { kind: "gain" });
       }
       if (big4 && big4.men > 0 && perPlayerProducedCount[i].sugar > 0 && G.supply.sugar > 0) {
         p.goods.sugar++; G.supply.sugar--; perPlayerProducedCount[i].sugar++;
         G.logEvent(`${p.name} 引水渠：+1 蔗糖`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 蔗糖</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 蔗糖</div>`, { kind: "gain" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 引水渠：+1 蔗糖</div>`, { kind: "role" });
+        if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">引水渠：+1 蔗糖</div>`, { kind: "gain" });
       }
     }
     // 专业工厂(34) 移至阶段末结算（官方注：工匠特权拿到的货也计入）——见下方 paySpecialtyFactory
@@ -3002,8 +3013,8 @@ async function doCraftsman(chooserIdx, order) {
       if (gain > 0) {
         p.money += gain;
         G.logEvent(`${p.name} 专业工厂：+${gain}金`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 专业工厂：+${gain}金</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">专业工厂：+${gain}金</div>`, { kind: "gain" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 专业工厂：+${gain}金</div>`, { kind: "role" });
+        if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">专业工厂：+${gain}金</div>`, { kind: "gain" });
       }
     }
   };
@@ -3062,7 +3073,7 @@ async function doCraftsman(chooserIdx, order) {
       G.supply[g]--;
       perPlayerProducedCount[chooserIdx][g]++; // 特权货计入专业工厂（官方注），不影响工厂的"种类"判定
       G.logEvent(`${chooser.name} 工匠奖励：+1 ${GOOD_NAMES[g]}`, "action");
-      if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
+      if (!isLocalHuman(chooser) && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 工匠奖励 +1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
       // 扩展：图书馆(33) — 工匠特权翻倍，再拿 1 个自己已产出的货（规则书：可与第一个相同，也可不同）
       if (G.isManned(chooser, 33)) {
         const avail2 = GOODS.filter(x => ownKinds.has(x) && G.supply[x] > 0);
@@ -3079,8 +3090,8 @@ async function doCraftsman(chooserIdx, order) {
           chooser.goods[g2]++; G.supply[g2]--;
           perPlayerProducedCount[chooserIdx][g2]++; // 同样计入专业工厂
           G.logEvent(`${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}`, "action");
-          if (!chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "role" });
-          if (chooser.isHuman && !window._allAIMode) showToast(`<div class="t-title">图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "gain" });
+          if (!isLocalHuman(chooser) && !window._allAIMode) showToast(`<div class="t-title">${chooser.name} 图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "role" });
+          if (isLocalHuman(chooser) && !window._allAIMode) showToast(`<div class="t-title">图书馆+工匠：再 +1 ${GOOD_NAMES[g2]}</div>`, { kind: "gain" });
         }
       }
     } else if (g) {
@@ -3098,8 +3109,8 @@ async function doCraftsman(chooserIdx, order) {
       if (gm && gm.men >= 2) {
         gm.men = 0; p._unplacedMen = (p._unplacedMen || 0) + 2; p.money += 1;
         G.logEvent(`${p.name} 金矿：2 殖民者移回岸边 +1金`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 金矿：+1金</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">金矿：2人回岸边 +1金</div>`, { kind: "gain" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 金矿：+1金</div>`, { kind: "role" });
+        if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">金矿：2人回岸边 +1金</div>`, { kind: "gain" });
       }
       // 水井：本回合产了玉米/靛蓝则多产 1（择一，优先靛蓝）
       if (G.isManned(p, 47)) {
@@ -3109,8 +3120,8 @@ async function doCraftsman(chooserIdx, order) {
         if (g) {
           p.goods[g]++; G.supply[g]--; perPlayerProducedCount[p.idx][g]++;
           G.logEvent(`${p.name} 水井：+1 ${GOOD_NAMES[g]}`, "action");
-          if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
-          if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "gain" });
+          if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "role" });
+          if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">水井：+1 ${GOOD_NAMES[g]}</div>`, { kind: "gain" });
         }
       }
       // 塔楼(49)：非选择者塔楼主也得工匠特权 +1（自己产出的一种，取最贵）
@@ -3170,7 +3181,7 @@ async function doTrader(playerIdx, isChooser) {
   const where = pick.dest === "house" ? "卖" : "(驿站)卖";
   G.logEvent(`${p.name} ${where} ${GOOD_NAMES[pick.g]} +${earn}金`, "action");
   if (!window._allAIMode) {
-    if (p.isHuman) showToast(`<div class="t-title">你${where} ${GOOD_NAMES[pick.g]} +${earn}金</div>`, { kind: "gain" });
+    if (isLocalHuman(p)) showToast(`<div class="t-title">你${where} ${GOOD_NAMES[pick.g]} +${earn}金</div>`, { kind: "gain" });
     else showToast(`<div class="t-title">${p.name} ${where} ${GOOD_NAMES[pick.g]} +${earn}金</div>`, { kind: "role" });
   }
 }
@@ -3212,7 +3223,7 @@ async function runLandOffice(p) {
       }
       p.plantations.push({ good, manned: false });
       G.logEvent(`${p.name} 地产办公室：付 1 金得 ${good === "forest" ? "🌲森林" : GOOD_NAMES[good] + " 田"}`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 地产办：+${good === "forest" ? "森林" : GOOD_NAMES[good] + " 田"}</div>`, { kind: "role" });
+      if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 地产办：+${good === "forest" ? "森林" : GOOD_NAMES[good] + " 田"}</div>`, { kind: "role" });
     }
   } else if (G.isNobleManned(p, 38)) {
     const cands = p.plantations.map((pl, k) => ({ pl, k })).filter(x => x.pl.good !== "quarry");
@@ -3294,8 +3305,8 @@ async function doCaptain(order, chooserIdx) {
       const got = Math.min(uhVP, G.vpLeft);
       p.vp += got; G.vpLeft -= got;
       G.logEvent(`${p.name} 工会大厅：装船前同货成对 +${got} VP`, "action");
-      if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 工会大厅：+${got} VP</div>`, { kind: "role" });
-      if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">工会大厅：你 +${got} VP</div>`, { kind: "gain" });
+      if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 工会大厅：+${got} VP</div>`, { kind: "role" });
+      if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">工会大厅：你 +${got} VP</div>`, { kind: "gain" });
       if (!window._fastSpectator) await sleep(350);
     }
   }
@@ -3305,8 +3316,8 @@ async function doCaptain(order, chooserIdx) {
     if (G.isManned(lhp, 32)) {
       lhp.money += 1;
       G.logEvent(`${lhp.name} 灯塔：船长特权 +1金（不论装货与否）`, "action");
-      if (!lhp.isHuman && !window._allAIMode) showToast(`<div class="t-title">${lhp.name} 灯塔 船长 +1金</div>`, { kind: "role" });
-      if (lhp.isHuman && !window._allAIMode) showToast(`<div class="t-title">灯塔：你作为船长 +1金</div>`, { kind: "gain" });
+      if (!isLocalHuman(lhp) && !window._allAIMode) showToast(`<div class="t-title">${lhp.name} 灯塔 船长 +1金</div>`, { kind: "role" });
+      if (isLocalHuman(lhp) && !window._allAIMode) showToast(`<div class="t-title">灯塔：你作为船长 +1金</div>`, { kind: "gain" });
       if (!window._fastSpectator) await sleep(300);
     }
   }
@@ -3343,7 +3354,7 @@ async function doCaptain(order, chooserIdx) {
       }
       if (picks.length > 0) {
         G.logEvent(`${p.name} 皇家供应商：弃 ${picks.length} 货 +${picks.length} VP`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 皇家供应商 +${picks.length} VP</div>`, { kind: "role" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 皇家供应商 +${picks.length} VP</div>`, { kind: "role" });
       }
     }
   }
@@ -3456,8 +3467,8 @@ async function doCaptain(order, chooserIdx) {
       if (G.isManned(p, 32)) {
         p.money += 1;
         G.logEvent(`${p.name} 灯塔：装船 +1金`, "action");
-        if (!p.isHuman && !window._allAIMode) showToast(`<div class="t-title">${p.name} 灯塔 +1金</div>`, { kind: "role" });
-        if (p.isHuman && !window._allAIMode) showToast(`<div class="t-title">灯塔：+1金</div>`, { kind: "gain" });
+        if (!isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">${p.name} 灯塔 +1金</div>`, { kind: "role" });
+        if (isLocalHuman(p) && !window._allAIMode) showToast(`<div class="t-title">灯塔：+1金</div>`, { kind: "gain" });
       }
       // 小码头：每 2 货 = 1VP；其余装船 1 货 = 1VP
       let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
@@ -3479,7 +3490,7 @@ async function doCaptain(order, chooserIdx) {
       const goodLabel = (isSmallWharf && pick.good === "mix") ? "混装" : (GOOD_NAMES[pick.good] || pick.good);
       G.logEvent(`${p.name} ${shipLabel} ${loaded}${goodLabel} (+${vpGain}VP)`, "action");
       if (!window._allAIMode) {
-        if (!p.isHuman) showToast(`<div class="t-title">${p.name} ${isPersonal ? shipLabel : "装船#" + (pick.ship + 1)} ${loaded}${goodLabel} (+${vpGain} VP)</div>`, { kind: "role" });
+        if (!isLocalHuman(p)) showToast(`<div class="t-title">${p.name} ${isPersonal ? shipLabel : "装船#" + (pick.ship + 1)} ${loaded}${goodLabel} (+${vpGain} VP)</div>`, { kind: "role" });
         else showToast(`<div class="t-title">你 ${isPersonal ? shipLabel : "装船#" + (pick.ship + 1)} ${loaded}${goodLabel} (+${vpGain} VP)</div>`, { kind: "gain" });
       }
       // 实时刷新棋盘：每次装船后立即重绘，让人类看到各船被逐步装满（含 AI 装船），便于判断要装哪艘
@@ -5822,7 +5833,7 @@ function render() {
     const totalVP = p.vp + G.getDisplayVPs(p);
     div.innerHTML = `
       <div class="player-header">
-        <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${p.isHuman ? " (你)" : (p._persona ? ` <span class="persona-badge" title="群友 · ${p._persona.desc}">⚡群友</span>` : " (AI)")}</span>
+        <span class="player-name">${i === G.governor ? "👑 " : ""}${p.name}${isLocalHuman(p, i) ? " (你)" : p.isHuman ? " (联机)" : p._persona ? ` <span class="persona-badge" title="群友 · ${p._persona.desc}">⚡群友</span>` : " (AI)"}</span>
         <span class="player-stats">
           <span class="stat" data-stat="money">💰${p.money}</span>
           <span class="stat" data-stat="vp" title="总胜利点（含建筑/特殊/船运）">⭐${totalVP}</span>
