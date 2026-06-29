@@ -19,6 +19,15 @@
   function makeCode(n) { let s = ""; for (let i = 0; i < (n || 4); i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]; return s; }
   function makeId() { return (Date.now().toString(36) + Math.random().toString(36).slice(2, 8)); }
   function hasSupabase() { return !!(root.PR_SUPABASE && root.PR_SUPABASE.url && root.PR_SUPABASE.key); }
+  // 稳定身份令牌：按房间码存【sessionStorage】（每标签页独立）。
+  //   - 刷新/断网重连：同一标签 sessionStorage 不变 → token 不变 → 房主据 token 自动接回原座位；
+  //   - 同浏览器多标签：每标签各自独立 → 房主和客人 token 不会相同（localStorage 会相同，故弃用）；
+  //   - 整页关闭：sessionStorage 清空 → 重开是「新玩家」（走手动认领）——关整页本就是更强的离开信号。
+  function roomToken(code) {
+    const k = "prnet_token_" + code;
+    try { let t = sessionStorage.getItem(k); if (!t) { t = "tok-" + Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem(k, t); } return t; }
+    catch (e) { return "tok-" + Math.random().toString(36).slice(2); }
+  }
 
   // ---------- LocalTransport：localStorage 事件（仅同浏览器多标签，用于自测） ----------
   // 'storage' 事件只在【其它】标签触发，天然适合做标签间 pub/sub。
@@ -112,9 +121,10 @@
 
   async function startSession(code, role, opts) {
     const clientId = makeId();
+    const token = (opts && opts.token) || roomToken(code); // 稳定身份（跨刷新/重连）
     const transport = makeTransport(code, clientId);
     let presence = [];
-    const meta = { clientId, name: (opts && opts.name) || "玩家", role, joinedAt: Date.now() };
+    const meta = { clientId, token, name: (opts && opts.name) || "玩家", role, joinedAt: Date.now() };
     await transport.open(meta, {
       onMessage: (msg) => { if (opts && opts.onMessage) opts.onMessage(msg); },
       onPresence: (list) => { presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
@@ -124,7 +134,7 @@
       if (!ok) { try { transport.close(); } catch (e) {} throw new Error("房间不存在或房主不在线（请确认房间码）"); }
     }
     return {
-      code, role, clientId,
+      code, role, clientId, token,
       transport: hasSupabase() ? "supabase" : "local",
       send: (obj) => transport.send(obj),
       presence: () => transport.presence ? transport.presence() : presence,
@@ -136,7 +146,7 @@
   const PRNet = {
     available: () => true,                 // LocalTransport 总可用；Supabase 视配置
     crossDevice: () => hasSupabase(),       // 是否已配 Supabase（真跨设备）
-    makeCode,
+    makeCode, roomToken,
     host(opts) { const code = (opts && opts.code) || makeCode(4); return startSession(code, "host", opts); },
     join(code, opts) { return startSession(String(code || "").toUpperCase().trim(), "guest", opts); },
   };

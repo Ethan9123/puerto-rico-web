@@ -85,7 +85,7 @@
     if (typeof PRNetPlay !== "undefined" && PRNetPlay.guestBusy()) return;
     // 联机对局：首次拿到带座位归属的状态时，把客人接入远程出手层
     if (snap._online && snap._seatOwners && typeof PRNetPlay !== "undefined" && !PRNetPlay.isOnline() && root.PR_SESSION) {
-      PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myId: root.PR_SESSION.clientId, online: true });
+      PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myToken: root.PR_SESSION.token, myId: root.PR_SESSION.clientId, online: true });
     }
     try {
       const g = Object.assign(Object.create(Game.prototype), snap);
