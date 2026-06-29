@@ -917,6 +917,9 @@ const AI_PERSONAS = [
 ];
 const PERSONA_CHANCE = 0.12; // 每个群友各自独立掷 12% 决定本局是否登场（→ 约 81% 的局至少 1 位）
 function maybeAssignPersonas() {
+  // 联机：空位补的是「专业级 AI」——不挂群友人格（人格会把等级抬到 L6 且 _thinkMs 长达 6-8s，
+  // 既不符合「专家级」也会让真人干等、阻塞房主广播）。保持 L5 + 联机思考上限即可。
+  if (typeof G !== "undefined" && G && G._online) return;
   const forced = window._forcePersona;
   // 可分配群友的 AI 席位：仅专家/宗师对手
   const slots = G.players.filter(p => !p.isHuman && (p._aiLevel || 0) >= 5);
@@ -1581,6 +1584,18 @@ function startGame(netOpts) {
       delete p._aiLevel; delete p._dna; delete p._dnaMeta;
       if (netOpts.names && netOpts.names[seat]) p.name = netOpts.names[seat];
     }
+    // 人不满：空座位一律用【专业级(专家 L5)】AI 补齐（与掉线/挂机接管同档），并登记为
+    // 「可认领」——后来的人进房间能直接坐下顶替这些 AI（复用重连认领那套）。
+    G._takenOverSeats = G._takenOverSeats || {};
+    let aiFill = 0;
+    G.players.forEach((p, i) => {
+      if (p.isHuman || i === 0) return;     // 真人 / 房主本地座位跳过
+      p._aiLevel = 5;                        // 专业级
+      if (!p._dna) loadDNA(p, i);
+      G._takenOverSeats[i] = "AI 补位";       // 进广播 → 客人可「认领座位」顶替
+      aiFill++;
+    });
+    if (aiFill > 0) G.logEvent(`🤖 人数不足，${aiFill} 个空位由专业级 AI 补位（有人进房可认领顶替）`, "role");
   }
   window._allAIMode = !!allAI;
   window._liveCastOn = !!document.getElementById("live-cast")?.checked; // 人机对战实况解说开关
@@ -1599,6 +1614,11 @@ function startGame(netOpts) {
     extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 40000, alphaMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
+  // 联机：给 AI 思考时间设上限（2.5s），避免真人干等——强度仍是专家级 MCTS，只是不把整段长时间用满
+  if (online) {
+    const b = window._aiThinkBudget, CAP = 2500;
+    b.hardMs = Math.min(b.hardMs, CAP); b.expertMs = Math.min(b.expertMs, CAP); b.alphaMs = Math.min(b.alphaMs, CAP);
+  }
   G._thinkBudget = window._aiThinkBudget; // 随存档持久化，续局时恢复 AI 思考预算
   clearSave(); // 开新局：丢弃旧存档（本地 + KV）
   document.getElementById("setup-screen").classList.add("hidden");

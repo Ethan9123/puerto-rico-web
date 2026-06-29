@@ -27,8 +27,10 @@
   let _session = null;      // PRNet session
   let _role = null;         // 'host' | 'guest'
   let _online = false;      // 是否处于联机对局
-  let _seatOwners = {};     // { seatIdx: clientId } —— 远程客人掌控的座位
-  let _myId = null;         // 本端 clientId
+  let _seatOwners = {};     // { seatIdx: token } —— 远程客人掌控的座位（按稳定令牌）
+  let _seatTokens = {};     // { seatIdx: token } —— 开局原始归属（接管后仍保留，供重连自动认领）
+  let _myId = null;         // 本端 clientId（每次连接都不同）
+  let _myToken = null;      // 本端稳定令牌（跨刷新/重连不变）
   let _takenOver = {};      // { seatIdx: true } —— 房主已接管的座位（客人掉线/代打后转本地）
   const _pending = {};      // host: { reqId: {resolve, seat} }
   let _reqSeq = 0;
@@ -42,19 +44,26 @@
     _session = opts.session || null;
     _role = opts.role || (_session && _session.role) || null;
     _myId = (opts.myId) || (_session && _session.clientId) || null;
-    _seatOwners = opts.seatOwners || {};
+    // 座位归属改用【稳定令牌】为键：刷新/重连 clientId 会变、token 不变 → 房主据 token 自动接回原座。
+    _myToken = (opts.myToken) || (_session && _session.token) || _myId;
+    _seatOwners = opts.seatOwners || {};            // seat -> token（当前人类归属）
+    _seatTokens = Object.assign({}, _seatOwners);   // seat -> token（开局原始归属，掉线/接管后保留，供自动认领）
     _online = !!opts.online;
     _takenOver = {};
     clearPending();
     _guestBusy = false;
   }
-  function teardown() { _online = false; _session = null; _seatOwners = {}; _takenOver = {}; _guestBusy = false; removeOverlay(); removeReclaimUI(); clearPending(); }
+  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; removeOverlay(); removeReclaimUI(); clearPending(); }
 
-  function presentIds() {
-    try { return (_session && _session.presence ? _session.presence() : []).map((m) => m && m.clientId); }
+  function presentTokens() {
+    try { return (_session && _session.presence ? _session.presence() : []).map((m) => m && m.token).filter(Boolean); }
     catch (e) { return []; }
   }
-  function ownerConnected(clientId) { return presentIds().indexOf(clientId) >= 0; }
+  function presenceByToken(token) {
+    try { return (_session && _session.presence ? _session.presence() : []).find((m) => m && m.token === token) || null; }
+    catch (e) { return null; }
+  }
+  function ownerConnected(token) { return presentTokens().indexOf(token) >= 0; } // owner 现在是 token
 
   // ---------- 房主侧：是否把当前输入路由给远程客人 ----------
   function shouldRoute() {
@@ -151,14 +160,40 @@
     return payload.allowCancel ? 0 : 0; // pickFromList：首个合法项
   }
 
-  // 在场名单变化时（lobby 转发）：某个仍持座位的客人离场 → 立即 AI 接管
+  // 在场名单变化时（lobby 转发，房主侧）：
+  //   ① 自动认领：被 AI 接管的座位，其【原主令牌】重新在场 → 直接把座位还给他（无需手点认领）；
+  //   ② 掉线接管：仍持座位的客人离场 → 立即专家 AI 接管。
   function onPresence(list) {
     if (_role !== "host" || !_online) return;
-    const ids = (list || []).map((m) => m && m.clientId);
+    const tokens = (list || []).map((m) => m && m.token).filter(Boolean);
+    const g = game();
+    if (g && g._takenOverSeats) {
+      for (const s in g._takenOverSeats) {
+        const seat = +s, origTok = _seatTokens[seat];
+        if (origTok && tokens.indexOf(origTok) >= 0) autoReclaim(seat, origTok); // 原主回来了
+      }
+    }
     for (const s in _seatOwners) {
       const owner = _seatOwners[s];
-      if (owner && ids.indexOf(owner) < 0) aiTakeover(+s, "掉线");
+      if (owner && tokens.indexOf(owner) < 0) aiTakeover(+s, "掉线");
     }
+  }
+
+  // 重连自动认领（房主侧，presence 触发，无需客人点按钮）：把被 AI 接管的座位翻回原主。
+  function autoReclaim(seat, token) {
+    const g = game(); if (!g) return;
+    if (!(g._takenOverSeats && g._takenOverSeats[seat])) return;
+    const p = g.players[seat]; if (!p) return;
+    const meta = presenceByToken(token);
+    p.isHuman = true; p._remote = token; p._aiLevel = null;
+    if (meta && meta.name) p.name = meta.name;
+    _seatOwners[seat] = token; _seatTokens[seat] = token;
+    delete _takenOver[seat];
+    delete g._takenOverSeats[seat];
+    try { if (g.logEvent) g.logEvent(`↩️ ${p.name} 重连，自动回到座位 ${seat + 1}（不再 AI 代打）`, "role"); } catch (e) {}
+    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ ${esc(p.name)} 重连</div><div class="t-sub">自动回到座位 ${seat + 1}</div>`, { kind: "role" }); } catch (e) {}
+    try { _session.send({ type: "reclaimed", seat, token, name: p.name }); } catch (e) {}
+    if (typeof render === "function") render();
   }
 
   // 调本地原语（房主接管 / 客人执行都用它）。不会再次路由：客人 _role!=host，房主已 takenOver。
@@ -175,12 +210,12 @@
 
   // ---------- 客人侧：收到自己座位的请求 → 跑本地 UI → 回传 ----------
   function mySeat() {
-    for (const s in _seatOwners) if (_seatOwners[s] === _myId) return +s;
+    for (const s in _seatOwners) if (_seatOwners[s] === _myToken) return +s;
     return -1;
   }
   async function onInputRequest(msg) {
     if (_role !== "guest") return;
-    if (_seatOwners[msg.seat] !== _myId) return;   // 不是我的座位，忽略（其它客人的）
+    if (_seatOwners[msg.seat] !== _myToken) return;   // 不是我的座位（按令牌），忽略
     // 先把房主随请求附带的最新状态套进来，保证选项 UI 与房主一致
     if (msg.snap && typeof PRSpectate !== "undefined" && PRSpectate.applyState) {
       _guestBusy = false; PRSpectate.applyState(msg.snap);
@@ -208,30 +243,34 @@
   }
   function reclaim(seat) {
     if (_role !== "guest" || !_online) return;
-    try { _session.send({ type: "reclaim", seat: +seat, clientId: _myId, name: myName() }); } catch (e) {}
+    try { _session.send({ type: "reclaim", seat: +seat, token: _myToken, name: myName() }); } catch (e) {}
   }
-  function onReclaim(msg) { // 房主侧
+  function onReclaim(msg) { // 房主侧（手动认领，多为「顶替 AI 补位」）。可认领 = 在 G._takenOverSeats 里。
     const g = game(); if (!g) return;
-    const seat = msg.seat;
-    if (!_takenOver[seat]) return;        // 该座位不可认领（未被接管 / 已被别人认领）
-    const p = g.players[seat]; if (!p) return;
+    const seat = msg.seat, token = msg.token;
+    const claimable = g._takenOverSeats && g._takenOverSeats[seat];
+    if (!claimable || !token) return;     // 该座位不可认领（已被别人认领 / 非 AI 空位）
+    const p = g.players[seat]; if (!p || p.isHuman) return;
+    const wasTakeover = !!_takenOver[seat]; // 区分「掉线接管」与「开局 AI 补位」，文案不同
     p.isHuman = true;
-    p._remote = msg.clientId;
+    p._remote = token;
     p._aiLevel = null;
-    p.name = msg.name || _takenOver[seat] || p.name;
-    _seatOwners[seat] = msg.clientId;     // 之后该座位的输入重新路由给（新的）客人
+    p.name = msg.name || p.name;          // 用认领者自己的名字
+    _seatOwners[seat] = token;            // 之后该座位的输入按令牌路由给这位客人
+    _seatTokens[seat] = token;            // 记为新原主 → 之后他掉线也能自动认领回来
     delete _takenOver[seat];
-    if (g._takenOverSeats) delete g._takenOverSeats[seat];
-    try { if (g.logEvent) g.logEvent(`↩️ ${p.name} 重连，收回座位 ${seat + 1}（不再由 AI 代打）`, "role"); } catch (e) {}
-    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ ${esc(p.name)} 回来了</div><div class="t-sub">收回座位 ${seat + 1}</div>`, { kind: "role" }); } catch (e) {}
-    try { _session.send({ type: "reclaimed", seat, clientId: msg.clientId, name: p.name }); } catch (e) {}
+    delete g._takenOverSeats[seat];
+    const verb = wasTakeover ? "收回" : "坐下顶替 AI 补位";
+    try { if (g.logEvent) g.logEvent(`↩️ ${p.name} ${verb}（座位 ${seat + 1}）`, "role"); } catch (e) {}
+    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ ${esc(p.name)} 加入座位 ${seat + 1}</div><div class="t-sub">${wasTakeover ? "收回座位（不再 AI 代打）" : "顶替 AI 补位"}</div>`, { kind: "role" }); } catch (e) {}
+    try { _session.send({ type: "reclaimed", seat, token, name: p.name }); } catch (e) {}
     if (typeof render === "function") render(); // 广播一帧
   }
   function onReclaimed(msg) { // 客人侧
-    if (msg.clientId !== _myId) { refreshReclaimUI(); return; } // 别人认领了：刷新认领栏
-    _seatOwners[msg.seat] = _myId;        // 我重新拥有该座位 → onInputRequest 会认我的请求
+    if (msg.token !== _myToken) { refreshReclaimUI(); return; } // 别人认领了：刷新认领栏
+    _seatOwners[msg.seat] = _myToken;     // 我重新拥有该座位 → onInputRequest 会认我的请求
     removeReclaimUI();
-    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ 你已收回座位 ${msg.seat + 1}</div><div class="t-sub">轮到你时会弹出操作</div>`, { kind: "gain" }); } catch (e) {}
+    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ 你已回到座位 ${msg.seat + 1}</div><div class="t-sub">轮到你时会弹出操作</div>`, { kind: "gain" }); } catch (e) {}
   }
 
   // 客人观战时刷新「认领座位」栏：自己无座位 且 存在被接管的座位 → 列出可认领按钮
@@ -244,7 +283,7 @@
     if (!seats.length) return removeReclaimUI();
     let bar = document.getElementById("netplay-reclaim");
     if (!bar) { bar = document.createElement("div"); bar.id = "netplay-reclaim"; document.body.appendChild(bar); }
-    bar.innerHTML = '<span class="nr-label">🔁 有座位被 AI 接管，可认领：</span>';
+    bar.innerHTML = '<span class="nr-label">🪑 有 AI 座位可认领（坐下就能玩）：</span>';
     seats.forEach((s) => {
       const btn = document.createElement("button");
       btn.type = "button"; btn.className = "nr-btn";
@@ -302,6 +341,6 @@
     seatOwners: () => _seatOwners,
     guestBusy: () => _guestBusy,
     takenOver: () => Object.assign({}, _takenOver),
-    _debug: () => ({ _role, _online, _seatOwners, _takenOver, pending: Object.keys(_pending) }),
+    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending) }),
   };
 })(typeof window !== "undefined" ? window : this);

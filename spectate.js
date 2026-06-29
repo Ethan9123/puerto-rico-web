@@ -53,6 +53,9 @@
     if (wait <= 0) flush();
     else if (!timer) timer = setTimeout(flush, wait);
   }
+  // 立即推一帧（不节流）。用于有新客人进房时：房主可能正卡在某人输入上、长时间不 render，
+  // 新人就会一直停在大厅看不到棋盘——进房即推一帧让其马上进入观战/认领。
+  function pushNow() { if (hostSession) flush(); }
   function startHosting(session) { hostSession = session; lastSent = 0; }
   function stopHosting() { hostSession = null; if (timer) { clearTimeout(timer); timer = null; } }
   function onHostGameOver(title, body) {
@@ -82,7 +85,7 @@
     if (typeof PRNetPlay !== "undefined" && PRNetPlay.guestBusy()) return;
     // 联机对局：首次拿到带座位归属的状态时，把客人接入远程出手层
     if (snap._online && snap._seatOwners && typeof PRNetPlay !== "undefined" && !PRNetPlay.isOnline() && root.PR_SESSION) {
-      PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myId: root.PR_SESSION.clientId, online: true });
+      PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myToken: root.PR_SESSION.token, myId: root.PR_SESSION.clientId, online: true });
     }
     try {
       const g = Object.assign(Object.create(Game.prototype), snap);
@@ -137,7 +140,7 @@
 
   root.PRSpectate = {
     snapshot,
-    startHosting, stopHosting, onHostRender, onHostGameOver,
+    startHosting, stopHosting, onHostRender, onHostGameOver, pushNow,
     startSpectating, stopSpectating, handleMessage,
     isHosting: () => !!hostSession,
     isSpectating: () => !!guestSession,
