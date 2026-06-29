@@ -210,20 +210,23 @@
     if (_role !== "guest" || !_online) return;
     try { _session.send({ type: "reclaim", seat: +seat, clientId: _myId, name: myName() }); } catch (e) {}
   }
-  function onReclaim(msg) { // 房主侧
+  function onReclaim(msg) { // 房主侧。可认领 = 在 G._takenOverSeats 里（含「掉线被接管」与「AI 补位」）。
     const g = game(); if (!g) return;
     const seat = msg.seat;
-    if (!_takenOver[seat]) return;        // 该座位不可认领（未被接管 / 已被别人认领）
-    const p = g.players[seat]; if (!p) return;
+    const claimable = g._takenOverSeats && g._takenOverSeats[seat];
+    if (!claimable) return;               // 该座位不可认领（已被别人认领 / 非 AI 空位）
+    const p = g.players[seat]; if (!p || p.isHuman) return;
+    const wasTakeover = !!_takenOver[seat]; // 区分「掉线接管」与「开局 AI 补位」，文案不同
     p.isHuman = true;
     p._remote = msg.clientId;
     p._aiLevel = null;
-    p.name = msg.name || _takenOver[seat] || p.name;
-    _seatOwners[seat] = msg.clientId;     // 之后该座位的输入重新路由给（新的）客人
+    p.name = msg.name || p.name;          // 用认领者自己的名字
+    _seatOwners[seat] = msg.clientId;     // 之后该座位的输入路由给这位客人
     delete _takenOver[seat];
-    if (g._takenOverSeats) delete g._takenOverSeats[seat];
-    try { if (g.logEvent) g.logEvent(`↩️ ${p.name} 重连，收回座位 ${seat + 1}（不再由 AI 代打）`, "role"); } catch (e) {}
-    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ ${esc(p.name)} 回来了</div><div class="t-sub">收回座位 ${seat + 1}</div>`, { kind: "role" }); } catch (e) {}
+    delete g._takenOverSeats[seat];
+    const verb = wasTakeover ? "收回" : "坐下顶替 AI 补位";
+    try { if (g.logEvent) g.logEvent(`↩️ ${p.name} ${verb}（座位 ${seat + 1}）`, "role"); } catch (e) {}
+    try { if (typeof showToast === "function") showToast(`<div class="t-title">↩️ ${esc(p.name)} 加入座位 ${seat + 1}</div><div class="t-sub">${wasTakeover ? "收回座位（不再 AI 代打）" : "顶替 AI 补位"}</div>`, { kind: "role" }); } catch (e) {}
     try { _session.send({ type: "reclaimed", seat, clientId: msg.clientId, name: p.name }); } catch (e) {}
     if (typeof render === "function") render(); // 广播一帧
   }
@@ -244,7 +247,7 @@
     if (!seats.length) return removeReclaimUI();
     let bar = document.getElementById("netplay-reclaim");
     if (!bar) { bar = document.createElement("div"); bar.id = "netplay-reclaim"; document.body.appendChild(bar); }
-    bar.innerHTML = '<span class="nr-label">🔁 有座位被 AI 接管，可认领：</span>';
+    bar.innerHTML = '<span class="nr-label">🪑 有 AI 座位可认领（坐下就能玩）：</span>';
     seats.forEach((s) => {
       const btn = document.createElement("button");
       btn.type = "button"; btn.className = "nr-btn";

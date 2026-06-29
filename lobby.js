@@ -67,10 +67,14 @@
     const playersList = el("div", { class: "lobby-players" });
     const codeInput = el("input", { class: "lobby-join-code", maxlength: "6", placeholder: "房间码", style: "text-transform:uppercase;width:120px" });
 
+    let _prevPresence = 0;
     const onPresence = (list) => {
       renderPresence(playersList, list);
       // 房主：客人掉线（离场）→ 立即由专家 AI 接管其座位
       if (typeof PRNetPlay !== "undefined") PRNetPlay.onPresence(list);
+      // 房主：有新客人进房（人数增加）→ 立即推一帧当前状态，让新人马上看到棋盘（观战/认领）
+      if (session && session.role === "host" && list.length > _prevPresence && typeof PRSpectate !== "undefined" && PRSpectate.isHosting && PRSpectate.isHosting()) PRSpectate.pushNow();
+      _prevPresence = list.length;
       // 客人：把房主名字告诉观战层（横幅显示），房主在场时更新
       if (session && session.role === "guest" && typeof PRSpectate !== "undefined") {
         const host = list.find((m) => m && m.role === "host");
@@ -142,7 +146,7 @@
         el("div", { class: "lobby-row" }, ["在房间里："]),
         playersList,
         el("div", { class: "lobby-row lobby-host-start hidden" }, [btnHostStart]),
-        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/难度/扩展）开一局；在场客人按加入顺序分到座位一起玩，多余座位为 AI。"]),
+        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/扩展）开一局；在场客人按加入顺序分到座位，人数不足的空位由专业级 AI 补位（有人进房可认领顶替）。"]),
         el("div", { class: "lobby-hint lobby-guest-wait hidden" }, ["⏳ 等待房主开始……开始后你将自动进入<b>实时观战</b>。"]),
         el("div", { class: "lobby-row" }, [btnLeave]),
       ]),
