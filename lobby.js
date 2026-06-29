@@ -75,10 +75,15 @@
       // 房主：有新客人进房（人数增加）→ 立即推一帧当前状态，让新人马上看到棋盘（观战/认领）
       if (session && session.role === "host" && list.length > _prevPresence && typeof PRSpectate !== "undefined" && PRSpectate.isHosting && PRSpectate.isHosting()) PRSpectate.pushNow();
       _prevPresence = list.length;
-      // 客人：把房主名字告诉观战层（横幅显示），房主在场时更新
+      // 客人：把房主名字告诉观战层（横幅显示）；房主断线 / 重连时更新横幅
       if (session && session.role === "guest" && typeof PRSpectate !== "undefined") {
         const host = list.find((m) => m && m.role === "host");
-        if (host) PRSpectate.startSpectating(session, { hostName: host.name });
+        if (host) {
+          PRSpectate.startSpectating(session, { hostName: host.name });
+          if (PRSpectate.onHostBack) PRSpectate.onHostBack(host.name);
+        } else if (PRSpectate.isSpectating && PRSpectate.isSpectating()) {
+          PRSpectate.onHostLeft();
+        }
       }
     };
     // 收到广播：input-request/response（远程出手）→ PRNetPlay；state/gameover（观战）→ PRSpectate

@@ -66,9 +66,9 @@
   }
 
   // ============ 客人侧：重放 ============
-  let guestSession = null, hostName = "";
+  let guestSession = null, hostName = "", _hostGone = false;
 
-  function banner(text) {
+  function banner(text, warn) {
     let b = document.getElementById("spectate-banner");
     if (!b) {
       b = document.createElement("div");
@@ -76,8 +76,21 @@
       document.body.appendChild(b);
     }
     b.innerHTML = text;
+    b.style.background = warn ? "linear-gradient(90deg,#7b2d2d,#9b3030)" : "";
   }
   function removeBanner() { const b = document.getElementById("spectate-banner"); if (b) b.remove(); }
+
+  function onHostLeft() {
+    if (!guestSession) return;
+    _hostGone = true;
+    banner("⚠️ 房主已断线，等待重连……（若长时间未回，请刷新页面）", true);
+  }
+  function onHostBack(name) {
+    if (!guestSession || !_hostGone) return;
+    _hostGone = false;
+    hostName = name || hostName;
+    banner(`🔄 房主正在重连（${esc(hostName)}），等待下一帧……`);
+  }
 
   function applyState(snap) {
     if (!snap || typeof Game === "undefined") return;
@@ -142,6 +155,7 @@
     snapshot,
     startHosting, stopHosting, onHostRender, onHostGameOver, pushNow,
     startSpectating, stopSpectating, handleMessage,
+    onHostLeft, onHostBack,
     isHosting: () => !!hostSession,
     isSpectating: () => !!guestSession,
   };
