@@ -305,7 +305,8 @@ window.rankCaptainCandidates = rankCaptainCandidates;
 
 // AI 装船：装船效率为主；早/中期额外倾向运便宜货(玉米/靛蓝/糖)，
 // 把咖啡/烟草留给商人换钱(早期金>分)；后期不再保留、全力运分。
-function rankCaptainForAI(candidates, ships, phase) {
+function rankCaptainForAI(candidates, ships, phase, oppGoods, Wparam) {
+  const W = (Wparam != null) ? Wparam : ((typeof window !== "undefined" && window._captainDeny != null) ? window._captainDeny : 40);
   const score = (c) => {
     if (c.ship === "wharf" || c.ship === "smallwharf") return -1; // 私人船留作最后手段
     const ship = ships[c.ship];
@@ -313,6 +314,11 @@ function rankCaptainForAI(candidates, ships, phase) {
     const sameKind = ship.good === c.good ? 1 : 0;
     let s = sameKind * 1000 + rem * 10 + (c.amount || 0);
     if (phase !== "late") s += (4 - GOOD_PRICE[c.good]) * 60; // 便宜货优先(corn+240…coffee+0)
+    // #2 denial: 开新船(ship.good===null)装 c.good → 后手对手可搭同货白得VP; 罚送出的船位(_captainDeny 默认40)。consolidation仍压倒。
+    if (oppGoods && ship.good === null && W > 0) {
+      const gift = Math.min(oppGoods[c.good] || 0, rem - (c.amount || 0));
+      if (gift > 0) s -= W * gift;
+    }
     return s;
   };
   return candidates.slice().sort((a, b) => score(b) - score(a));
@@ -3433,9 +3439,10 @@ async function doCaptain(order, chooserIdx) {
             if (want) spite = candidates.find(c => c.good === want && c.ship !== "wharf" && c.ship !== "smallwharf") || null;
           }
         }
-        // AI：早/中期弃廉价货、留咖啡/烟草给商人；后期全力运分
+        // AI：早/中期弃廉价货、留咖啡/烟草给商人；后期全力运分 + #2 denial(不给对手开船)
         const sp = (typeof solverPickCaptain === "function") ? solverPickCaptain(p, candidates, chooserIdx, order, progress, chooserBonusUsed) : null;
-        pick = spite || sp || rankCaptainForAI(candidates, G.ships, gamePhase())[0]; // 群友恶心 → 终局精确(opt-in) → 启发式
+        const _og = {}; for (const g of GOODS) { let t = 0; for (const x of G.players) if (x !== p) t += x.goods[g] || 0; _og[g] = t; }
+        pick = spite || sp || rankCaptainForAI(candidates, G.ships, gamePhase(), _og, p._captainDeny)[0]; // 群友恶心 → 终局精确(opt-in) → 启发式(含denial)
       }
       // 执行装船
       const isWharf = pick.ship === "wharf";
@@ -3841,6 +3848,9 @@ function alphazeroPickRole(p, available) {
     const ri = PRSim.ismctsPickRoleIdx(st, {
       maxIters: iters,
       budgetMs: ms,
+      // #5 近平局随机化(反人类学穿确定性响应)：有真人(生产局) 或 _roleTempSample(A/B) 且 deep档(iters≥_tsMinIters默认600) 时,
+      //   对 MCTS 近平局角色按温度采样打散确定性响应表; self-play/低预算默认 argmax 可复现。生产档(800)配对验无损(−1.0pp,z=−0.28), 见 AI_STRENGTH §13。
+      tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
       C: (window._alphaC != null ? window._alphaC : 1.5), // PUCT 常数；NN policy 比较自信，稍微鼓励探索（_alphaC 供调参注入）
       truncate: 999, // 全 rollout 到终局：用 NN 仅作 policy prior，value 用真实回报
       evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
