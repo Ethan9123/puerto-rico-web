@@ -537,15 +537,28 @@
     if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; }
   }
 
-  function rankCaptain(cands, ships, phase) {
+  function rankCaptain(cands, ships, phase, oppGoods, Wparam) {
+    const W = (Wparam != null) ? Wparam : ((typeof window !== "undefined" && window._captainDeny != null) ? window._captainDeny : 40);
     const score = (c) => {
       if (c.ship === "wharf" || c.ship === "smallwharf") return -1; // 私人船(码头/小码头)优先级最低(先用货船吃 VP)
       const s = ships[c.ship]; const rem = s.capacity - s.count;
       let v = (s.good === c.good ? 1000 : 0) + rem * 10 + (c.amount || 0);
       if (phase && phase !== "late") v += (4 - PRICE[c.good]) * 60; // 早/中期弃廉价货、留咖啡/烟草
+      // #2 denial(装船不给对手开船): 开新船(s.good===null)装 c.good → 后手对手可把同货搭上白得 VP;
+      //   罚"送出的船位数"=min(对手该货总量, 开船后剩余船位)。consolidation(sameKind×1000)仍压倒。权重 _captainDeny(默认40)。
+      if (oppGoods && s.good === null && W > 0) {
+        const gift = Math.min(oppGoods[c.good] || 0, rem - (c.amount || 0));
+        if (gift > 0) v -= W * gift;
+      }
       return v;
     };
     return cands.slice().sort((a, b) => score(b) - score(a));
+  }
+  // 对手(除 seat 外)各货总量 → 供 #2 denial 判"开新船会喂谁"。
+  function oppGoodsOf(st, seat) {
+    const og = {};
+    for (const g of GOODS_) { let t = 0; for (let j = 0; j < st.players.length; j++) if (j !== seat) t += st.players[j].goods[g] || 0; og[g] = t; }
+    return og;
   }
   // 某玩家本轮可装船的候选 {ship(0..2 或 "wharf"), good, amount}。抽出供 doCaptain 与因子化层共用。
   function captainCands(st, p) {
@@ -620,7 +633,7 @@
       for (const i of ord) {
         const cands = captainCands(st, st.players[i]);
         if (cands.length === 0) continue;
-        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase)[0]);
+        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase, oppGoodsOf(st, i), st.players[i]._captainDeny)[0]);
         progress = true;
       }
     }
@@ -984,9 +997,25 @@
       treeRoot.N++;
       for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
-    // 选访问最多的根动作（最稳健）
+    // 选访问最多的根动作（默认最稳健的 argmax N）
     let bestName = null, bestN = -1;
-    for (const [nm, c] of treeRoot.children) if (c.N > bestN) { bestN = c.N; bestName = nm; }
+    const kids = [];
+    for (const [nm, c] of treeRoot.children) { if (c.N > bestN) { bestN = c.N; bestName = nm; } kids.push({ nm, N: c.N, v: c.N > 0 ? c.Q / c.N : -Infinity }); }
+    // #5 近平局温度采样(仅 opts.tempSample=生产真人局+deep档)：top-2 访问 且 价值 都接近时按 N^(1/τ) 在近平局角色里采样,
+    //   打散人类可背的确定性响应表(反剥削)。双门(访问ratio+价值eps): 低预算下访问是噪声, 单访问门会误触发(实测 iters=300 −4~5pp);
+    //   价值门(v0−v1<eps≈<1分毛差)保证只在"选哪个都几乎免费"的真平局随机 → 生产档(iters=800)配对验无损(−1.0pp,z=−0.28)。self-play 默认 argmax 可复现。
+    if (opts.tempSample && kids.length > 1) {
+      const tau = opts.tempSample.tau || 0.4, ratio = opts.tempSample.ratio || 0.75, eps = opts.tempSample.eps != null ? opts.tempSample.eps : 0.03;
+      kids.sort((a, b) => b.N - a.N);
+      const v0 = kids[0].v;
+      if (kids[0].N > 0 && kids[1].N >= kids[0].N * ratio && (v0 - kids[1].v) < eps) {
+        const cutoff = kids[0].N * ratio;
+        const near = kids.filter(k => k.N >= cutoff && (v0 - k.v) < eps); // 双门: 访问 且 价值 都近
+        let tot = 0; for (const k of near) { k.w = Math.pow(k.N, 1 / tau); tot += k.w; }
+        let r = (rootState.rnd ? rootState.rnd() : Math.random()) * tot;
+        for (const k of near) { r -= k.w; if (r <= 0) { bestName = k.nm; break; } }
+      }
+    }
     const ri = rootLegal.find(i => rootState.roleCards[i].name === bestName);
     return ri != null ? ri : rootLegal[0];
   }
@@ -1252,7 +1281,7 @@
     if (dec.type === "captain") {
       // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)
       const cands = captainCands(st, st.players[dec.chooser]);
-      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase)[0]);
+      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase, oppGoodsOf(st, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
     }
     if (dec.type === "build") {
       // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
