@@ -374,6 +374,7 @@ class Game {
         tibsBuildings: !!expansion.tibsBuildings,
         festival:      !!expansion.festival,
         buccaneer:     !!expansion.buccaneer,
+        balance:       !!expansion.balance,   // 平衡模式（独立变体：工厂8/大学7 + 玉米开局-1金）
       };
     }
     const s = (expansion === true) ? "newbuildings" : (expansion || "none");
@@ -384,6 +385,7 @@ class Game {
       tibsBuildings: tibsB,
       festival:      tibsB,                 // 旧语义：tibs 自动开节庆
       buccaneer:     tibsB && !!buccaneer,  // 旧语义：tibs 且勾选才开海盗
+      balance:       false,                 // 旧字符串配置无平衡模式
     };
   }
 
@@ -411,6 +413,13 @@ class Game {
     if (this.expansion) for (const b of EXPANSION_BUILDINGS) BUILDINGS.push(b);
     if (this.expansionNobles) for (const b of NOBLE_BUILDINGS) BUILDINGS.push(b);
     if (this.expansionTibs) for (const b of TIBS_BUILDINGS) BUILDINGS.push(b);
+    // 平衡模式（可选变体，与扩展正交）：工厂(15) 造价 8💰 / 大学(16) 造价 7💰（默认 7/8）。
+    // BLD_BY_ID 是市场/库存/显示/sim(AI 规划) 共用的唯一建筑源 → 在此设定即全局一致。
+    // 每局显式设两值(幂等)：平衡局→8/7，普通局→7/8，避免全局对象跨局残留。
+    this.modBalance = !!mods.balance;
+    this.balanceMode = this.modBalance;
+    BLD_BY_ID[15].cost = this.balanceMode ? 8 : 7;
+    BLD_BY_ID[16].cost = this.balanceMode ? 7 : 8;
     this.players = [];
     for (let i = 0; i < numPlayers; i++) {
       this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
@@ -501,6 +510,13 @@ class Game {
     // 起始金币：1p=2, 2p=3(官方变体), 否则玩家数-1
     const startMoney = { 1: 2, 2: 3 }[numPlayers] ?? (numPlayers - 1);
     for (let p of this.players) p.money = startMoney;
+    // 平衡模式：以玉米田开局的玩家，相对以靛蓝田开局的玩家少 1 元。
+    // 此刻每人只有 1 张起始田(plantations[0])→据其种类判定。
+    if (this.balanceMode) {
+      for (const p of this.players) {
+        if (p.plantations[0] && p.plantations[0].good === "corn") p.money = Math.max(0, p.money - 1);
+      }
+    }
 
     // 节庆模块（独立开关）：3 个竞速目标
     this.moduleFestival = this.modFestival;
@@ -1573,6 +1589,7 @@ function startGame(netOpts) {
     tibsBuildings: !!document.getElementById("mod-tibs")?.checked,
     festival:      !!document.getElementById("mod-festival")?.checked,
     buccaneer:     !!document.getElementById("mod-buccaneer")?.checked,
+    balance:       !!document.getElementById("mod-balance")?.checked,
   };
   G = new Game(n, name, mods); // 第 4 参省略，海盗已在 mods 内
   G.expansionType = mods;
