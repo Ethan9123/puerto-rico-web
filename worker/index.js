@@ -19,6 +19,9 @@
 
 const FEATURE_DIM = 446;   // 对齐 sim_features.js FEATURE_DIM_RICH
 const N_ROLES = 7;         // 对齐 ROLE_LIST
+const AZ_FEATURE_DIM = 452; // 对齐 sim_az.js AZ_FEATURE_DIM (446 + 6 DEC_TYPES)
+const AZ_ACTION_DIM = 69;   // 对齐 sim_az.js AZ_ACTION_DIM (统一动作词表)
+const SUB_TYPES = ["role", "build", "settle", "trade", "craftbonus", "captain"]; // 对齐 sim_az DEC_TYPES
 const MAX_LINES = 400;     // 单局样本上限（一局真人决策点远少于此）
 const MAX_BODY = 1_000_000; // 1MB 请求体上限
 
@@ -55,11 +58,18 @@ export default {
 function sanitizeLine(line) {
   let d;
   try { d = typeof line === "string" ? JSON.parse(line) : line; } catch (e) { return null; }
-  if (!d || !Array.isArray(d.f) || d.f.length !== FEATURE_DIM) return null;
+  if (!d || !Array.isArray(d.f)) return null;
+  // 子决策样本(v2, k:"sub")：452 维 az 特征 + 全局动作 idx(<69) + 类型标签。与角色样本分开校验。
+  const isSub = d.k === "sub";
+  const FDIM = isSub ? AZ_FEATURE_DIM : FEATURE_DIM;
+  const ADIM = isSub ? AZ_ACTION_DIM : N_ROLES;
+  if (d.f.length !== FDIM) return null;
   const a = d.a | 0;
-  if (!(a >= 0 && a < N_ROLES)) return null;
-  const f = new Array(FEATURE_DIM);
-  for (let i = 0; i < FEATURE_DIM; i++) {
+  if (!(a >= 0 && a < ADIM)) return null;
+  let t = null;
+  if (isSub) { t = String(d.t || ""); if (SUB_TYPES.indexOf(t) < 0) return null; }
+  const f = new Array(FDIM);
+  for (let i = 0; i < FDIM; i++) {
     const x = +d.f[i];
     if (!isFinite(x)) return null;
     f[i] = Math.round(x * 10000) / 10000;
@@ -68,7 +78,7 @@ function sanitizeLine(line) {
   while (vv.length < 4) vv.push(0);
   const v = isFinite(+d.v) ? Math.round(+d.v * 10000) / 10000 : vv[0];
   const n = (d.n | 0) || 0;
-  return JSON.stringify({ f, a, v, vv, n });
+  return isSub ? JSON.stringify({ k: "sub", t, f, a, v, vv, n }) : JSON.stringify({ f, a, v, vv, n });
 }
 
 async function handleCollect(request, env) {
@@ -89,9 +99,11 @@ async function handleCollect(request, env) {
   const key = `g:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const scores = Array.isArray(body.scores) ? body.scores.map((s) => ({ seat: s.seat | 0, total: s.total | 0 })) : [];
   // KV metadata ≤ 1024 字节：仅放轻量汇总，供 /stats、/dump?since 用，无需读取大 value。
+  const aid = (typeof body.anonId === "string" && body.anonId.length <= 32) ? body.anonId.replace(/[^\w-]/g, "").slice(0, 32) : "";
+  const subN = clean.reduce((c, ln) => c + (ln.indexOf('"k":"sub"') >= 0 ? 1 : 0), 0); // 子决策样本数(供 /stats)
   const metadata = {
     ts, n: (body.n | 0) || 0, hs: body.humanSeat | 0,
-    t: (body.turns | 0) || 0, s: clean.length, vm: String(body.valueMode || ""), sc: scores,
+    t: (body.turns | 0) || 0, s: clean.length, sub: subN, aid, vm: String(body.valueMode || ""), sc: scores,
   };
   await env.PR_TRACES.put(key, clean.join("\n"), { metadata });
   return json({ ok: true, key, samples: clean.length });

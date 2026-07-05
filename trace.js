@@ -23,11 +23,23 @@
   // 并（可选）自动 POST 到后端 /collect，便于在 /dump 一次性取回喂 train/。
   // 默认开启上传：本项目部署方明确希望集中收集真实对局数据用于分析/训练。
   // 隐私：上传「真人参与」的对局（胜负都收，value 按真实终局结果标注）；仅含训练用的
-  //       局面特征/动作/终局结果，不含昵称/IP/设备信息（CF 边缘会看到 IP，但后端不存）。
+  //       局面特征/动作/终局结果 + 一个匿名随机 id(anonId，纯本地生成、无 PII，仅用于分析胜率是否
+  //       集中在少数玩家)，不含昵称/IP/设备信息（CF 边缘会看到 IP，但后端不存）。
   // 端用户可随时退出：URL 加 ?collect=0（会被记住），或控制台 PRTrace.config.upload=false。
   const CFG_KEY = "pr_trace_cfg_v1";
   const VVDIM = 4;                 // value 向量维度，对齐 train/load_data.py
-  const SCHEMA_VER = 1;
+  const SCHEMA_VER = 2;            // v2: 增 anonId + 人类子决策(build) az-format 样本({k:"sub",t,...})
+
+  // 匿名玩家标识：稳定随机 id（仅本浏览器 localStorage，不含任何 PII），用于分析真人胜率是否
+  // 集中在少数"学穿"玩家。生成一次后固定。
+  const ANON_KEY = "pr_anon_id_v1";
+  function _anonId() {
+    try {
+      let id = root.localStorage.getItem(ANON_KEY);
+      if (!id) { id = "a" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); root.localStorage.setItem(ANON_KEY, id); }
+      return id;
+    } catch (e) { return null; }
+  }
   const config = {
     upload: true,                 // 真人对局结束后自动上传到 endpoint
     endpoint: "/collect",         // 后端收集端点（与站点同源）
@@ -73,8 +85,10 @@
       governorStart: G.governor,
       aiLevels: G.players.map(p => p.isHuman ? "human" : (p._aiLevel || null)),
       seats: G.players.map(p => p.name),
-      picks: [],      // 全部选角色事件（轻量，重建角色经济）
-      decisions: [],  // 仅真人决策点（带局面快照，较重）
+      picks: [],         // 全部选角色事件（轻量，重建角色经济）
+      decisions: [],     // 仅真人"选角色"决策点（带局面快照，较重）
+      subDecisions: [],  // 仅真人子决策(build/…)决策点（带快照）→ 对手模型的核心数据
+      anonId: _anonId(),
       result: null,
     };
   }
@@ -91,6 +105,21 @@
         state: _snapshot(G),   // 决策时刻、动作执行前的纯数据局面（可喂给 bot 问"它会选啥"）
       });
     }
+  }
+
+  // 真人"子决策"（build/settle/trade/captain…）敲定时调用（在动作执行前 → 快照=决策时刻局面）。
+  // type: 因子化决策类型(须为 sim_az 的 DEC_TYPES 之一, 如 "build")；options: 候选动作数组(记录用)；
+  // chosen: 所选的局部动作(build=建筑 bid)。→ 对手模型 = 学"人在这个局面会怎么选"。
+  function recordSubDecision(G, seat, type, options, chosen) {
+    if (!cur) return;
+    const p = G.players && G.players[seat];
+    if (!p || !p.isHuman) return;   // 只采真人子决策
+    cur.subDecisions.push({
+      turn: G.turnNumber, seat, type,
+      options: Array.isArray(options) ? options.slice(0, 24) : [],
+      chosen,
+      state: _snapshot(G),
+    });
   }
 
   // 终局：写入 localStorage
@@ -163,6 +192,26 @@
       for (let i = 0; i < f.length; i++) fArr[i] = _r4(f[i]);
       out.push(JSON.stringify({ f: fArr, a, v, vv, n: N }));
     }
+    // 人类子决策 → az-format 样本(452 维特征 + 全局动作 idx)，与 selfplay_az.js 同口径，喂对手/人类策略网。
+    // 需 sim_az.js 已加载(azFeatures/azActionToGlobal)；未加载则跳过(角色样本不受影响，向后兼容)。
+    if (typeof PRSim.azFeatures === "function" && typeof PRSim.azActionToGlobal === "function" &&
+        PRSim.AZ_FEATURE_DIM && PRSim.AZ_ACTION_DIM && Array.isArray(game.subDecisions)) {
+      for (const d of game.subDecisions) {
+        const st = d.state, seat = d.seat;
+        if (!st || seat == null || seat < 0 || seat >= N || !d.type) continue;
+        let f, a;
+        try { f = PRSim.azFeatures(st, { chooser: seat, type: d.type }); } catch (e) { continue; }
+        if (!f || f.length !== PRSim.AZ_FEATURE_DIM) continue;
+        try { a = PRSim.azActionToGlobal(d.type, d.chosen); } catch (e) { continue; }
+        if (!(a >= 0 && a < PRSim.AZ_ACTION_DIM)) continue;
+        const v = _r4(_relAdv(scores, seat, mode));
+        const vv = new Array(VVDIM).fill(0);
+        for (let k = 0; k < VVDIM && k < N; k++) vv[k] = _r4(_relAdv(scores, (seat + k) % N, mode));
+        const fArr = new Array(f.length);
+        for (let i = 0; i < f.length; i++) fArr[i] = _r4(f[i]);
+        out.push(JSON.stringify({ k: "sub", t: d.type, f: fArr, a, v, vv, n: N }));
+      }
+    }
     return out;
   }
 
@@ -177,7 +226,8 @@
     if (!lines.length) return;
     const payload = JSON.stringify({
       ver: SCHEMA_VER, ts: game.ts, n: game.numPlayers, humanSeat: game.humanSeat,
-      turns: game.result.turns, valueMode: config.valueMode, scores: game.result.scores, lines,
+      turns: game.result.turns, valueMode: config.valueMode, scores: game.result.scores,
+      anonId: game.anonId || null, lines,
     });
     try {
       const blob = new Blob([payload], { type: "application/json" });
@@ -291,5 +341,5 @@
     } catch (e) {}
   })();
 
-  root.PRTrace = { begin, recordPick, finish, stats, last, current: () => cur, export: exportJSON, exportJSONL, gameToTrainingLines, config, clear, _load };
+  root.PRTrace = { begin, recordPick, recordSubDecision, finish, stats, last, current: () => cur, export: exportJSON, exportJSONL, gameToTrainingLines, config, clear, _load };
 })(typeof window !== "undefined" ? window : this);

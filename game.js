@@ -2824,6 +2824,10 @@ async function doBuilder(playerIdx, isChooser) {
     if (pickIdx < 0) return;
   }
   const { b, cost } = options[pickIdx];
+  // 对局日志：真人建造子决策(动作执行前快照) → 对手模型数据。§9=74% 价值分歧在 build。
+  if (p.isHuman && typeof PRTrace !== "undefined" && PRTrace.recordSubDecision) {
+    try { PRTrace.recordSubDecision(G, playerIdx, "build", options.map(o => o.b.id), b.id); } catch (e) {}
+  }
   // 🎬 动画：保存源元素引用
   const sourceEl = document.querySelector(`#buildings-pool [data-bid="${b.id}"]`);
   // 扩展：黑市(25) — 钱不够时还货/工人/VP 抵差额，并用尽所有钱
