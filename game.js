@@ -5838,9 +5838,10 @@ function render() {
   for (let s = 0; s < G.ships.length; s++) {
     const ship = G.ships[s];
     const div = document.createElement("div");
-    div.className = "ship" + (ship.count >= ship.capacity ? " full" : "");
+    const isFull = ship.count >= ship.capacity;
+    div.className = "ship" + (isFull ? " full" : "");
     div.innerHTML = `
-      <div class="ship-header">船 ${s + 1} (${ship.count}/${ship.capacity})</div>
+      <div class="ship-header">船 ${s + 1} (${ship.count}/${ship.capacity})${isFull ? ' <span class="ship-full-badge">满</span>' : ''}</div>
       <div class="ship-cargo">${ship.good ? plantEmoji(ship.good).repeat(ship.count) : "（空）"}</div>
     `;
     shipsDiv.appendChild(div);
