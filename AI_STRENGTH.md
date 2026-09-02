@@ -374,7 +374,15 @@ L2(纯DNA) 经修也会在贵族/Tibs 局用扩展建筑。
 
 **Node 工具链 bit-identity**：`PRAIPool` 在无 `Worker` 全局时不可用，`ismctsPickRoleIdx` 默认返回值/RNG 消耗顺序未变；`eval_paired_worker` 迁移前后、以及 wasm 后端下的同种子 2 局输出均逐字节一致（wasm 与 js 后端不保证跨后端 bit-exact，需要时 `root._nnForceJS=true`）。
 
-**贵族天梯（搜索开启后，`tools/exp_ladder.js nobles 40`，公平 25%）**：待测量填入。
+**贵族天梯（钳制移除后，`node tools/exp_ladder.js nobles 40 "6,4;5,4;6,5"`，iter-bounded：alphaIters/expertIters=400、hardIters=60，公平 25%，40 局 SE≈±7pp，单进程 26 分钟）：**
+
+| nobles | §10 "移植后"（实为 L3 打 L3） | 钳制移除后 |
+|---|---|---|
+| 1×宗师 vs 3×困难 | 23.7% | **83.8%** |
+| 1×专家 vs 3×困难 | 29.4% | **80.0%** |
+| 1×宗师 vs 3×专家 | 23.1% | 24.6% |
+
+→ 贵族局的 L5/L6 此前实际是 L3 强度；搜索开启后对 L4 从持平变为 4:1 碾压。宗师 vs 专家仍持平，与基础局（§2）同一结构：两档共用子决策启发式，差异只在角色搜索。§10 "L4≈L5≈L6 收敛到近持平"的结论作废。
 
 **复现：**
 ```bash
