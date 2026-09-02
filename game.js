@@ -1663,7 +1663,8 @@ function startGame(netOpts) {
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
-  if (needsNN && window._l6ValueNet) loadValueNetOnce(); // Phase 2：opt-in 价值网叶评估
+  // Phase 2 叶评估 / Phase 3a 建造前瞻都要用独立价值网（否则 evalLeafVecNN 会静默退回大网价值头）
+  if (needsNN && (window._l6ValueNet || window._l6VnetBuild)) loadValueNetOnce();
   // L4/L5/L6 搜索 AI：提前预热 worker 池（不阻塞；不可用时首次选角自动回退同步搜索）
   // （needsNN 时顺带让 worker 预取 NN 权重，不阻塞 L4/L5 的首次选角；worker 仅在 L6 选角时才需要 NN）
   if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(needsNN);

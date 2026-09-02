@@ -77,7 +77,7 @@ const src = `(async () => {
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');
-  ${KNOBS && KNOBS._l6ValueNet ? `{ const vOk = await loadValueNetOnce(); if (!vOk || !(PRSim.valueNetLoaded && PRSim.valueNetLoaded())) throw new Error('价值网未加载(_l6ValueNet=true) → 测量无意义'); }` : ''}
+  ${KNOBS && (KNOBS._l6ValueNet || KNOBS._l6VnetBuild) ? `{ const vOk = await loadValueNetOnce(); if (!vOk || !(PRSim.valueNetLoaded && PRSim.valueNetLoaded())) throw new Error('价值网未加载(_l6ValueNet/_l6VnetBuild) → 会静默退回大网价值头, 测量无意义'); }` : ''}
   const N = 4;
   const rows = [];
   for (let g = ${G_START}; g < ${G_END}; g++) {
