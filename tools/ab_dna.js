@@ -9,31 +9,20 @@
 //   node tools/ab_dna.js [NGAMES] [NEW_POOL_JSON]
 //   node tools/ab_dna.js 1200 /tmp/candidate_pool.json     # OLD=ai_dna.json, NEW=候选池
 //   node tools/ab_dna.js 800                               # NEW 缺省=ai_dna.json(自对照≈50%)
-const fs = require('fs'), path = require('path'), vm = require('vm');
+const fs = require('fs'), path = require('path');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 const ROOT = path.join(__dirname, '..');
 
-function makeEl() {
-  const e = { _c: [], innerHTML: '', textContent: '', style: {}, className: '', dataset: {},
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, value: '', checked: false,
-    appendChild(c) { this._c.push(c); return c; }, removeChild() {}, remove() {}, addEventListener() {}, removeEventListener() {},
-    setAttribute() {}, getAttribute() { return null; }, insertAdjacentHTML() {}, querySelector() { return null; },
-    querySelectorAll() { return []; }, getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; }, cloneNode() { return makeEl(); }, closest() { return null; }, focus() {}, click() {}, onclick: null };
-  return e;
-}
-const _els = {};
-const sandbox = {
-  document: { getElementById: id => (_els[id] || (_els[id] = makeEl())), querySelector: () => null, querySelectorAll: () => [], createElement: () => makeEl(), body: makeEl(), documentElement: makeEl(), addEventListener() {} },
-  console, setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: () => {},
-  performance: { now: () => Date.now() }, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, Float32Array,
-  fetch: async f => ({ json: async () => JSON.parse(fs.readFileSync(path.join(ROOT, f), 'utf8')), text: async () => fs.readFileSync(path.join(ROOT, f), 'utf8'), ok: true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-sandbox.OLD_POOL = JSON.parse(fs.readFileSync(path.join(ROOT, 'ai_dna.json'), 'utf8'));
-sandbox.NEW_POOL = JSON.parse(fs.readFileSync(process.argv[3] || path.join(ROOT, 'ai_dna.json'), 'utf8'));
-sandbox.NGAMES = parseInt(process.argv[2] || '800');
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
-load('ai_dna.js'); load('game.js'); load('sim.js');
+// OLD/NEW 池与局数在引擎加载前注入沙盒全局(与旧样板一致, 供下方 src 直接引用)
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js'],
+  beforeLoad: sb => {
+    sb.OLD_POOL = JSON.parse(fs.readFileSync(path.join(ROOT, 'ai_dna.json'), 'utf8'));
+    sb.NEW_POOL = JSON.parse(fs.readFileSync(process.argv[3] || path.join(ROOT, 'ai_dna.json'), 'utf8'));
+    sb.NGAMES = parseInt(process.argv[2] || '800');
+  },
+});
 
 const src = `(async () => {
   render = function () {}; flyToDest = function () {}; showToast = function () {};
@@ -65,7 +54,7 @@ const src = `(async () => {
     perSeat.push({ seat:i, newVP:mn, oldVP:mo, d:mn-mo }); dsum += (mn-mo); }
   return { done, err, newWins, oldWins, perSeat, dVP: dsum/N };
 })()`;
-vm.runInContext(src, sandbox).then(r => {
+run(src).then(r => {
   const tot = r.newWins + r.oldWins, wr = 100*r.newWins/tot;
   const ci = 100 * 1.96 * Math.sqrt((wr/100)*(1-wr/100)/tot);
   console.log(`games=${r.done} (err=${r.err})  NEW=${process.argv[3]||'ai_dna.json'}`);

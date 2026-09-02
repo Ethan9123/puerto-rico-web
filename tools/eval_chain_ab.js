@@ -3,24 +3,17 @@
 // 仅测试席策略不同 → 配对差分消掉牌运方差。输出 NEW/OLD 胜率差 + 配对符号检验。
 // 用法: node tools/eval_chain_ab.js [games=120] [level=4] [seedBase=20260611]
 'use strict';
-const fs = require('fs'); const path = require('path'); const vm = require('vm');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 function mulberry32(a){return function(){a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
 let _rng = Math.random;
 const MathSeeded = {}; for (const k of Object.getOwnPropertyNames(Math)) MathSeeded[k] = Math[k]; MathSeeded.random = () => _rng();
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false, dataset:{},
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){}, getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console:{log:console.log,warn:()=>{},error:()=>{}}, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math:MathSeeded, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-  __setSeed: s => { _rng = mulberry32(s >>> 0); },
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) load(f);
+// 带种子的 Math 必须在 game.js 加载前注入(beforeLoad), 让 `rnd: Math.random` 之类的引用捕获拿到 wrapper
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'],
+  extraGlobals: { console: { log: console.log, warn: () => {}, error: () => {} } }, // 与旧样板一致: 沙盒内静音 warn/error
+  beforeLoad: sb => { sb.Math = MathSeeded; sb.__setSeed = s => { _rng = mulberry32(s >>> 0); }; },
+});
 
 const GAMES = parseInt(process.argv[2] || '120');
 const LVL = parseInt(process.argv[3] || '4');
@@ -65,7 +58,7 @@ const src = `(async () => {
   return { played, newWin, oldWin, newBetter, oldBetter, newHiSum, oldHiSum };
 })()`;
 
-vm.runInContext(src, sandbox).then(r => {
+run(src).then(r => {
   const nW = r.newWin/r.played*100, oW = r.oldWin/r.played*100;
   // 配对差分 SE: 用胜率差的二项近似(粗略)
   const diff = nW - oW;

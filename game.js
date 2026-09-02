@@ -1663,6 +1663,9 @@ function startGame(netOpts) {
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
+  // L4/L5/L6 搜索 AI：提前预热 worker 池（不阻塞；不可用时首次选角自动回退同步搜索）
+  // （needsNN 时顺带让 worker 预取 NN 权重，不阻塞 L4/L5 的首次选角；worker 仅在 L6 选角时才需要 NN）
+  if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(needsNN);
   if (typeof PRTrace !== "undefined") PRTrace.begin(G); // 对局日志：开局
   runMainLoop();
 }
@@ -1680,20 +1683,25 @@ function showNetBadge(text) {
   document.body.appendChild(b);
 }
 let _nnLoadPromise = null;
-function loadAlphaZeroNN() {
-  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
-  if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
-  if (_nnLoadPromise) return _nnLoadPromise;
-  // 默认用内嵌(离线)或部署网；URL 加 ?net=rank 时强制加载 rank 候选网（测试用，不影响默认部署网）
+// NN 权重来源（主线程 loadAlphaZeroNN 与 AI worker 池 PRAIPool 共用同一规则）：
+//   默认用内嵌(离线)或部署网；URL 加 ?net=rank 时强制加载 rank 候选网（测试用，不影响默认部署网）
+function resolveNNSource() {
   let src, netTag = "deploy";
   let netParam = null;
   try { netParam = new URLSearchParams(location.search).get("net"); } catch (e) {}
   if (netParam === "rank") {
     src = "mcts_value_nn_rank.json"; netTag = "rank候选";
-    showNetBadge("🧪 测试网: rank 候选（抢第一目标）");
   } else {
     src = (typeof window !== "undefined" && window.__MCTS_VALUE_NN__) ? window.__MCTS_VALUE_NN__ : "mcts_value_nn.json";
   }
+  return { src, netTag };
+}
+function loadAlphaZeroNN() {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
+  if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
+  if (_nnLoadPromise) return _nnLoadPromise;
+  const { src, netTag } = resolveNNSource();
+  if (netTag === "rank候选") showNetBadge("🧪 测试网: rank 候选（抢第一目标）");
   _nnLoadPromise = PRSim.loadNetwork(src)
     .then(() => { console.log(`[L6] AlphaZero NN loaded (${netTag})`); return true; })
     .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
@@ -1875,6 +1883,7 @@ function resumeGame(str) {
   document.getElementById("game-screen").classList.remove("hidden");
   const cbox = document.getElementById("commentary-box"); if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }
   if (G.players.some(p => (p._aiLevel || 0) >= 6) && typeof loadAlphaZeroNN === "function") loadAlphaZeroNN();
+  if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(G.players.some(p => !p.isHuman && (p._aiLevel || 0) >= 6)); // 与 startGame 一致：预热 worker 池
   if (typeof PRTrace !== "undefined") PRTrace.begin(G); // 续局起新 trace（半局，采集端按需丢弃）
   render();
   runMainLoop();
@@ -1896,8 +1905,9 @@ async function maybeOfferResume() {
   box.insertBefore(btn, box.firstChild);
 }
 // 离开页面 / 切后台时，把最新本地存档推一份到 KV（跨设备续局）
-window.addEventListener("pagehide", kvSyncBeacon);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") kvSyncBeacon(); });
+// Node 沙盒(tests/tools)里 window/document 可能没有 addEventListener，故加守卫；浏览器行为不变
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("pagehide", kvSyncBeacon);
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") kvSyncBeacon(); });
 maybeOfferResume();
 
 // ============================================================
@@ -1998,7 +2008,7 @@ async function runMainLoop() {
           castPred = commentaryPreRole(player, available);
           await sleep(spectatorOn() ? CAST_PREDICT_MS : CAST_PVE_PREDICT_MS);
         } else if (!window._allAIMode) await sleep(700);
-        chosenIdx = aiPickRole(player, available);
+        chosenIdx = await aiPickRoleAsync(player, available); // L4-L6 走 worker 池(主线程不冻结)；其余/不可用时同步
         // 解说：开牌后核对
         if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(spectatorOn() ? CAST_REACT_MS : CAST_PVE_REACT_MS); }
       }
@@ -3665,11 +3675,9 @@ function gamePhase() {
   return "late";
 }
 
-function aiPickRole(p, available) {
-  let lvl = p._aiLevel || 3;
-  // 贵族扩展：sim 引擎未建模贵族 → L4/L5/L6 回退到 L3 强启发式
-  if (G.expansionNobles && lvl >= 4) lvl = 3;
-  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
+// 群友人格的角色"抢先手"（spite/攒钱/大建筑/拿币）：命中返回 available 索引，否则 null。
+// 同步 aiPickRole 与异步 aiPickRoleAsync 共用，保证两条路径的随机数消耗顺序完全一致。
+function _personaRolePick(p, available) {
   // 群友·苦寒/仲达：以 spite 概率抢人类最想要的角色（恶心人类，牺牲一点最优）
   if (_spiteRoll(p)) {
     const si = spiteRolePick(p, available);
@@ -3690,6 +3698,16 @@ function aiPickRole(p, available) {
     const ci = coinRolePick(p, available);
     if (ci != null) return ci;
   }
+  return null;
+}
+
+function aiPickRole(p, available) {
+  let lvl = p._aiLevel || 3;
+  // 贵族扩展：自 457ba47 起 sim.js 已建模贵族(标量 nobleCount)，L4/L5/L6 不再回退到 L3；
+  // 此前的回退钳制让 §10 的"移植后"天梯实际是 L3 打 L3(AI_STRENGTH §12)。
+  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
+  const persona = _personaRolePick(p, available);
+  if (persona != null) return persona;
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -3902,6 +3920,254 @@ function alphazeroPickRole(p, available) {
     console.warn("AlphaZero ISMCTS failed, fallback to L5", e);
     return ismctsPickRole(p, available, "expert");
   }
+}
+
+// ============================================================
+// AI Worker 池（root-parallel ISMCTS，把搜索搬离主线程）
+// ============================================================
+// K 个 ai_worker.js 各自用不同种子、同一预算独立跑 ISMCTS，回传根统计 {nm,N,Q}；主线程按角色名
+// 合并(N/Q 相加)后用 PRSim.selectRootRole 选角 → 同样墙钟约 K× 模拟量，且 UI 不再冻结。
+// 不可用时（Node 沙盒 / file:// 离线 / 无 Worker / 显式关闭：?aiworker=0 或 window._aiNoWorker=true）
+// 或任何出错，调用方回退到原同步函数 → Node 评测工具行为逐位不变。
+const PRAIPool = {
+  K: 0, nn: false, wasm: false, lastIters: 0,
+  _slots: [], _initP: null, _nnP: null, _broken: false, _reqId: 0, _hooked: false,
+  available() {
+    if (this._broken) return false;
+    try {
+      return typeof Worker !== "undefined" && typeof location !== "undefined" && location.protocol !== "file:"
+        && !window._aiNoWorker && !/[?&]aiworker=0/.test(location.search || "");
+    } catch (e) { return false; }
+  },
+  // 预热：起 worker（withNN=true 时再让 worker 预取 NN 权重）；全部不阻塞、失败静默（首次选角自动回退同步）
+  warm(withNN) {
+    if (!this.available()) return;
+    const p = this.ensure();
+    if (withNN) p.then(ok => ok ? this.ensureNN() : false).catch(() => {});
+    else p.catch(() => {});
+  },
+  ensure() { if (!this._initP) this._initP = this._init().catch(e => { console.warn("[ai-worker] init failed", e); this._broken = true; return false; }); return this._initP; },
+  // 搜索旋钮：sim.js 通过 root._mctsC/_mctsEps、window._captainDeny 读取；worker 内 self 即 root/window
+  _knobs() {
+    const k = {};
+    for (const n of ["_mctsC", "_mctsEps", "_captainDeny", "_alphaC"]) if (window[n] != null) k[n] = window[n];
+    return k;
+  },
+  // 本局在场建筑表 + 造价：Game 构造/轮抽会就地改写 BUILDINGS、平衡模式改 BLD_BY_ID[15/16].cost，
+  // 每次 pick 随消息下发（很小），worker 侧就地同步 → 搜索规则与主线程同步路径完全一致。
+  _tables() {
+    const costs = {};
+    for (const id in BLD_BY_ID) costs[id] = BLD_BY_ID[id].cost;
+    return { ids: BUILDINGS.map(b => b.id), costs };
+  },
+  // 页面生命周期：pagehide 时终止 worker；bfcache 恢复(pageshow persisted)后允许下次选角重新起池
+  _hookLifecycle() {
+    if (this._hooked || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    this._hooked = true;
+    window.addEventListener("pagehide", () => this.terminate());
+    window.addEventListener("pageshow", (ev) => {
+      if (!ev || !ev.persisted) return;
+      this._broken = false; this._initP = null; this._nnP = null; this._slots = []; this.K = 0;
+      try {
+        if (typeof G !== "undefined" && G && G.players && !G.gameOver && G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4))
+          this.warm(G.players.some(p => !p.isHuman && (p._aiLevel || 0) >= 6));
+      } catch (e) {}
+    });
+  },
+  _spawn(staticData, knobs) {
+    const slot = { w: null, alive: false, cur: null, resolve: null, ready: null, nnResolve: null };
+    try {
+      const w = new Worker("ai_worker.js");
+      slot.w = w;
+      slot.ready = new Promise(resolve => {
+        w.onmessage = (ev) => {
+          const m = (ev && ev.data) || {};
+          if (m.type === "ready") { slot.alive = true; resolve(m); return; }
+          if (m.type === "error" && m.id == null) { console.warn("[ai-worker] init failed:", m.message); resolve(null); return; } // init 失败
+          if (m.type === "nnready") { if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(m); } return; }
+          // 只接受当前请求 id 的回复；过期回复（超时后才到）直接丢弃
+          if ((m.type === "result" || m.type === "error") && m.id === slot.cur && slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r(m); }
+        };
+        w.onerror = (e) => {
+          console.warn("[ai-worker] worker error:", (e && e.message) || e);
+          slot.alive = false; resolve(null);
+          if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(null); }
+          if (slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r({ type: "error", message: String((e && e.message) || e) }); }
+        };
+        try { w.postMessage({ type: "init", staticData, nnUrl: null, knobs }); }
+        catch (e) { console.warn("[ai-worker] init postMessage failed:", (e && e.message) || e); resolve(null); } // 如 DataCloneError：仅此 slot 作废
+      });
+    } catch (e) { console.warn("[ai-worker] spawn failed:", (e && e.message) || e); slot.ready = Promise.resolve(null); }
+    return slot;
+  },
+  async _init() {
+    if (!this.available()) return false;
+    this._hookLifecycle();
+    const K = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    // 纯数据，可 structured-clone。BUILDINGS 用纯净基础 23 个（与主线程页面加载时 sim_features 看到的一致）；
+    // 本局实际在场建筑/造价随每次 pick 由 _tables() 下发（见 pickRoleParallel）。NN 权重按需再加载（ensureNN）。
+    const staticData = { BUILDINGS: BASE_BUILDINGS.slice(), BLD_BY_ID, GOODS, GOOD_PRICE, ROLE_LIST };
+    const knobs = this._knobs();
+    const slots = []; for (let k = 0; k < K; k++) slots.push(this._spawn(staticData, knobs));
+    const readies = await Promise.all(slots.map(s => s.ready));
+    this._slots = slots.filter((s, i) => { if (!readies[i]) { try { if (s.w) s.w.terminate(); } catch (e) {} return false; } return true; });
+    const ok = readies.filter(Boolean);
+    this.K = this._slots.length;
+    this.nn = false;
+    this.wasm = this.K > 0 && ok.every(r => r.wasm);
+    if (!this.K) { this._broken = true; console.warn("[ai-worker] no worker came up → sync fallback"); return false; }
+    if (this.K < K) console.warn(`[ai-worker] ${K - this.K}/${K} workers failed to start`);
+    console.log(`[ai-worker] pool=${this.K} nn=${this.nn} wasm=${this.wasm}`);
+    return true;
+  },
+  // 按需让所有 worker 加载 NN（仅 L6/alpha 需要；L4/L5 不为 5MB 权重付费）。返回 Promise<boolean>（全部 worker 都有 NN）。
+  ensureNN() {
+    if (!this._nnP) this._nnP = this._loadNN().catch(e => { console.warn("[ai-worker] NN load failed", e); return false; });
+    return this._nnP;
+  },
+  async _loadNN() {
+    const ok = await this.ensure();
+    if (!ok || !this._slots.length) return false;
+    const { src } = resolveNNSource(); // 与主线程 loadAlphaZeroNN 同一来源
+    // 内嵌权重对象：主线程 loadNetwork 可能已挂上 _wasmForward(函数，不能 structured-clone) → 只传纯数据副本
+    let nnUrl;
+    if (typeof src === "string") nnUrl = new URL(src, location.href).href;
+    else { nnUrl = Object.assign({}, src); delete nnUrl._wasmForward; }
+    const replies = await Promise.all(this._slots.map(slot => new Promise(resolve => {
+      if (!slot.alive) return resolve(null);
+      slot.nnResolve = resolve;
+      try { slot.w.postMessage({ type: "loadnn", nnUrl }); }
+      catch (e) { slot.nnResolve = null; console.warn("[ai-worker] loadnn postMessage failed:", (e && e.message) || e); resolve(null); }
+    })));
+    this.nn = replies.length > 0 && replies.every(r => r && r.nn);
+    this.wasm = replies.length > 0 && replies.every(r => r && r.wasm);
+    const failed = replies.filter(r => !(r && r.nn));
+    if (failed.length) console.warn(`[ai-worker] NN unavailable in ${failed.length}/${replies.length} workers` + (failed.some(r => r && r.message) ? ": " + failed.filter(r => r && r.message).map(r => r.message).join("; ") : ""));
+    else console.log(`[ai-worker] nn=${this.nn} wasm=${this.wasm}`);
+    return this.nn;
+  },
+  // 终止 worker 并把池复位（不标记 _broken：bfcache 恢复后下次选角可重新起池；真正 init 失败才置 _broken）
+  terminate() {
+    for (const s of this._slots) { try { if (s.w) s.w.terminate(); } catch (e) {} s.alive = false; }
+    this._slots = []; this.K = 0; this.nn = false; this.wasm = false; this._initP = null; this._nnP = null;
+  },
+  // st: buildSimState 结果；mode: 'hard'|'expert'|'alpha'；opts: 可序列化搜索选项（函数型选项由 worker 按 mode 重建）
+  // 返回 st.roleCards 索引；池不可用/无任何 worker 返回结果 → 抛错（调用方回退同步搜索）。
+  async pickRoleParallel(st, mode, opts, timeoutMs) {
+    const ok = await this.ensure();
+    if (!ok || !this._slots.length) throw new Error("ai-worker pool unavailable");
+    if (mode === "alpha" && !this.nn) throw new Error("ai-worker NN unavailable");
+    const id = ++this._reqId;
+    const state = Object.assign({}, st); delete state.rnd; // 函数不能 structured-clone；worker 侧按 seed 自建 RNG
+    const knobs = this._knobs();
+    const tables = this._tables();
+    const seedBase = (Math.random() * 0x100000000) >>> 0;
+    const got = [], errs = [];
+    const ps = this._slots.map((slot, k) => new Promise(resolve => {
+      if (!slot.alive) return resolve(null);
+      slot.cur = id; slot.resolve = (m) => { if (m && m.type === "result") got.push(m); else if (m && m.type === "error") errs.push(m.message); resolve(m); };
+      try { slot.w.postMessage({ type: "pick", id, state, mode, opts, seed: (seedBase + k * 0x9E3779B9) >>> 0, knobs, tables }); }
+      catch (e) { slot.resolve = null; slot.cur = null; errs.push(String((e && e.message) || e)); resolve(null); }
+    }));
+    const tmo = timeoutMs != null ? timeoutMs : ((opts && opts.budgetMs) || 1500) * 1.5 + 3000;
+    let timer = null;
+    await Promise.race([Promise.allSettled(ps), new Promise(r => { timer = setTimeout(r, tmo); })]);
+    if (timer) clearTimeout(timer);
+    for (const slot of this._slots) if (slot.cur === id) { slot.cur = null; slot.resolve = null; } // 超时：之后到达的回复丢弃
+    if (!got.length) throw new Error("ai-worker: no result" + (errs.length ? " (" + errs.join("; ") + ")" : " (timeout)"));
+    if (errs.length) console.warn(`[ai-worker] ${errs.length} worker(s) errored, merging ${got.length}:`, errs.join("; "));
+    // 按角色名合并根统计（N、Q 相加），再用与单线程完全相同的规则(argmax N + 近平局温度采样)选角
+    const merged = new Map();
+    let iters = 0;
+    for (const r of got) {
+      iters += r.iters || 0;
+      for (const s of (r.stats || [])) { const m = merged.get(s.nm); if (m) { m.N += s.N; m.Q += s.Q; } else merged.set(s.nm, { nm: s.nm, N: s.N, Q: s.Q }); }
+    }
+    this.lastIters = iters;
+    if (!merged.size) return got[0].idx; // 根只有 ≤1 个合法角色等退化情形：worker 已直接给出索引
+    return PRSim.selectRootRole(Array.from(merged.values()), st, opts);
+  },
+};
+
+// ---- 异步版角色选择（走 worker 池）：与同步版逻辑镜像；池不可用或出错时回退到同步函数 ----
+async function ismctsPickRoleAsync(p, available, tier) {
+  if (!PRAIPool.available() || typeof PRSim === "undefined" || !PRSim || !PRSim.selectRootRole) return ismctsPickRole(p, available, tier);
+  try {
+    const st = buildSimState(G);
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    const b = window._aiThinkBudget || {};
+    let iters = tier === "hard" ? (b.hardIters || 120) : (b.expertIters || 1500);
+    let ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); }
+    const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
+    const opts = { maxIters: iters, budgetMs: ms, valueW, truncate: 8 }; // hard 档的 evalLeafFn=econReward 由 worker 重建
+    const ri = await PRAIPool.pickRoleParallel(st, tier === "hard" ? "hard" : "expert", opts);
+    if (ri == null || ri < 0) return level5Reactive(p, available);
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : level5Reactive(p, available);
+  } catch (e) {
+    console.warn("[ai-worker] ISMCTS pool failed, sync fallback", e);
+    return ismctsPickRole(p, available, tier);
+  }
+}
+
+async function alphazeroPickRoleAsync(p, available) {
+  if (!PRAIPool.available() || typeof PRSim === "undefined" || !PRSim || !PRSim.selectRootRole) return alphazeroPickRole(p, available);
+  try {
+    const ok = await PRAIPool.ensure();
+    const nn = ok && await PRAIPool.ensureNN(); // worker 按需加载 NN（L4/L5 局不加载）
+    if (!nn) return alphazeroPickRole(p, available); // worker 无 NN → 同步路径自行决定 L6/L5
+    const st = buildSimState(G);
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    // 终局精确求解器(opt-in: window._l6Solver)：同同步版，在主线程同步求解（有 cap）
+    if (window._l6Solver && st.endTriggered && typeof PRSim.solveEndgame === "function") {
+      try {
+        const sol = PRSim.solveEndgame(st, window._l6SolverCap || 1.5e5);
+        if (sol && sol.type === "role" && sol.action != null && st.roleCards[sol.action]) {
+          const idx = available.findIndex(r => r.name === st.roleCards[sol.action].name);
+          if (idx >= 0) return idx;
+        }
+      } catch (e) { /* 求解失败 → 落到 NN-ISMCTS */ }
+    }
+    const b = window._aiThinkBudget || {};
+    let iters = b.alphaIters || 800;
+    let ms = b.alphaMs || 6000;
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); }
+    const endBoost = (window._alphaEndBoost != null ? window._alphaEndBoost : 1);
+    if (endBoost > 1 && (st.endTriggered || (st.vpLeft != null && st.vpLeft <= 12) || (st.colonistsLeft != null && st.colonistsLeft <= 6))) {
+      iters = Math.round(iters * endBoost); ms = ms * endBoost;
+    }
+    const opts = {
+      maxIters: iters,
+      budgetMs: ms,
+      tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
+      C: (window._alphaC != null ? window._alphaC : 1.5),
+      truncate: 999,
+      // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布：由 worker 按 mode='alpha' 重建
+    };
+    const ri = await PRAIPool.pickRoleParallel(st, "alpha", opts);
+    if (ri == null || ri < 0) return ismctsPickRoleAsync(p, available, "expert");
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : ismctsPickRoleAsync(p, available, "expert");
+  } catch (e) {
+    console.warn("[ai-worker] AlphaZero pool failed, fallback", e);
+    return ismctsPickRoleAsync(p, available, "expert");
+  }
+}
+
+// 主循环用：L4/L5/L6 走 worker 池（await，不冻结 UI）；其余等级或池不可用时等价于同步 aiPickRole。
+// 注意 level5Reactive 内的对手预测递归与 netplay 的 aiDefaultFor 仍调用同步 aiPickRole。
+async function aiPickRoleAsync(p, available) {
+  let lvl = p._aiLevel || 3;
+  if (lvl < 4 || lvl > 6 || !PRAIPool.available()) return aiPickRole(p, available);
+  updatePlan(p);
+  const persona = _personaRolePick(p, available);
+  if (persona != null) return persona;
+  if (lvl === 4) return ismctsPickRoleAsync(p, available, "hard");
+  if (lvl === 5) return ismctsPickRoleAsync(p, available, "expert");
+  return alphazeroPickRoleAsync(p, available);
 }
 
 // 进化(L2)浅层前瞻：在 DNA 首选基础上，往后推演几轮(纯启发式续局)、只看"自己"的投影分来微调。

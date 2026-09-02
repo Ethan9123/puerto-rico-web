@@ -912,9 +912,9 @@
     const evalLeafFn = opts.evalLeafFn || null;
     const evalLeafVecFn = opts.evalLeafVecFn || null;
     const priorPolicyFn = opts.priorPolicyFn || null;
-    if (currentChooser(rootState) < 0) return -1;
+    if (currentChooser(rootState) < 0) return opts.returnStats ? { idx: -1, stats: [], iters: 0 } : -1;
     const rootLegal = legalRoleIdxs(rootState);
-    if (rootLegal.length <= 1) return rootLegal[0];
+    if (rootLegal.length <= 1) return opts.returnStats ? { idx: rootLegal[0], stats: [], iters: 0 } : rootLegal[0];
 
     // 信息集树：节点 children keyed by 角色名（角色卡公开 → 各确定化下动作集一致）。
     const treeRoot = { N: 0, Q: 0, children: new Map(), P: null };
@@ -997,10 +997,25 @@
       treeRoot.N++;
       for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
+    // 根动作统计 → 交给 selectRootRole 选（argmax N + 可选近平局温度采样）。
+    // 顺序 = Map 插入序，与原先直接遍历 treeRoot.children 完全一致。
+    const stats = [];
+    for (const [nm, c] of treeRoot.children) stats.push({ nm, N: c.N, Q: c.Q });
+    const ri = selectRootRole(stats, rootState, opts);
+    // opts.returnStats: 供 root-parallel（多 worker 各自搜索、主线程合并 N/Q 后再 selectRootRole）
+    if (opts.returnStats) return { idx: ri, stats, iters };
+    return ri;
+  }
+
+  // 根选择（纯函数）：stats=[{nm, N, Q}]（Q 为累计回报，v=Q/N）→ rootState.roleCards 索引。
+  // 从 ismctsPickRoleIdx 拆出，使多个 worker 的根统计可按角色名合并（N/Q 相加）后用同一规则选角。
+  function selectRootRole(stats, rootState, opts) {
+    opts = opts || {};
+    const rootLegal = legalRoleIdxs(rootState);
     // 选访问最多的根动作（默认最稳健的 argmax N）
     let bestName = null, bestN = -1;
     const kids = [];
-    for (const [nm, c] of treeRoot.children) { if (c.N > bestN) { bestN = c.N; bestName = nm; } kids.push({ nm, N: c.N, v: c.N > 0 ? c.Q / c.N : -Infinity }); }
+    for (const c of stats) { if (c.N > bestN) { bestN = c.N; bestName = c.nm; } kids.push({ nm: c.nm, N: c.N, v: c.N > 0 ? c.Q / c.N : -Infinity }); }
     // #5 近平局温度采样(仅 opts.tempSample=生产真人局+deep档)：top-2 访问 且 价值 都接近时按 N^(1/τ) 在近平局角色里采样,
     //   打散人类可背的确定性响应表(反剥削)。双门(访问ratio+价值eps): 低预算下访问是噪声, 单访问门会误触发(实测 iters=300 −4~5pp);
     //   价值门(v0−v1<eps≈<1分毛差)保证只在"选哪个都几乎免费"的真平局随机 → 生产档(iters=800)配对验无损(−1.0pp,z=−0.28)。self-play 默认 argmax 可复现。
@@ -1017,7 +1032,42 @@
       }
     }
     const ri = rootLegal.find(i => rootState.roleCards[i].name === bestName);
-    return ri != null ? ri : rootLegal[0];
+    return ri != null ? ri : (rootLegal.length ? rootLegal[0] : -1);
+  }
+
+  // 按"档位"重建 ismctsPickRoleIdx 的函数型选项（evalLeafFn / priorPolicyFn 不能跨线程传递，
+  // worker 侧据此重建；与 game.js ismctsPickRole/alphazeroPickRole 内联写法逐字对齐）。
+  //   mode: "hard"  → evalLeafFn = econReward（截断前瞻 + 手写经济评估）
+  //         "expert" → 无函数型选项（纯 rollout / valueW 线性价值）
+  //         "alpha"  → evalLeafFn = PRSim.evalLeafNN, priorPolicyFn = NN policy[7] → 合法角色名分布
+  //   base: { maxIters, budgetMs, C, truncate, valueW, tempSample, returnStats } 等可序列化选项，原样浅拷贝。
+  const ROLE_NAMES_7 = ["Settler", "Mayor", "Builder", "Craftsman", "Trader", "Captain", "Prospector"];
+  function searchOptsForMode(mode, base) {
+    const opts = Object.assign({}, base || {});
+    if (mode === "hard") {
+      opts.evalLeafFn = (s2, persp) => econReward(s2, persp);
+    } else if (mode === "alpha") {
+      opts.evalLeafFn = (state, seat) => API.evalLeafNN(state, seat);
+      opts.priorPolicyFn = (state, seat) => {
+        const out = API.networkEval(state, seat);
+        if (!out) return null;
+        // 把 policy[7] 映射回当前 legal 的角色名 → 概率
+        const legal = legalRoleIdxs(state);
+        const legalNames = new Set(legal.map(i => state.roleCards[i].name));
+        const dist = {};
+        let s = 0;
+        for (let k = 0; k < ROLE_NAMES_7.length; k++) {
+          if (legalNames.has(ROLE_NAMES_7[k])) {
+            dist[ROLE_NAMES_7[k]] = out.policy[k];
+            s += out.policy[k];
+          }
+        }
+        if (s > 0) for (const k of Object.keys(dist)) dist[k] /= s;
+        else { for (const k of Object.keys(dist)) dist[k] = 1 / Math.max(1, Object.keys(dist).length); }
+        return dist;
+      };
+    }
+    return opts;
   }
 
   // ============================================================
@@ -1119,7 +1169,7 @@
   function azFinishRole(st) {
     checkEnd(st);
     st.picksThisTurn++;
-    if (st.picksThisTurn >= st.numPlayers || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1312,7 +1362,7 @@
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
-    ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
+    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },

@@ -6,7 +6,9 @@
 //  - 给 ISMCTS 提供 P(role) + V(state)；替换 evalLeaf 的截断+线性 value
 //  - 单次 forward < 1ms（CPU），可在 MCTS 内大量调用
 //
-// 加载顺序：game.js → sim.js → sim_features.js → sim_nn.js
+// 加载顺序：game.js → sim.js → sim_features.js → (nn_wasm.js, 可选) → sim_nn.js
+// 加速：若之前加载了 nn_wasm.js（root.PRNNWasm），loadNetwork 会把前向切到 wasm(SIMD) 内核，
+//       约 5-10× 快；root._nnForceJS = true 可强制走纯 JS（对拍/基准用）。PRSim.nnBackend() 查看当前后端。
 // 用法：
 //   await PRSim.loadNetwork('train/exports/weights-v1.json');
 //   const { policy, value } = PRSim.networkEval(state, perspectiveSeat);
@@ -73,6 +75,11 @@
   // valueVec: 价值向量头的完整输出(4 维, perspective-ordered: [k]=视角玩家顺时针第 k 位的价值)。
   // 旧标量网络 valueVec 长度为 1。value === valueVec[0] 不变。
   function _forward(net, features) {
+    // WebAssembly 后端（nn_wasm.js, 由 loadNetwork 挂到 net._wasmForward）；root._nnForceJS=true 强制走 JS
+    if (net._wasmForward && !root._nnForceJS) {
+      const r = net._wasmForward(features);
+      return { policy: _softmax(r.policyLogits), policyLogits: r.policyLogits, value: r.value, valueVec: r.valueVec };
+    }
     if (features.length !== net.feature_dim) {
       throw new Error(`forward: feature dim mismatch ${features.length} vs ${net.feature_dim}`);
     }
@@ -124,8 +131,19 @@
       throw new Error("loadNetwork: invalid network JSON");
     }
     _prep(net);
+    // 可选 wasm(SIMD) 后端：nn_wasm.js 在本文件之前加载则尝试启用；任何失败都静默回退纯 JS
+    net._wasmForward = null;
+    if (root.PRNNWasm && typeof root.PRNNWasm.ready === "function") {
+      try {
+        const ok = await root.PRNNWasm.ready();
+        if (ok) net._wasmForward = root.PRNNWasm.createForward(net);
+      } catch (e) {
+        net._wasmForward = null;
+        console.warn("[sim_nn] wasm backend unavailable, using JS forward:", e && e.message ? e.message : e);
+      }
+    }
     NET = net;
-    console.log(`[sim_nn] loaded ${net.layers.length} layers, feature_dim=${net.feature_dim}, n_roles=${net.n_roles}, val_loss=${(net.val_loss || 0).toFixed(4)}`);
+    console.log(`[sim_nn] loaded ${net.layers.length} layers, feature_dim=${net.feature_dim}, n_roles=${net.n_roles}, val_loss=${(net.val_loss || 0).toFixed(4)}, backend=${nnBackend()}`);
     return net;
   }
 
@@ -166,9 +184,16 @@
 
   function isLoaded() { return NET !== null; }
 
-  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded });
+  // 当前网络实际使用的前向后端：'wasm-simd' | 'wasm' | 'js'（未加载网络或 _nnForceJS 时为 'js'）
+  function nnBackend() {
+    if (root._nnForceJS) return "js";
+    if (NET && NET._wasmForward && root.PRNNWasm && root.PRNNWasm.available) return root.PRNNWasm.simd ? "wasm-simd" : "wasm";
+    return "js";
+  }
+
+  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, nnBackend });
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, _forward, _softmax };
+    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, nnBackend, _forward, _softmax };
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));

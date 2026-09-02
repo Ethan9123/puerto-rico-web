@@ -3,20 +3,12 @@
 // 可传 CHAIN_DONE 覆盖(给全部玩家设 p._chainDone), 用于测不同奖励值对死厂率的影响。
 // 用法: node tools/goods_diag.js [games=40] [level=4] [chainDone=5]
 'use strict';
-const fs = require('fs'); const path = require('path'); const vm = require('vm');
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false, dataset:{},
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){}, getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console:{log:console.log,warn:()=>{},error:()=>{}}, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) load(f);
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'],
+  extraGlobals: { console: { log: console.log, warn: () => {}, error: () => {} } }, // 与旧样板一致: 沙盒内静音 warn/error
+});
 
 const GAMES = parseInt(process.argv[2] || '40');
 const LVL = parseInt(process.argv[3] || '4');
@@ -53,7 +45,7 @@ const src = `(async () => {
   return { games, stat };
 })()`;
 
-vm.runInContext(src, sandbox).then(r => {
+run(src).then(r => {
   console.log('\\n=== 全货死厂诊断 (' + r.games + ' 局, L' + LVL + ', CHAIN_DONE=' + CD + ') ===');
   console.log('  货种     拥有厂  死厂(率)      细分 a无田/b田未上人/c厂空');
   const order = ['indigo','sugar','tobacco','coffee'];

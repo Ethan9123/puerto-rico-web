@@ -16,34 +16,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
+const { loadEngine } = require('./_sandbox.js');
 
-// ---- 加载 sim.js + sim_features.js（Node 桩）----
-function makeEl() {
-  const el = { _c:[], innerHTML:'', textContent:'', style:{}, className:'', dataset:{},
-    classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false,
-    appendChild(c){this._c.push(c);return c;}, removeChild(){}, remove(){}, addEventListener(){}, removeEventListener(){},
-    setAttribute(){}, getAttribute(){return null;}, insertAdjacentHTML(){}, querySelector(){return null;},
-    querySelectorAll(){return [];}, getBoundingClientRect(){return{left:0,top:0,width:0,height:0};}, cloneNode(){return makeEl();}, closest(){return null;}, focus(){}, click(){}, onclick:null };
-  return el;
-}
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-load('ai_dna.js');
-load('game.js');
-load('sim.js');
-load('sim_features.js');
-load('sim_nn.js');
-
-const PRSim = sandbox.PRSim;
+// ---- 加载 sim.js + sim_features.js（共享 Node 沙盒 tools/_sandbox.js）----
+const { sandbox, PRSim } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'] });
 const { extractRich, roleNameToPolicyIdx, FEATURE_DIM_RICH, N_ROLES } = PRSim;
 const ROLE_LIST = sandbox.ROLE_LIST;
 

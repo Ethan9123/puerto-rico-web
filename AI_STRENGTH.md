@@ -348,3 +348,42 @@ L2(纯DNA) 经修也会在贵族/Tibs 局用扩展建筑。
 正解 = **抢了就真用上**（本次修复即此机制）——纯为卡而抢用不上的东西在波多黎各几乎总亏（花钱花回合换0产出，对手绕过）。
 若要给中低档（L3）加**刻意**卡位，唯一自洽低风险方案=等分 tie-break、且仅对"我有该货产能/我垄占该货"的选项加卡位权
 （复用 `aiPickPlantation` 已算好的 `factCap`/`anyOpponentProduces`），从根上杜绝"卡人亏己"的死厂变种。L4+ 不动（搜索已足够）。
+
+## 12. Phase 1 基建（2026-09）— 解堵工具链、Web Worker、WASM SIMD、参考池评测
+
+**起因：重新审视"结构性天花板"（§3/§4/§7）。** 三条证据说明该结论证据不足：
+1. 提交 503a695 记录**真人对宗师胜率约 80%**——接近技巧上限的 AI 不会被真人八成打赢；vs 3×L5 克隆的对称评测看不到这个差距。
+2. 本机实测（Node 22，4 核）：现役 NN 一次前向 **1.3 ms**，比一次完整启发式 rollout 到终局（1.1–1.7 ms）还慢。§1 "NN value 叶评估仅 2–5%" 是等迭代对比，NN 叶评估版每决策 2546 ms vs 完整 rollout 版 732 ms（3.5×），价值网从未在等墙钟下被公平测试。
+3. §4 的 AZ 结论来自 gen-1 自对弈 + 24 局评测（SE≈±9pp）+ 行为克隆种子网；部署网 policy 头亦为硬标签行为克隆（train.py），而非搜索分布蒸馏。"数据越多 policy 越差"是 BC 混合 off-policy 分布的已知行为。
+
+另：搜索只覆盖选角色（约 62/180 决策），子决策对 L1–L6 是同一套启发式；§9 已测终局建造 74% 非最优。数据生成几乎免费：启发式自对弈 **330 局/秒/核**（因子化全决策 285 局/秒，180 决策/局）。
+
+**Phase 1 交付（本节全部数字可用下方命令复现）：**
+
+| 项 | 改动 | 实测 |
+|---|---|---|
+| Node 工具链解堵 | `game.js` `pagehide`/`visibilitychange` 注册加守卫；44 份复制的 vm 沙箱样板合并为 `tools/_sandbox.js`（净 −434 行），tests/ 与 tools/ 全部迁移 | 全部测试脚本恢复可运行；`eval_paired_worker` 同种子输出迁移前后逐字节一致 |
+| 贵族钳制移除 | `aiPickRole` 里 `expansionNobles && lvl>=4 → 3` 是 06-11 加、06-14 移植贵族后未删 | HEAD 上 2 局 nobles 天梯仅 0.19 s（无搜索）→ §10 "移植后 L4≈L5≈L6" 实为 L3 打 L3。移除后 L4–L6 真正搜索（天梯见下） |
+| 因子化层 2 人局 | `azFinishRole` 用 `picksPerRound(n)`（2p=6）而非 `numPlayers` | 2p 因子化对局每轮 6 次选角 |
+| `load_data.py` | 跳过 PR #56 的 `k:"sub"`（452 维）行 | 不再断言崩溃 |
+| **Web Worker 根并行 ISMCTS** | `ai_worker.js` + `game.js` `PRAIPool`：K=min(4, 核数−1) 个 worker，各自独立种子跑同预算搜索，主线程按角色合并 N/Q 后用 `PRSim.selectRootRole`（从 `ismctsPickRoleIdx` 抽出的纯函数，保持 argmax + 近平局温度采样语义）。worker 只加载 sim 系列（`_PR_STATIC` 由主线程投递），每次 pick 携带当前 BUILDINGS/成本表（扩展/平衡模式/轮抽后一致）；NN 惰性加载（L4/L5 局不下载 5 MB）。回退：`file://`、`?aiworker=0`、`window._aiNoWorker`、worker 出错/超时 → 原同步路径 | Chromium 实测（4 人全宗师，fast 档）：主线程最大卡顿 **6026 ms → 140–178 ms**；pool=3，一次宗师决策合并 **21,824** 次迭代（≈3× 单线程）。`sim_features.js` 建筑槽固定为 23 个基础 id（此前按运行时 BUILDINGS 长度，扩展局主线程/worker 特征错位） |
+| **WASM SIMD 推理** | `nn_wasm/`（Rust `#![no_std]`，f32x4 kernel，另编译 scalar 版）→ `nn_wasm.js`（19 KB，内嵌两版 base64）；`sim_nn.js` 自动选 wasm-simd → wasm → js | 部署网前向 **1478 → 112 µs（13×）**；scalar 回退 303 µs；parity 最大差 1.9e-6（f32 累加）。NN 成本从 ≈1 次 rollout 变为 ≈1/10 次 rollout，Phase 2 价值网叶评估的前提成立 |
+| 参考池评测 | `tools/eval_pool.js`：候选每局与 {L3,L4,L5,L6} 中 3 个混桌、座位轮转、同种子；`eval_pool_report.js`：Plackett-Luce 评分（MM）+ 200 次 bootstrap 95% CI + 逐对胜出率 | 满预算 17 s/局（单进程）；合成 3000 局校验真值 Elo(−240/−120/0/+120/0) 拟合 −253/−128/0/118/−6 |
+| 配对评测样本量 | `eval_paired_run.sh` 默认 480 → **2000 局**（SE ±2.7 → ±1.3pp），参数位置不变 | — |
+| 文档 | `RECORDING.md` 补 v2 子决策 schema、`DUMP_TOKEN` 必须设置（`/dump` `/stats` 现对外开放）；README 强度表述改为 §6 的 480 局配对数 | — |
+
+**Node 工具链 bit-identity**：`PRAIPool` 在无 `Worker` 全局时不可用，`ismctsPickRoleIdx` 默认返回值/RNG 消耗顺序未变；`eval_paired_worker` 迁移前后、以及 wasm 后端下的同种子 2 局输出均逐字节一致（wasm 与 js 后端不保证跨后端 bit-exact，需要时 `root._nnForceJS=true`）。
+
+**贵族天梯（搜索开启后，`tools/exp_ladder.js nobles 40`，公平 25%）**：待测量填入。
+
+**复现：**
+```bash
+node tools/bench_nn.js                    # js vs wasm-simd µs/forward
+node tests/nn_wasm_parity_test.js         # 后端 parity
+node tests/worker_merge_test.js           # 根统计合并 == 单机 argmax
+node tests/worker_static_sync_test.js     # 扩展/平衡模式下主线程与 worker 表/特征一致
+bash tools/eval_pool_run.sh <name> 400 4  # 参考池评分（data/pool/<name>-report.md）
+bash tools/build_wasm.sh                  # 重建 nn_wasm.js（需 rustup target wasm32-unknown-unknown）
+```
+
+**下一步（Phase 2）**：用启发式/L5 混合自对弈生成百万级局面，训 NNUE 尺寸小价值网（446→256→32→4，按座次向量、rank/win 目标），叶评估改 (1−λ)·V + λ·截断 rollout，**等墙钟**对比；再用因子化层把搜索扩到建造/选地/装船（§9 分歧 74% 的建造为先）。

@@ -1,22 +1,8 @@
 // 测量 1 专家(L5/ISMCTS) vs 3 困难(L4/level5Reactive) 的胜率，座位轮转。
 // 用法: node tools/expert_vs_hard.js [games] [expertIters] [C] [eps]
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-  getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}},
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-load('ai_dna.js'); load('game.js'); load('sim.js');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
+const { run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js'] });
 
 const GAMES = parseInt(process.argv[2] || '40');
 const ITERS = parseInt(process.argv[3] || '1500');
@@ -50,7 +36,7 @@ const src = `(async () => {
 })()`;
 
 const t0 = Date.now();
-vm.runInContext(src, sandbox).then(r => {
+run(src).then(r => {
   console.log(`专家(ISMCTS ${ITERS}迭代, C=${C}${EPS!==null?`, eps=${EPS}`:''}) vs 3×困难 — ${r.played}局 / ${((Date.now()-t0)/1000).toFixed(0)}s`);
   console.log(`  专家胜率 ${(r.winrate*100).toFixed(0)}%   均分 专家=${r.expAvg.toFixed(1)} 困难=${r.hardAvg.toFixed(1)}`);
   console.log(r.winrate >= 0.90 ? '  ✅ 达到 90% 目标' : '  ⛔ 未达 90%');

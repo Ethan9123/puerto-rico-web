@@ -17,7 +17,22 @@ JSONL，通过一个轻量 Cloudflare Worker 端点集中收集；你打开一�
 - `v` / `vv` —— 终局相对优势，口径与 self-play 一致（`margin` 默认 / `rank` / `vsbest`）。
 - `n` —— 玩家数。
 
-`train/load_data.py` 直接读这个格式，无需任何转换：
+**v2 子决策记录**（`SCHEMA_VER = 2`，与角色记录同一文件、逐行混排）：真人在建造等阶段的每个
+子决策也会以 `sim_az` 的 az-format 落一行，用 `k:"sub"` 与角色行区分：
+
+```json
+{"k":"sub","t":"build","f":[452 floats],"a":0-68,"v":-1..1,"vv":[4 floats],"n":3-5}
+```
+
+- `k` —— 固定 `"sub"`（角色行没有 `k` 字段）。
+- `t` —— 子决策类型，取 `sim_az` 的 `DEC_TYPES`：`role` / `settle` / `build` / `trade` / `craftbonus` / `captain`（目前客户端只在建造阶段调用 `PRTrace.recordSubDecision`，即只产出 `build`）。
+- `f` —— `PRSim.azFeatures(快照, {chooser, type})` 的 **452 维** az 特征（`AZ_FEATURE_DIM` = 446 维 rich 特征 + 6 维决策类型 one-hot）。
+- `a` —— 全局动作索引 `0-68`（`PRSim.azActionToGlobal`，`AZ_ACTION_DIM=69` 的统一动作空间），不是 7 维 policy 索引。
+- `v` / `vv` / `n` —— 与角色行相同口径。
+
+`train/load_data.py` 直接读这个格式，无需任何转换；它会**跳过所有 `k=="sub"` 的行**
+（子决策样本不属于角色策略数据，读入时打印 `skipped N sub-decision lines (k=sub)`），
+子决策训练请用 `train/` 里的 az 管线单独消费：
 
 ```bash
 python train/train.py data/human-wins.jsonl
@@ -37,6 +52,16 @@ python train/train.py data/human-wins.jsonl
   - 默认导出本浏览器里的真人对局（胜负都含）。
 
 ## 后端设置（Cloudflare Worker + KV）
+
+> ⚠️ **必须设置 `DUMP_TOKEN`**：`worker/index.js` 只有在 `DUMP_TOKEN` 已配置时才校验 `?token=`；
+> **未设置时 `/dump` 与 `/stats` 完全无保护**，任何人都能拉走全部采集数据。部署（或换新账号/新 Worker）后
+> 立即执行：
+>
+> ```bash
+> wrangler secret put DUMP_TOKEN
+> ```
+>
+> （或控制台 Workers → Settings → Variables and Secrets 加 Secret `DUMP_TOKEN`。）
 
 **现状：已启用** —— `wrangler.toml` 已绑定 KV 命名空间 `PR_TRACES`，部署后 `/collect` 入库、
 `/dump` 取回、`/stats` 统计均生效。**仍需设置取回口令** `DUMP_TOKEN`（否则 `/dump`、`/stats` 无保护、

@@ -12,23 +12,15 @@
 // 用法: node tools/eval_solverbuild.js [pairs=350] [iters=40] [cap=2e6]
 //   iters 越大越接近部署强度(部署 alphaIters≈800)但越慢; 配对设计下 iters=40 已能给出趋势。
 'use strict';
-const fs = require('fs'), path = require('path'), vm = require('vm');
-const ROOT = path.join(__dirname, '..');
-const makeEl = () => ({ _c: [], innerHTML: '', textContent: '', style: {}, className: '', dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, value: '', checked: false,
-  appendChild(c) { return c; }, removeChild() {}, remove() {}, addEventListener() {}, removeEventListener() {}, setAttribute() {}, getAttribute() { return null; }, insertAdjacentHTML() {},
-  querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }), cloneNode() { return makeEl(); }, closest() { return null; }, focus() {}, click() {}, onclick: null });
-const _els = {};
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 let _seed = 1;
 const rng = () => { _seed = (_seed * 1103515245 + 12345) & 0x7fffffff; return _seed / 0x7fffffff; };
 const M = Object.create(Math); M.random = rng;                    // 仅 sandbox 内覆盖 random，保证配对同种子
-const sandbox = { document: { getElementById: id => (_els[id] || (_els[id] = makeEl())), querySelector: () => null, querySelectorAll: () => [], createElement: () => makeEl(), body: makeEl(), documentElement: makeEl(), addEventListener() {} },
-  console, setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: () => {},
-  performance: { now: () => Date.now() }, Math: M, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, Float32Array,
-  fetch: async f => ({ json: async () => JSON.parse(fs.readFileSync(path.join(ROOT, f), 'utf8')), ok: true }) };
-sandbox.window = sandbox; sandbox.globalThis = sandbox; sandbox.__setSeed = s => { _seed = (s >>> 0) || 1; };
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
-for (const f of ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js']) load(f);
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'],
+  beforeLoad: sb => { sb.Math = M; sb.__setSeed = s => { _seed = (s >>> 0) || 1; }; }, // 引擎加载前注入
+});
 const PAIRS = parseInt(process.argv[2] || '350'), ITERS = parseInt(process.argv[3] || '40'), CAP = parseFloat(process.argv[4] || '2e6');
 const src = `(async()=>{
   render=function(){};flyToDest=function(){};showToast=function(){};
@@ -50,7 +42,7 @@ const src = `(async()=>{
     if((g+1)%50===0){const z=Z();console.log('  '+(g+1)+'/'+${PAIRS}+'  diff '+(100*z.m).toFixed(1)+'±'+(100*z.se).toFixed(1)+'pp z='+z.z.toFixed(2)+' solves='+solves);}}
   const z=Z(); return {n,err,onW,offW,onV,offV,solves,diff:100*z.m,se:100*z.se,z:z.z};
 })()`;
-vm.runInContext(src, sandbox).then(r => {
+run(src).then(r => {
   console.log(`\n=== L6 build-solver real-game paired A/B (${r.n} pairs, iters=${ITERS}, cap=${CAP}, err=${r.err}) ===`);
   console.log(`  L6 seat win: ON ${(100*r.onW/r.n).toFixed(1)}%  OFF ${(100*r.offW/r.n).toFixed(1)}%`);
   console.log(`  paired diff: ${r.diff>=0?'+':''}${r.diff.toFixed(1)}pp ± ${r.se.toFixed(1)}pp  z=${r.z.toFixed(2)}  ${Math.abs(r.z)>=1.96?(r.z>0?'✅ significant':'negative!'):'not significant'}`);
