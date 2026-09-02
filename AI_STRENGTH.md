@@ -395,3 +395,56 @@ bash tools/build_wasm.sh                  # 重建 nn_wasm.js（需 rustup targe
 ```
 
 **下一步（Phase 2）**：用启发式/L5 混合自对弈生成百万级局面，训 NNUE 尺寸小价值网（446→256→32→4，按座次向量、rank/win 目标），叶评估改 (1−λ)·V + λ·截断 rollout，**等墙钟**对比；再用因子化层把搜索扩到建造/选地/装船（§9 分歧 74% 的建造为先）。
+
+## 13. Phase 2（2026-09）— 独立小价值网作叶评估：数据、训练、等墙钟配对评测
+
+**动机**：宗师叶评估是完整启发式 rollout（每迭代 1655 µs）；去掉 rollout 只用 NN，每迭代降到 ~330 µs（其中两次大网前向各 ~150 µs）。一个 446→256→32→4 的小价值网在 WASM 里只要 14.5 µs。若小网能以 rollout 1/5 的成本给出不差于 rollout 的估值，同样墙钟时间就有 5× 的模拟量。
+
+**设计要点**（与 §1 "value 头死权重"教训对应）：
+- 目标尺度 = `sim.js reward()`（0.8·胜份 + 0.2·clamp((my−second)/30) ∈ [−0.2,1]），与 rollout 回报同尺度 → 可用 `rolloutFrac` 混合，不再混两种尺度。旧 `relAdv`（margin/rank/vsbest）标签不再使用。
+- 训练局面 = 角色决策边界（`applyRole` 执行整个角色阶段，树中所有状态与叶都在边界上），特征 `extractRich(st, 0)`（座位 0 视角 → `valueVec[k]` = 座位 k），与 `evalLeafVecNN` 完全一致。
+- 特征全在 [0,1] 且为 k/D（D≤120）→ uint8 量化无损（446 B/局面）；分片 PRV1 格式存终局分数，任何目标训练时派生。
+- 独立网（`VNET`）不动 policy 先验；`_forward`/wasm `createForward` 接受 value_only 网。
+- **默认关**：`window._l6ValueNet/_l6LeafTruncate/_l6RolloutFrac` 未设时所有路径逐字节不变（`eval_paired_worker DEPLOY 5 0 2` 输出与 §12 记录一致）。
+
+**数据生成**（`tools/gen_value_data.js`，本机 4 核）：
+
+| 集 | 阵容 | 局数 | 局面 | 耗时 |
+|---|---|---|---|---|
+| heur | 全启发式 + ε=0.1 随机 | 40,000 | 2,467,488 | ~2 分钟（348 局/秒/核，21k 局面/秒） |
+| mix | heur 0.7 / hard@60 0.2 / expert@100 0.1 + ε=0.1 | 20,000 | （待填） | ~2 局/秒/核 |
+| roll | 同 mix + 每局面 4 次 rollout 均值 | 4,000 | （待填） | — |
+
+**训练**（`train/train_value_np.py`，仅 numpy，2 线程 ≈ 13 s/epoch @2.3M）：
+
+| 网 | 数据 | val MSE | 备注 |
+|---|---|---|---|
+| 目标方差 | heur | 0.154 | 单局终局回报的固有噪声上界 |
+| 446-256-32-4 | heur 2.3M | **0.111** | 早停于 epoch 2；校准表各桶预测/实际均值差 <0.03；按回合 MSE：0–4 回合 0.150 → 16+ 回合 0.055 |
+| 446-128-64-4 | heur 2.3M | （待填） | |
+| 446-256-32-4 | heur+mix | （待填） | |
+| rollout 基线 | roll 验证集 | 单次 rollout→outcome（待填）/ 4 次均值→outcome（待填）| 网是否比 rollout 更准 |
+
+**每迭代耗时与等墙钟倍率**（`tools/bench_search.js`，待在空闲 CPU 上重测）：rollout 1655 µs；大网价值头 t0 ~436 µs（×3.7）；vnet t0 ~326 µs（×5.0）；vnet t2 ~420 µs（×3.9）；vnet t0 + rolloutFrac 0.25 ~631 µs（×2.6）。剩余成本主要是扩展时的大网 policy 先验前向（~150 µs）+ 引擎（clone/applyRole）。
+
+**配对评测**（`tools/eval_vnet_ab.sh`，同种子，1×L6 vs 3×L5，iter-bounded）：
+
+| 臂 | 配置 | 胜率 | 配对差 vs A | z |
+|---|---|---|---|---|
+| A | 现役（完整 rollout，alphaIters 400） | （待填） | — | — |
+| B | vnet 叶评估，等墙钟 alphaIters = 400×倍率 | （待填） | （待填） | （待填） |
+| C | vnet 叶评估，同迭代 400 | （待填） | （待填） | （待填） |
+
+**判定**：（待填）。部署规则不变：z>1.96 才切默认。
+
+**复现**：
+```bash
+bash tools/gen_value_data_run.sh heur 40000 4 20261101 --mix heur:1 --eps 0.1
+bash tools/gen_value_data_run.sh mix 20000 4 20260901 --mix heur:0.7,hard:0.2,expert:0.1 --eps 0.1
+bash tools/gen_value_data_run.sh roll 4000 4 20261001 --mix heur:0.7,hard:0.2,expert:0.1 --eps 0.1 --rollouts 4
+python3 train/train_value_np.py 'data/value/heur-*.bin' 'data/value/mix-*.bin' --arch 256,32 --out mcts_value_vnet.json
+python3 train/train_value_np.py 'data/value/roll-*.bin' --eval-rollout-baseline --epochs 0
+node tools/bench_search.js 300 20 mcts_value_vnet.json
+bash tools/eval_vnet_ab.sh vnet1 480 4 <倍率>
+node tests/vnet_parity_test.js && node tests/sim_rolloutfrac_test.js && node tests/worker_vnet_test.js && node tests/gen_value_data_test.js
+```
