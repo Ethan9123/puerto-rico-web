@@ -469,3 +469,48 @@ node tools/bench_search.js 300 20 mcts_value_vnet.json
 bash tools/eval_vnet_ab.sh vnet1 480 4 <倍率>
 node tests/vnet_parity_test.js && node tests/sim_rolloutfrac_test.js && node tests/worker_vnet_test.js && node tests/gen_value_data_test.js
 ```
+
+---
+
+## 13.5 Phase 2.5 — 小合并网蒸馏（policy+value 单网替代大网）
+
+**新瓶颈**：换上价值网叶评估后每迭代 272 µs，其中价值网本身只占 ~8 µs，而**大网 policy 先验前向占 ~112 µs（41%）**。已核实每次迭代恰好扩展一个新节点（`sim.js:963` `if (wasUnvisited) break`）、每节点算一次先验（`sim.js:939` `if (priorPolicyFn && !node.P)`）→ 大网每迭代跑一次。
+
+**做法**（`train/distill_small_net.py`）：训练 446→128→64→{policy 7, value 4} 的小合并网**同时**提供先验与叶价值。policy 头用 KL 蒸馏自大网软标签（保住 §1 指出的"L6 强于 L5 的唯一来源"），value 头学 `reward` 尺度终局回报。numpy 复刻 `sim_nn.js _forward` 控制流取软标签，与 JS/WASM 实测一致到 **7.2e-7**；3.69M 局面标注 ~100 秒（37k pos/s），**无需重新生成对局**。
+
+| 指标 | 大网（现役） | 小合并网 |
+|---|---|---|
+| MACs | 655,744 | **65,984（9.9×）** |
+| 文件 | 4864 KB | **707 KB（6.9×）** |
+| top-1 一致率 | — | **90.4%**（开局 95.7% / 收官 91.5%） |
+| policy KL | — | 0.0143 |
+| value MSE | — | 0.1102（与专训价值网 0.1094 持平） |
+
+**零运行时改动**：导出用 `export_weights.py` 既有命名（最后一个 trunk relu 命名 `trunk.5`，`policy_head`/`value_head.*` 带 head 标记）→ 是 `mcts_value_nn.json` 的直接替换。parity（`tests/small_net_parity_test.js`）：JS vs WASM 7.2e-7；numpy 训练端 vs 引擎 policy 1.2e-5 / value 3.1e-6。
+
+**判定**：（测量中，480 局配对 vs 现役大网）。过线则替换部署网（离线包同步从 ~6.8 MB 瘦身）。
+
+---
+
+## 13.6 Phase 3a — 价值网 1-ply 建造前瞻（搜索首次覆盖 role 以外的决策）
+
+**动机**：§9 `solver_disagree.js` 实测终局精确解与启发式的分歧率 **build 74%** 最高，而搜索至今**只覆盖 role**（约 62/180 决策）——build 从未被搜索过。终局求解器只在 `endTriggered` 后触发（~0.43 次/局）且增益随对弈变强而缩小（§9 自我证伪）；价值网前瞻**全程可用**。
+
+**做法**（`game.js vnetPickBuilding`，opt-in `window._l6VnetBuild`，默认关）：每个合法建筑（含 PASS）→ `clone` → `azApply` → 因子化启发式续到**下一个角色边界** → `evalLeafVecNN` 取本座位价值 → 取最大。
+
+- **续到角色边界是关键**：价值网正是在角色边界上训练的（`gen_value_data.js` 每个角色决策点记一条），这样评估始终落在训练分布内。实测（`tests/vnet_build_test.js` ③）**40/40 次续局全部恰好落在角色边界**。
+- **公共随机数降噪**：每个候选用**同一种子**的独立 RNG 续局，使候选间价值差只反映"建了什么"而非续局牌运分叉；种子由局面派生（可复现）。`_l6VnetBuildSamples` 可取多次均值进一步降噪。
+- **安全闸**与 `solverPickBuilding` 同款（az 可建集合须与 `doBuilder` 逐 id 一致）；守卫：仅 L6 / 仅 4 人局（`evalLeafVecNN` 限制）/ 仅基础局 / 网未加载即回退启发式。
+- 成本 ~0.3–0.6 ms/次建造决策，相对每次角色搜索 ~450 ms 可忽略 → 两臂角色预算相同，**无需等墙钟换算**。
+
+**实测接管率**（真实 `doBuilder` 口径构造 options，192 个建造决策点）：接管 **100%**、回退 0；其中与启发式**分歧 87%**——高于终局求解器的 74%。**分歧高不等于更强**（价值网需要分辨的是彼此非常相似的局面，比预测整体胜负更难），由 480 局同种子配对评测判定。
+
+**判定**：（测量中）。过线则扩到 `captain`（分歧 55%）与 `settle`。
+
+---
+
+## 13.7 Phase 5 — 对手建模：**阻塞**（无法获取真人数据）
+
+计划用 `worker/index.js` 采集的真人对局训练模仿模型，在搜索中替换"所有人都走启发式"的对手假设。**前置条件不满足**：本沙箱出网走白名单代理（仅 npm/pypi/crates 等包管理源），`puerto-rico-web.ethanfu95.workers.dev/stats` 与自定义域均返回 `CONNECT tunnel failed, 403`；仓库内也无已导出的真人 JSONL（只有 `tools/fetch_human_wins.sh` 脚本本身）。
+
+→ **如实记为阻塞，不虚构结果。** 解阻条件：在能出网的环境跑 `tools/fetch_human_wins.sh <BASE_URL> <DUMP_TOKEN> data/human.jsonl`（注意 `RECORDING.md` 已提示 **DUMP_TOKEN 尚未设置**，`/dump` `/stats` 目前对外开放，应先 `wrangler secret put DUMP_TOKEN`）。数据到手后：`train/load_data.py` 已会跳过 `k:"sub"` 行，需新增子决策模仿模型；`game.js:2881` 已在真人建造决策点埋好 `PRTrace.recordSubDecision` 采集。
