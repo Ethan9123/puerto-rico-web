@@ -57,6 +57,10 @@ const { run } = loadEngine({
 });
 const L6_SOLVER = process.env.L6_SOLVER ? true : false; // 终局精确求解器开关(真实评测 A/B)
 const L6_SOLVER_CAP = process.env.L6_SOLVER_CAP ? parseFloat(process.env.L6_SOLVER_CAP) : null;
+// Phase 2：任意 window 旋钮以 JSON 注入(参数位置不变)，例如
+//   L6_KNOBS='{"_l6ValueNet":true,"_l6LeafTruncate":0,"__MCTS_VALUE_VNET__":"mcts_value_vnet.json","_aiThinkBudget":{...,"alphaIters":2400}}'
+// 注入在默认预算之后 → 可覆盖 _aiThinkBudget；_l6ValueNet 为真时断言价值网已加载(否则测量无意义)。
+const KNOBS = process.env.L6_KNOBS ? JSON.parse(process.env.L6_KNOBS) : null;
 
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
@@ -69,9 +73,11 @@ const src = `(async () => {
   ${HEUR_OBJ ? `window._l6Heur = ${JSON.stringify(HEUR_OBJ)};` : ''}
   ${L6_SOLVER ? `window._l6Solver = true;` : ''}
   ${L6_SOLVER_CAP != null ? `window._l6SolverCap = ${L6_SOLVER_CAP};` : ''}
+  ${KNOBS ? `Object.assign(window, ${JSON.stringify(KNOBS)});` : ''}
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');
+  ${KNOBS && KNOBS._l6ValueNet ? `{ const vOk = await loadValueNetOnce(); if (!vOk || !(PRSim.valueNetLoaded && PRSim.valueNetLoaded())) throw new Error('价值网未加载(_l6ValueNet=true) → 测量无意义'); }` : ''}
   const N = 4;
   const rows = [];
   for (let g = ${G_START}; g < ${G_END}; g++) {

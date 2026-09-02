@@ -1663,6 +1663,7 @@ function startGame(netOpts) {
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
+  if (needsNN && window._l6ValueNet) loadValueNetOnce(); // Phase 2：opt-in 价值网叶评估
   // L4/L5/L6 搜索 AI：提前预热 worker 池（不阻塞；不可用时首次选角自动回退同步搜索）
   // （needsNN 时顺带让 worker 预取 NN 权重，不阻塞 L4/L5 的首次选角；worker 仅在 L6 选角时才需要 NN）
   if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(needsNN);
@@ -1706,6 +1707,32 @@ function loadAlphaZeroNN() {
     .then(() => { console.log(`[L6] AlphaZero NN loaded (${netTag})`); return true; })
     .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
   return _nnLoadPromise;
+}
+
+// ---- Phase 2：独立小价值网（叶评估替代完整 rollout；opt-in，默认关）----
+// 旋钮（同步/worker 两条路径一致；worker 经 PRAIPool._knobs 透传）：
+//   window._l6ValueNet     true → 叶评估用价值网 PRSim.evalLeafVecNN（需 mcts_value_vnet.json 已加载）
+//   window._l6LeafTruncate 叶评估前先走的启发式步数（默认 999 = 完整 rollout，即现状）
+//   window._l6RolloutFrac  每次迭代以该概率改走完整 rollout（0..1，默认 0；与价值网同尺度可混合）
+// 权重来源规则与 resolveNNSource 相同：内嵌 window.__MCTS_VALUE_VNET__（离线包）否则 fetch mcts_value_vnet.json。
+function resolveValueNetSource() {
+  return (typeof window !== "undefined" && window.__MCTS_VALUE_VNET__) ? window.__MCTS_VALUE_VNET__ : "mcts_value_vnet.json";
+}
+let _vnetLoadPromise = null;
+function loadValueNetOnce() {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadValueNet) return Promise.resolve(false);
+  if (PRSim.valueNetLoaded && PRSim.valueNetLoaded()) return Promise.resolve(true);
+  if (_vnetLoadPromise) return _vnetLoadPromise;
+  _vnetLoadPromise = PRSim.loadValueNet(resolveValueNetSource())
+    .then(() => { console.log("[L6] value net loaded"); return true; })
+    .catch(e => { console.warn("[L6] value net missing, leaf eval stays rollout:", e.message); return false; });
+  return _vnetLoadPromise;
+}
+function l6LeafOpts() {
+  return {
+    truncate: (window._l6LeafTruncate != null ? window._l6LeafTruncate : 999),
+    rolloutFrac: (window._l6RolloutFrac > 0 ? window._l6RolloutFrac : 0),
+  };
 }
 
 // 动态渲染每个 CPU 的难度下拉
@@ -3891,8 +3918,12 @@ function alphazeroPickRole(p, available) {
       //   对 MCTS 近平局角色按温度采样打散确定性响应表; self-play/低预算默认 argmax 可复现。生产档(800)配对验无损(−1.0pp,z=−0.28), 见 AI_STRENGTH §13。
       tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
       C: (window._alphaC != null ? window._alphaC : 1.5), // PUCT 常数；NN policy 比较自信，稍微鼓励探索（_alphaC 供调参注入）
-      truncate: 999, // 全 rollout 到终局：用 NN 仅作 policy prior，value 用真实回报
+      // 默认 truncate 999 = 全 rollout 到终局：NN 仅作 policy prior，value 用真实回报。
+      // Phase 2 旋钮 _l6LeafTruncate/_l6RolloutFrac/_l6ValueNet（见 l6LeafOpts）可切到价值网叶评估。
+      truncate: l6LeafOpts().truncate,
+      rolloutFrac: l6LeafOpts().rolloutFrac,
       evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
+      evalLeafVecFn: (window._l6ValueNet && PRSim.evalLeafVecNN) ? ((state) => PRSim.evalLeafVecNN(state)) : undefined,
       priorPolicyFn: (state, seat) => {
         const out = PRSim.networkEval(state, seat);
         if (!out) return null;
@@ -3930,8 +3961,8 @@ function alphazeroPickRole(p, available) {
 // 不可用时（Node 沙盒 / file:// 离线 / 无 Worker / 显式关闭：?aiworker=0 或 window._aiNoWorker=true）
 // 或任何出错，调用方回退到原同步函数 → Node 评测工具行为逐位不变。
 const PRAIPool = {
-  K: 0, nn: false, wasm: false, lastIters: 0,
-  _slots: [], _initP: null, _nnP: null, _broken: false, _reqId: 0, _hooked: false,
+  K: 0, nn: false, wasm: false, vnet: false, lastIters: 0,
+  _slots: [], _initP: null, _nnP: null, _vnetP: null, _broken: false, _reqId: 0, _hooked: false,
   available() {
     if (this._broken) return false;
     try {
@@ -3950,7 +3981,7 @@ const PRAIPool = {
   // 搜索旋钮：sim.js 通过 root._mctsC/_mctsEps、window._captainDeny 读取；worker 内 self 即 root/window
   _knobs() {
     const k = {};
-    for (const n of ["_mctsC", "_mctsEps", "_captainDeny", "_alphaC"]) if (window[n] != null) k[n] = window[n];
+    for (const n of ["_mctsC", "_mctsEps", "_captainDeny", "_alphaC", "_l6ValueNet", "_l6LeafTruncate", "_l6RolloutFrac"]) if (window[n] != null) k[n] = window[n];
     return k;
   },
   // 本局在场建筑表 + 造价：Game 构造/轮抽会就地改写 BUILDINGS、平衡模式改 BLD_BY_ID[15/16].cost，
@@ -4022,34 +4053,43 @@ const PRAIPool = {
   },
   // 按需让所有 worker 加载 NN（仅 L6/alpha 需要；L4/L5 不为 5MB 权重付费）。返回 Promise<boolean>（全部 worker 都有 NN）。
   ensureNN() {
-    if (!this._nnP) this._nnP = this._loadNN().catch(e => { console.warn("[ai-worker] NN load failed", e); return false; });
+    if (!this._nnP) this._nnP = this._loadNN("nn").catch(e => { console.warn("[ai-worker] NN load failed", e); return false; });
     return this._nnP;
   },
-  async _loadNN() {
+  // Phase 2：按需让所有 worker 加载独立价值网（仅 _l6ValueNet 开启时）。返回 Promise<boolean>。
+  ensureVNet() {
+    if (!this._vnetP) this._vnetP = this._loadNN("vnet").catch(e => { console.warn("[ai-worker] value net load failed", e); return false; });
+    return this._vnetP;
+  },
+  // 权重源 → 可 structured-clone 的 URL 或纯数据副本（主线程 loadNetwork 可能已挂上 _wasmForward 函数）
+  _cloneableSrc(src) {
+    if (typeof src === "string") return new URL(src, location.href).href;
+    const o = Object.assign({}, src); delete o._wasmForward; return o;
+  },
+  async _loadNN(which) {
     const ok = await this.ensure();
     if (!ok || !this._slots.length) return false;
-    const { src } = resolveNNSource(); // 与主线程 loadAlphaZeroNN 同一来源
-    // 内嵌权重对象：主线程 loadNetwork 可能已挂上 _wasmForward(函数，不能 structured-clone) → 只传纯数据副本
-    let nnUrl;
-    if (typeof src === "string") nnUrl = new URL(src, location.href).href;
-    else { nnUrl = Object.assign({}, src); delete nnUrl._wasmForward; }
+    const msg = { type: "loadnn" };
+    if (which === "vnet") msg.vnetUrl = this._cloneableSrc(resolveValueNetSource());
+    else msg.nnUrl = this._cloneableSrc(resolveNNSource().src); // 与主线程 loadAlphaZeroNN 同一来源
     const replies = await Promise.all(this._slots.map(slot => new Promise(resolve => {
       if (!slot.alive) return resolve(null);
       slot.nnResolve = resolve;
-      try { slot.w.postMessage({ type: "loadnn", nnUrl }); }
+      try { slot.w.postMessage(msg); }
       catch (e) { slot.nnResolve = null; console.warn("[ai-worker] loadnn postMessage failed:", (e && e.message) || e); resolve(null); }
     })));
-    this.nn = replies.length > 0 && replies.every(r => r && r.nn);
-    this.wasm = replies.length > 0 && replies.every(r => r && r.wasm);
-    const failed = replies.filter(r => !(r && r.nn));
-    if (failed.length) console.warn(`[ai-worker] NN unavailable in ${failed.length}/${replies.length} workers` + (failed.some(r => r && r.message) ? ": " + failed.filter(r => r && r.message).map(r => r.message).join("; ") : ""));
-    else console.log(`[ai-worker] nn=${this.nn} wasm=${this.wasm}`);
-    return this.nn;
+    const key = which === "vnet" ? "vnet" : "nn";
+    this[key] = replies.length > 0 && replies.every(r => r && r[key]);
+    if (which !== "vnet") this.wasm = replies.length > 0 && replies.every(r => r && r.wasm);
+    const failed = replies.filter(r => !(r && r[key]));
+    if (failed.length) console.warn(`[ai-worker] ${key} unavailable in ${failed.length}/${replies.length} workers` + (failed.some(r => r && r.message) ? ": " + failed.filter(r => r && r.message).map(r => r.message).join("; ") : ""));
+    else console.log(`[ai-worker] ${key}=${this[key]} wasm=${this.wasm}`);
+    return this[key];
   },
   // 终止 worker 并把池复位（不标记 _broken：bfcache 恢复后下次选角可重新起池；真正 init 失败才置 _broken）
   terminate() {
     for (const s of this._slots) { try { if (s.w) s.w.terminate(); } catch (e) {} s.alive = false; }
-    this._slots = []; this.K = 0; this.nn = false; this.wasm = false; this._initP = null; this._nnP = null;
+    this._slots = []; this.K = 0; this.nn = false; this.wasm = false; this.vnet = false; this._initP = null; this._nnP = null; this._vnetP = null;
   },
   // st: buildSimState 结果；mode: 'hard'|'expert'|'alpha'；opts: 可序列化搜索选项（函数型选项由 worker 按 mode 重建）
   // 返回 st.roleCards 索引；池不可用/无任何 worker 返回结果 → 抛错（调用方回退同步搜索）。
@@ -4057,6 +4097,7 @@ const PRAIPool = {
     const ok = await this.ensure();
     if (!ok || !this._slots.length) throw new Error("ai-worker pool unavailable");
     if (mode === "alpha" && !this.nn) throw new Error("ai-worker NN unavailable");
+    if (mode === "alpha" && window._l6ValueNet && !this.vnet) throw new Error("ai-worker value net unavailable");
     const id = ++this._reqId;
     const state = Object.assign({}, st); delete state.rnd; // 函数不能 structured-clone；worker 侧按 seed 自建 RNG
     const knobs = this._knobs();
@@ -4118,6 +4159,7 @@ async function alphazeroPickRoleAsync(p, available) {
     const ok = await PRAIPool.ensure();
     const nn = ok && await PRAIPool.ensureNN(); // worker 按需加载 NN（L4/L5 局不加载）
     if (!nn) return alphazeroPickRole(p, available); // worker 无 NN → 同步路径自行决定 L6/L5
+    if (window._l6ValueNet) { const v = await PRAIPool.ensureVNet(); if (!v) return alphazeroPickRole(p, available); } // Phase 2：价值网叶评估
     const st = buildSimState(G);
     if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
     // 终局精确求解器(opt-in: window._l6Solver)：同同步版，在主线程同步求解（有 cap）
@@ -4143,8 +4185,9 @@ async function alphazeroPickRoleAsync(p, available) {
       budgetMs: ms,
       tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
       C: (window._alphaC != null ? window._alphaC : 1.5),
-      truncate: 999,
-      // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布：由 worker 按 mode='alpha' 重建
+      truncate: l6LeafOpts().truncate,       // 默认 999（完整 rollout）；Phase 2 旋钮见 l6LeafOpts
+      rolloutFrac: l6LeafOpts().rolloutFrac,
+      // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布 / evalLeafVecFn(价值网, 按 _l6ValueNet 旋钮)：由 worker 按 mode='alpha' 重建
     };
     const ri = await PRAIPool.pickRoleParallel(st, "alpha", opts);
     if (ri == null || ri < 0) return ismctsPickRoleAsync(p, available, "expert");

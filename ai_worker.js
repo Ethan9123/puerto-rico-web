@@ -10,8 +10,8 @@
 // 消息协议（主线程 → worker）：
 //   {type:'init', staticData:{BUILDINGS,BLD_BY_ID,GOODS,GOOD_PRICE,ROLE_LIST}, nnUrl?:string|object, knobs?}
 //     → 回 {type:'ready', nn:boolean, wasm:boolean}（nn=NN 权重是否加载成功；nnUrl 缺省则不加载 NN）
-//   {type:'loadnn', nnUrl:string|object}   按需加载 NN（仅 L6/alpha 需要；主线程池默认 init 不带 nnUrl）
-//     → 回 {type:'nnready', nn:boolean, wasm:boolean, message?}
+//   {type:'loadnn', nnUrl?:string|object, vnetUrl?:string|object}   按需加载 NN / 价值网（仅 L6/alpha 需要；主线程池默认 init 不带 nnUrl）
+//     → 回 {type:'nnready', nn:boolean, vnet:boolean, wasm:boolean, message?}
 //   {type:'pick', id, state, mode:'hard'|'expert'|'alpha', opts:{budgetMs,maxIters,C,truncate,tempSample?,valueW?}, seed, knobs, tables?}
 //     → 回 {type:'result', id, idx, stats:[{nm,N,Q}], iters}  或  {type:'error', id, message}
 //   knobs: {_mctsC,_mctsEps,_captainDeny,_alphaC,...} 原样赋到 self（sim.js 通过 root._mctsC 等读取）
@@ -74,6 +74,21 @@
     }
     return nnLoading;
   }
+  // Phase 2：独立价值网（叶评估）；主线程在 _l6ValueNet 开启时经 loadnn.vnetUrl 请求加载
+  let vnetOk = false, vnetLoading = null;
+  async function loadVNet(vnetUrl) {
+    if (vnetOk) return { vnet: true };
+    if (!vnetLoading) {
+      vnetLoading = (async () => {
+        try {
+          if (typeof self.PRSim.loadValueNet !== "function") throw new Error("sim_nn.js lacks loadValueNet");
+          await self.PRSim.loadValueNet(vnetUrl); vnetOk = !!(self.PRSim.valueNetLoaded && self.PRSim.valueNetLoaded()); return { vnet: vnetOk };
+        } catch (e) { vnetOk = false; return { vnet: false, message: (e && e.message) ? e.message : String(e) }; }
+        finally { vnetLoading = null; }
+      })();
+    }
+    return vnetLoading;
+  }
 
   async function handleInit(msg) {
     self._PR_STATIC = msg.staticData;
@@ -86,10 +101,12 @@
   }
 
   async function handleLoadNN(msg) {
-    if (!loaded) { self.postMessage({ type: "nnready", nn: false, wasm: false, message: "worker not initialised" }); return; }
-    const r = await loadNN(msg.nnUrl);
+    if (!loaded) { self.postMessage({ type: "nnready", nn: false, vnet: false, wasm: false, message: "worker not initialised" }); return; }
+    let message;
+    if (msg.nnUrl) { const r = await loadNN(msg.nnUrl); if (r.message) message = r.message; }
+    if (msg.vnetUrl) { const r = await loadVNet(msg.vnetUrl); if (r.message) message = (message ? message + "; " : "") + r.message; }
     const wasm = !!(self.PRNNWasm && self.PRNNWasm.available);
-    self.postMessage({ type: "nnready", nn: !!r.nn, wasm, message: r.message });
+    self.postMessage({ type: "nnready", nn: nnOk, vnet: vnetOk, wasm, message });
   }
 
   function handlePick(msg) {
@@ -100,6 +117,7 @@
       applyKnobs(msg.knobs);
       syncTables(msg.tables);
       if (msg.mode === "alpha" && !nnOk) throw new Error("NN not loaded in worker");
+      if (msg.mode === "alpha" && self._l6ValueNet && !vnetOk) throw new Error("value net not loaded in worker"); // 不静默退化到 rollout
       const st = msg.state;
       st.rnd = mulberry32((msg.seed >>> 0) || 1); // 各 worker 独立种子 → root-parallel 探索多样化
       const base = Object.assign({}, msg.opts || {}, { returnStats: true });

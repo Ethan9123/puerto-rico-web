@@ -912,6 +912,9 @@
     const evalLeafFn = opts.evalLeafFn || null;
     const evalLeafVecFn = opts.evalLeafVecFn || null;
     const priorPolicyFn = opts.priorPolicyFn || null;
+    // Phase 2：rolloutFrac ∈ (0,1] 时，每次迭代以该概率改走完整 rollout（reward 尺度）而非 NN 叶评估；
+    // 仅在 >0 时才消耗 rootState.rnd，默认 0 路径的 PRNG 流与旧版逐位一致。
+    const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
     if (currentChooser(rootState) < 0) return opts.returnStats ? { idx: -1, stats: [], iters: 0 } : -1;
     const rootLegal = legalRoleIdxs(rootState);
     if (rootLegal.length <= 1) return opts.returnStats ? { idx: rootLegal[0], stats: [], iters: 0 } : rootLegal[0];
@@ -960,7 +963,9 @@
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout / NN eval
       }
       let leafEval;
-      if (evalLeafFn || evalLeafVecFn) {
+      const useNet = (evalLeafFn || evalLeafVecFn) &&
+        (rolloutFrac <= 0 || (rootState.rnd ? rootState.rnd() : Math.random()) >= rolloutFrac);
+      if (useNet) {
         // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
         // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
         // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
@@ -1048,6 +1053,8 @@
       opts.evalLeafFn = (s2, persp) => econReward(s2, persp);
     } else if (mode === "alpha") {
       opts.evalLeafFn = (state, seat) => API.evalLeafNN(state, seat);
+      // Phase 2：root._l6ValueNet 为真 → 叶评估用独立价值网的向量版（一次前向给 4 座位；VNET 缺失时 sim_nn 退回大网价值头）
+      if (root._l6ValueNet && typeof API.evalLeafVecNN === "function") opts.evalLeafVecFn = (state) => API.evalLeafVecNN(state);
       opts.priorPolicyFn = (state, seat) => {
         const out = API.networkEval(state, seat);
         if (!out) return null;

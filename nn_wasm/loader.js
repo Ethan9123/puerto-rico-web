@@ -158,7 +158,7 @@
       }
       if (L.type === "relu" && L.name && L.name.startsWith("trunk.5")) trunkOut = cur;
     }
-    if (!policyBuf) throw new Error("network has no policy head");
+    if (!policyBuf && !net.value_only) throw new Error("network has no policy head");
     if (!valueBuf) throw new Error("network has no value head");
 
     // ---- 融合 dense + 紧随的原地激活 ----
@@ -197,7 +197,8 @@
     const P = prog.map(op => op.kind === "dense"
       ? { d: 1, x: base + op.src.off * 4, w: base + op.w.wOff * 4, b: base + op.w.bOff * 4, o: base + op.dst.off * 4, n: op.w.inDim, m: op.w.outDim, act: op.act }
       : { d: 0, s: base + op.src.off * 4, o: base + op.dst.off * 4, n: op.src.n, act: op.act });
-    const inF = baseF + inOff, pF = baseF + policyBuf.off, pN = policyBuf.n, vF = baseF + valueBuf.off, vN = valueBuf.n;
+    // value_only 网无 policy 段：pF=-1 → forward 返回 policyLogits=null
+    const inF = baseF + inOff, pF = policyBuf ? baseF + policyBuf.off : -1, pN = policyBuf ? policyBuf.n : 0, vF = baseF + valueBuf.off, vN = valueBuf.n;
     const wasmDense = ex.dense, wasmAct = ex.activate;
 
     function forward(features) {
@@ -211,7 +212,7 @@
         if (q.d) wasmDense(q.x, q.w, q.b, q.o, q.n, q.m, q.act);
         else wasmAct(q.s, q.o, q.n, q.act);
       }
-      const policyLogits = V.slice(pF, pF + pN);
+      const policyLogits = pF >= 0 ? V.slice(pF, pF + pN) : null;
       const valueVec = V.slice(vF, vF + vN);
       return { policyLogits, value: valueVec[0], valueVec };
     }
