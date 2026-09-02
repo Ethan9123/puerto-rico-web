@@ -3829,7 +3829,8 @@ function solverPickBuilding(p, options, isChooser) {
 // 做法：对每个合法建筑（含 PASS），clone → azApply 该 build → 用因子化启发式续到**下一个角色边界**
 // → evalLeafVecNN 取本座位价值 → 取最大。续到角色边界是关键：价值网正是在角色边界上训练的
 // （tools/gen_value_data.js 每个角色决策点记一条），这样评估始终落在训练分布内。
-// 成本：候选 ~10-20 × (~30 µs 续局 + ~10 µs 前向) ≈ 0.3-0.6 ms/次建造决策，远低于一次角色搜索(~450 ms)。
+// 成本（实测）：3.09 ms/次建造决策（平均 14.1 候选，0.22 ms/候选；启发式 0.083 ms → 37×）。
+// 每局约 10-15 次建造 ≈ +45 ms/局，相对每局 ~5 s（400 iters 角色搜索）<1%，可忽略。
 // 安全闸与 solverPickBuilding 同款：az 重建的可建集合须与 doBuilder 逐 id 一致，否则回退启发式。
 // 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
 function vnetPickBuilding(p, options, isChooser) {
