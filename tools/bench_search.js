@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // tools/bench_search.js — Phase 2：各叶评估模式的每迭代耗时 → 等墙钟迭代倍率
 //   模式: rollout(truncate 999) | vnet t0 | vnet t2 | vnet t0 + rolloutFrac 0.25 | bignet-value t0(现役大网价值头)
-//   用法: node tools/bench_search.js [iters=300] [states=20] [vnetPath=mcts_value_vnet.json]
+//         | small-combined(小合并网同时当 policy 先验 + value 叶评估, Phase 2.5)
+//   用法: node tools/bench_search.js [iters=300] [states=20] [vnetPath=mcts_value_vnet.json] [smallNet=mcts_value_nn_small.json]
 'use strict';
 const fs = require('fs');
 const { loadEngine } = require('./_sandbox.js');
 const ITERS = parseInt(process.argv[2] || '300');
 const NSTATES = parseInt(process.argv[3] || '20');
 const VNET = process.argv[4] || 'mcts_value_vnet.json';
+const SMALL = process.argv[5] || 'mcts_value_nn_small.json';
 const { sandbox, PRSim: S } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'nn_wasm.js', 'sim_nn.js'] });
 function mulberry32(a) { return function () { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const now = () => Number(process.hrtime.bigint()) / 1e6;
@@ -15,6 +17,7 @@ const now = () => Number(process.hrtime.bigint()) / 1e6;
 (async () => {
   await S.loadNetwork('mcts_value_nn.json');
   const hasV = fs.existsSync(VNET);
+  const hasSmall = fs.existsSync(SMALL);
   if (hasV) await S.loadValueNet(VNET); else console.log(`(no ${VNET}; "vnet" modes use the big net's value head)`);
   // 种子化中盘局面（不同深度）
   const states = [];
@@ -30,9 +33,16 @@ const now = () => Number(process.hrtime.bigint()) / 1e6;
     { name: 'vnet t0', knobs: { vnet: true, truncate: 0, frac: 0 } },
     { name: 'vnet t2', knobs: { vnet: true, truncate: 2, frac: 0 } },
     { name: 'vnet t0 + rolloutFrac 0.25', knobs: { vnet: true, truncate: 0, frac: 0.25 } },
+    // Phase 2.5：小合并网同时提供 policy 先验与 value 叶评估（替换大网，非附加）
+    { name: 'small-combined t0', knobs: { vnet: false, truncate: 0, frac: 0, bigVec: true, small: true } },
   ];
   const results = [];
   for (const m of modes) {
+    if (m.knobs.small) {
+      if (!hasSmall) { console.log(`${'small-combined t0'.padEnd(30)}  (skipped: no ${SMALL})`); continue; }
+      await S.loadNetwork(SMALL);      // 小网进 NET → 先验与价值都来自它
+      S.unloadValueNet();              // 确保 evalLeafVecNN 用 NET 而不是独立价值网
+    }
     sandbox._l6ValueNet = !!m.knobs.vnet;
     let total = 0, iters = 0;
     for (let i = 0; i < states.length; i++) {
