@@ -510,7 +510,26 @@ node tests/vnet_parity_test.js && node tests/sim_rolloutfrac_test.js && node tes
 
 **零运行时改动**：导出用 `export_weights.py` 既有命名（最后一个 trunk relu 命名 `trunk.5`，`policy_head`/`value_head.*` 带 head 标记）→ 是 `mcts_value_nn.json` 的直接替换。parity（`tests/small_net_parity_test.js`）：JS vs WASM 7.2e-7；numpy 训练端 vs 引擎 policy 1.2e-5 / value 3.1e-6。
 
-**判定**：（测量中，480 局配对 vs 现役大网）。过线则替换部署网（离线包同步从 ~6.8 MB 瘦身）。
+### 判定：**不替换部署网**（第十一条负结果）
+
+480 局同种子配对（B = 小网作部署网，A 复用 `vnet1-A`；两臂同为 400 iters + 完整 rollout，
+**唯一差异是 policy 先验来自小网还是大网**）：
+
+| | 胜率 | 配对差 | z | 宗师均分配对差 |
+|---|---|---|---|---|
+| B（小网 707 KB） vs A（大网 4.9 MB） | 31.4% vs 35.4% | **−4.0pp ± 2.8** | −1.43 | +0.18 ± 0.56 |
+
+**"不显著" ≠ "等价"，这是替换决策的关键区别**：−4.0pp ± 2.8 的 95% 置信区间约为
+**[−9.5pp, +1.5pp]**——真实损失有可能高达 9.5pp。要证明"可以安全替换"需要的是**等价性检验**
+（置信区间落在可接受区间内），而不是"没测出显著差异"。以 480 局的精度，本结果**不足以支持替换**。
+
+**为什么 90.4% 的 top-1 一致率不够**：剩下的 9.6% 分歧**不是随机分布**的——它集中在
+"两个角色评分接近、先验最起作用"的困难决策上。恰恰是这些局面决定胜负。
+另一处佐证：小网**均分几乎持平（+0.18）而胜率低 4pp**——与 §7 的 BR 数据现象同构
+（"学会刷分、没学会抢第一"），只有配对评测的胜率口径能暴露。
+
+→ 保留 `mcts_value_nn_small.json` 与蒸馏管线（`train/distill_small_net.py`）供后续用更强蒸馏目标
+（如用搜索访问分布而非 argmax 软标签、或提高容量到 256-64）重试；**部署网维持大网不变**。
 
 ---
 
@@ -563,3 +582,69 @@ node tests/vnet_parity_test.js && node tests/sim_rolloutfrac_test.js && node tes
 计划用 `worker/index.js` 采集的真人对局训练模仿模型，在搜索中替换"所有人都走启发式"的对手假设。**前置条件不满足**：本沙箱出网走白名单代理（仅 npm/pypi/crates 等包管理源），`puerto-rico-web.ethanfu95.workers.dev/stats` 与自定义域均返回 `CONNECT tunnel failed, 403`；仓库内也无已导出的真人 JSONL（只有 `tools/fetch_human_wins.sh` 脚本本身）。
 
 → **如实记为阻塞，不虚构结果。** 解阻条件：在能出网的环境跑 `tools/fetch_human_wins.sh <BASE_URL> <DUMP_TOKEN> data/human.jsonl`（注意 `RECORDING.md` 已提示 **DUMP_TOKEN 尚未设置**，`/dump` `/stats` 目前对外开放，应先 `wrangler secret put DUMP_TOKEN`）。数据到手后：`train/load_data.py` 已会跳过 `k:"sub"` 行，需新增子决策模仿模型；`game.js:2881` 已在真人建造决策点埋好 `PRTrace.recordSubDecision` 采集。
+
+---
+
+## 13.8 本轮总结（Phase 1–5）：一条净收益、四条负结果、一条阻塞
+
+### 已部署的净收益（Phase 1，与 AI 棋力无关但都是真实改善）
+
+| 项 | 效果 |
+|---|---|
+| Web Worker 根并行搜索 | 主线程卡顿 **6026 ms → 140–178 ms**（Chromium 实测）；3 worker 合并 21,824 迭代/决策 |
+| WASM SIMD 推理 | NN 前向 **1478 → 112 µs（13×）**；parity 1.9e-6 |
+| Node 工具链解堵 | `game.js:1899` 守卫 + 44 份沙箱样板合并为 `tools/_sandbox.js`（净 −434 行）→ 全部 tools/tests 恢复可运行 |
+| 贵族钳制移除 | 贵族局 L4–L6 此前被静默降为 L3；移除后宗师/专家 vs 3×困难 **23.7%→83.8% / 29.4%→80.0%** |
+| 因子化层 2 人局修复 | `azFinishRole` 用 `picksPerRound(n)`（2p=6）而非 `numPlayers` |
+| 参考池评测 | `tools/eval_pool.js` + Plackett-Luce 评分，摆脱"只对克隆自己测"的均分封顶 |
+
+### 四条负结果（全部 480 局同种子配对，默认均保持不变）
+
+| 实验 | 机制 | 配对差 | z |
+|---|---|---|---|
+| §13 B 臂 | 价值网叶评估，等墙钟 1645 iters | −0.4pp | −0.13 |
+| §13 C 臂 | 价值网叶评估，同迭代 400 | −5.4pp | −1.88 |
+| §13.5 | 小合并网作 policy 先验（707 KB 替 4.9 MB） | −4.0pp | −1.43 |
+| §13.6 | 价值网 1-ply 建造前瞻 | −5.1pp | −1.81 |
+
+**统一解释**：三个"同预算"实验（C / 13.5 / 13.6）都落在 **−4 ~ −5.4pp**，机制各不相同却输在同一量级。
+
+> **学出来的近似器擅长"估整体水平"，不擅长"分辨相似候选"。**
+> 价值网预测终局回报的 MSE 比单次 rollout 低 41%（0.109 vs 0.183），甚至优于 4 次 rollout 均值（0.134）——
+> 但 MCTS 的 Q 值是**同一节点反复采样的均值**，rollout 的无偏噪声会被平均掉，价值网的**系统性偏差不会**；
+> 而选建筑/选角色要分辨的恰恰是**彼此非常接近**的候选，偏差在这里盖过信号。
+> 手工启发式（`evalBuildingValue`、`strategicRoleBias`）编码的正是针对这种细粒度比较调出来的领域知识。
+
+**方法论要点（本轮最大的可复用产出）**：
+1. **叶评估 MSE 更准 ≠ 搜索更强**。用离线预测精度选叶评估器会系统性误导。
+2. **"不显著" ≠ "等价"**。§13.5 的 −4.0pp ± 2.8（95% CI ≈ [−9.5, +1.5]）不足以支持替换部署网；
+   替换类决策需要**等价性检验**而非"没测出差异"。
+3. **分歧率高 ≠ 改得对**。§13.6 接管率 100%、与启发式分歧 87%，方向却是错的。
+4. **均分持平而胜率下降**（§13.5 +0.18 分 / −4.0pp）只有配对评测的胜率口径能暴露（与 §7 BR 数据同构）。
+
+### 未证伪、有研究背书的后续方向
+
+- **AlphaGo 式 λ 混合叶评估** `(1−λ)·V + λ·rollout`：能力已建好（`sim.js opts.rolloutFrac`，尺度已对齐 `reward`），
+  `rolloutFrac=0.25` 每迭代 430 µs（×2.60）。混合可能兼得"无偏"与"低方差"，是本轮唯一未测的正统路线。
+- **更强的蒸馏目标**：用搜索访问分布（软标签）而非大网 argmax，或提高小网容量到 256-64。
+- **精确求解而非估值**：§9 的终局求解器是唯一在 sim 层拿到显著正收益的方向（+1.7pp, z=2.73），
+  与本轮结论一致——**树小到能穷举时用真值，不要用估计**。
+
+### Phase 4（专家迭代）：**按门槛跳过，未执行**
+
+计划规定 Phase 4 仅在 Phase 2/3 取得净增益后才跑（用改进后的 AI 重新生成数据→重训→晋级）。
+四条实验均未过线，**没有"更强的基线"可供迭代**；在未改善的基线上做自对弈迭代只会放大噪声
+（§4 已记录过无锚自对弈退化到 20.8% 的先例）。如实记为**按门槛跳过**，而非"已完成"。
+
+### 复现全部结论
+
+```bash
+# 负结果（各 480 局，A 臂可复用）
+bash tools/eval_vnet_ab.sh vnet1 480 4 4.11 mcts_value_vnet.json 0 0     # §13 三臂
+L6_KNOBS='{"_l6VnetBuild":true,"__MCTS_VALUE_VNET__":"mcts_value_vnet.json"}' \
+  bash tools/eval_paired_run.sh vnetbuild-B DEPLOY 5 480 4 20260611      # §13.6
+bash tools/eval_paired_run.sh small-B mcts_value_nn_small.json 5 480 4 20260611  # §13.5
+node tools/paired_report.js data/paired/<B>.jsonl data/paired/vnet1-A-lo5.jsonl
+# 估计器对比（本轮最硬的正面结论）
+python3 train/train_value_np.py 'data/value/roll-*.bin' --eval-rollout-baseline --arch 128,64
+```
