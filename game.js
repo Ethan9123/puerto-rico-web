@@ -2873,8 +2873,10 @@ async function doBuilder(playerIdx, isChooser) {
     });
     if (pickIdx === null) return;
   } else {
-    const sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
-    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser); // 终局精确(opt-in) 否则启发式
+    // 优先级：终局精确求解(opt-in) → 价值网 1-ply 前瞻(opt-in, Phase 3a) → 启发式
+    let sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
+    if (sp === null && typeof vnetPickBuilding === "function") sp = vnetPickBuilding(p, options, isChooser);
+    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser);
     if (pickIdx < 0) return;
   }
   const { b, cost } = options[pickIdx];
@@ -3814,6 +3816,81 @@ function solverPickBuilding(p, options, isChooser) {
     if (!sol || sol.action == null) return null;
     if (sol.action < 0) return -1;                      // PASS = 不建造
     const idx = options.findIndex(o => o.b.id === sol.action);
+    return idx >= 0 ? idx : null;
+  } catch (e) { return null; }
+}
+
+// ---- Phase 3a：价值网 1-ply 前瞻接管 L6 *建造*子决策（opt-in: window._l6VnetBuild，默认关闭）----
+// 动机（AI_STRENGTH §9 `tools/solver_disagree.js`）：终局精确解与启发式的分歧率 build 74% 最高，
+// 而搜索至今**只覆盖 role**（约 62/180 决策）——build 从未被搜索过。终局求解器只在 endTriggered 后
+// 触发（~0.43 次/局）且增益随对弈变强而缩小；价值网前瞻则**全程可用**。
+//
+// 做法：对每个合法建筑（含 PASS），clone → azApply 该 build → 用因子化启发式续到**下一个角色边界**
+// → evalLeafVecNN 取本座位价值 → 取最大。续到角色边界是关键：价值网正是在角色边界上训练的
+// （tools/gen_value_data.js 每个角色决策点记一条），这样评估始终落在训练分布内。
+// 成本：候选 ~10-20 × (~30 µs 续局 + ~10 µs 前向) ≈ 0.3-0.6 ms/次建造决策，远低于一次角色搜索(~450 ms)。
+// 安全闸与 solverPickBuilding 同款：az 重建的可建集合须与 doBuilder 逐 id 一致，否则回退启发式。
+// 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
+function vnetPickBuilding(p, options, isChooser) {
+  if (!window._l6VnetBuild || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.azDecision !== "function" || typeof PRSim.evalLeafVecNN !== "function") return null;
+  if (!PRSim.isLoaded || !PRSim.isLoaded()) return null;                       // 网未加载 → 启发式
+  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null; // az 层未完整建模扩展
+  if (G.numPlayers !== 4) return null;                                          // evalLeafVecNN 仅 4 人局
+  try {
+    const st = buildSimState(G);
+    const bcard = st.roleCards.find(r => r.name === "Builder");
+    const chooser = bcard ? bcard.takenBy : null;
+    if (chooser == null) return null;
+    const N = st.numPlayers;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "builder", chooser, ord, oi };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
+    // 安全闸：az 可建集合必须与 game.js doBuilder 完全一致，否则前瞻的是错模型 → 回退
+    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
+    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
+    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+
+    const allowPass = window._l6VnetBuildPass !== false;   // 默认允许"不建造"参与比较
+    // 公共随机数(common random numbers)：每个候选用**同一个种子**的独立 RNG 续局，
+    // 使候选间的价值差只反映"建了什么"，而非续局抽牌运气的分叉（否则不同候选消耗的随机数不同，
+    // 比较里混入牌运噪声）。种子由当前局面派生 → 同一决策点可复现。
+    const seed0 = (((G.turnNumber | 0) * 73856093) ^ ((p.idx | 0) * 19349663) ^ ((st.plantationDeck.length | 0) * 83492791)) >>> 0;
+    const mkRnd = (s) => { let a = s >>> 0; return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+    const K = Math.max(1, window._l6VnetBuildSamples || 1);   // 可选：多次续局取均值进一步降噪
+    let bestAct = null, bestV = -Infinity;
+    for (const act of dec.actions) {
+      if (act < 0 && !allowPass) continue;
+      let acc = 0;
+      for (let k = 0; k < K; k++) {
+      const st2 = PRSim.clone(st);
+      st2.rnd = mkRnd(seed0 + k * 0x9E3779B9);
+      PRSim.azApply(st2, act);
+      // 因子化启发式续局，直到回到角色边界（azDecision 返回 type==="role"）或终局
+      let d2 = PRSim.azDecision(st2), guard = 0;
+      while (d2 && d2.type !== "role" && guard++ < 400) {
+        PRSim.azApply(st2, PRSim.azHeuristicAction(st2, d2));
+        d2 = PRSim.azDecision(st2);
+      }
+      let v;
+      if (PRSim.isTerminal(st2)) {
+        v = PRSim.reward(st2, p.idx);                       // 终局用真实回报（与价值网同尺度）
+      } else {
+        const fn = PRSim.evalLeafVecNN(st2);
+        if (!fn) return null;                               // 网不可用 → 整体回退启发式
+        v = fn(p.idx);
+      }
+      acc += v;
+      }
+      const vAvg = acc / K;
+      if (vAvg > bestV) { bestV = vAvg; bestAct = act; }
+    }
+    if (bestAct == null) return null;
+    if (bestAct < 0) return -1;                             // PASS
+    const idx = options.findIndex(o => o.b.id === bestAct);
     return idx >= 0 ? idx : null;
   } catch (e) { return null; }
 }
