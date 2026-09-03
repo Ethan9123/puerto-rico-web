@@ -33,6 +33,7 @@ const now = () => Number(process.hrtime.bigint()) / 1e6;
     { name: 'vnet t0', knobs: { vnet: true, truncate: 0, frac: 0 } },
     { name: 'vnet t2', knobs: { vnet: true, truncate: 2, frac: 0 } },
     { name: 'vnet t0 + rolloutFrac 0.25', knobs: { vnet: true, truncate: 0, frac: 0.25 } },
+    { name: 'vnet t0 + rolloutFrac 0.5', knobs: { vnet: true, truncate: 0, frac: 0.5 } },   // AlphaGo λ 混合
     // Phase 2.5：小合并网同时提供 policy 先验与 value 叶评估（替换大网，非附加）
     { name: 'small-combined t0', knobs: { vnet: false, truncate: 0, frac: 0, bigVec: true, small: true } },
   ];
