@@ -117,7 +117,33 @@ let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m);
     })()`);
     ok(r === null, `⑤ 扩展局须回退 null，实际 ${r}`);
   }
-  run(`window._l6VnetBuild = false;`);
+  // ⑥ Phase 6 实验 1：无偏 rollout 评估器（_l6BuildEval='rollout'）
+  {
+    const raw = run(`(function(){
+      window._l6BuildEval = 'rollout'; window._l6VnetBuildSamples = 2;
+      const p = G.players[0];
+      const bc = G.roleCards.find(r => r.name === 'Builder'); bc.taken = true; bc.takenBy = 0;
+      const opts = BUILDINGS.filter(b => (G.buildingStock[b.id]||0) > 0 && b.cost <= p.money + 3).slice(0,8).map(b => ({ b, cost: b.cost }));
+      if (!opts.length) { window._l6BuildEval = 'vnet'; return 'NO_OPTIONS'; }
+      const a = vnetPickBuilding(p, opts, true);
+      const b = vnetPickBuilding(p, opts, true);
+      // 网卸载后 rollout 模式仍应可用（不依赖 NN）
+      PRSim.unloadNetwork();
+      const c = vnetPickBuilding(p, opts, true);
+      window._l6BuildEval = 'vnet'; window._l6VnetBuildSamples = 1;
+      return JSON.stringify({ a, b, c, n: opts.length });
+    })()`);
+    if (raw === 'NO_OPTIONS') console.log('⑥ 跳过（无可建选项）');
+    else {
+      const { a, b, c, n } = JSON.parse(raw);
+      console.log(`⑥ rollout 评估器 → ${a}（候选 ${n}，K=2），重复 → ${b}，卸载 NN 后 → ${c}`);
+      ok(a === -1 || (a >= 0 && a < n), `⑥ 返回合法下标或 PASS，实际 ${a}`);
+      ok(a === b, '⑥ 同状态两次调用一致（公共随机数 → 确定性）');
+      ok(c === a, '⑥ rollout 模式不依赖 NN（卸载后结果不变）');
+    }
+    await S.loadNetwork('mcts_value_nn.json');   // 复原，供后续用例
+  }
+  run(`window._l6VnetBuild = false; window._l6BuildEval = 'vnet';`);
   void calls;
 
   console.log(fails ? `\nVNET BUILD TEST FAILED: ${fails}` : '\nVNET BUILD TEST OK');

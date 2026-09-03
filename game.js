@@ -3836,9 +3836,10 @@ function solverPickBuilding(p, options, isChooser) {
 function vnetPickBuilding(p, options, isChooser) {
   if (!window._l6VnetBuild || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.azDecision !== "function" || typeof PRSim.evalLeafVecNN !== "function") return null;
-  if (!PRSim.isLoaded || !PRSim.isLoaded()) return null;                       // 网未加载 → 启发式
+  const useRollout = window._l6BuildEval === "rollout";                        // Phase 6 实验 1：无偏 rollout 评估器
+  if (!useRollout && (!PRSim.isLoaded || !PRSim.isLoaded())) return null;      // 网未加载 → 启发式（rollout 模式不需要网）
   if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null; // az 层未完整建模扩展
-  if (G.numPlayers !== 4) return null;                                          // evalLeafVecNN 仅 4 人局
+  if (!useRollout && G.numPlayers !== 4) return null;                           // evalLeafVecNN 仅 4 人局（rollout 模式无此限制）
   try {
     const st = buildSimState(G);
     const bcard = st.roleCards.find(r => r.name === "Builder");
@@ -3880,6 +3881,14 @@ function vnetPickBuilding(p, options, isChooser) {
       let v;
       if (PRSim.isTerminal(st2)) {
         v = PRSim.reward(st2, p.idx);                       // 终局用真实回报（与价值网同尺度）
+      } else if (window._l6BuildEval === "rollout") {
+        // Phase 6 实验 1：把评估器换成**无偏但高方差**的完整 rollout，直接检验
+        // §13.6/§13.8 那个"价值网的系统性偏差才是 −5.1pp 主因"的解释。
+        // 若偏差是主因 → 差距应大幅收窄；若仍 −5pp → 偏差不是主因（horizon effect 或
+        // §4"启发式建造已近最优"成立），届时必须回头修正文档措辞。
+        // 与价值网同尺度（都是 reward）；配合公共随机数 + K 次均值压方差。
+        PRSim.rolloutToEnd(st2, st2.rnd);
+        v = PRSim.reward(st2, p.idx);
       } else {
         const fn = PRSim.evalLeafVecNN(st2);
         if (!fn) return null;                               // 网不可用 → 整体回退启发式
