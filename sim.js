@@ -81,7 +81,10 @@
 
   function effectiveCost(p, bld, np) {
     const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
-      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4 }[bld.id] || 1; // 含扩展 24-37
+      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
+      38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,                 // 贵族建筑（game.js:161）
+      46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 }[bld.id] || 1;  // Tibs 建筑（game.js:212）
+    // 本表是 game.js TIER_BY_BID 的副本；缺项会让扩展建筑的成本偏高。测试里有逐 id 交叉校验防漂移。
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
     const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
     const baseCost = (bld.id === 53 && np) ? (7 + np) : bld.cost; // Tibs 大教堂(53)：官方造价 7 + 玩家数（非固定 10）
@@ -143,6 +146,7 @@
       picksThisTurn: 0, players, rnd: rnd || Math.random,
       // 模块开关：由 buildSimState 覆盖；newState 默认基础局全 false
       expansionNobles: false, expansion: false, expansionTibs: false,
+      noblesLeft: 0, noblesOnShip: 0,   // 贵族池：由 buildSimState 覆盖；此前未初始化 → 只置 expansionNobles 的状态里贵族永远发不出来
     };
     BUILDINGS_.forEach(b => st.buildingStock[b.id] = (numPlayers === 2) ? (BLD[b.id].type === "production" ? 2 : 1) : b.qty);
     if (numPlayers <= 2) { for (const cap of [4, 6]) st.ships.push({ capacity: cap, good: null, count: 0 }); }
@@ -190,6 +194,7 @@
         plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
         buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
+        smallWharfUsed: p.smallWharfUsed,   // 小码头(31) 的每装船阶段一次性标记。漏拷 = MCTS 分叉后可再用一次（§14 同类的静默状态丢失）
         nobleCount: p.nobleCount, // 贵族扩展(标量)
         _invest: p._invest,       // Tibs 银行(52) 已投资金额
         _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
@@ -262,7 +267,11 @@
       if (bd.type === "large_violet") return Math.max(8, estLV(bd.id) * 4);
       return ({ 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4,
         // 新建筑扩展先验
-        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5 })[bd.id] || 5;
+        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5,
+      // Tibs 建筑派工价值（game.js aiReallocate violetManValue，2718-2726）。
+      // 缺项会落到 default 5：塔楼(49) 本该是 10，被低估后市长阶段不优先派人 →
+      // 未满员 → isManned 假 → towerActive 假 → 塔楼五支效果静默失效。
+      49: 10, 50: 8, 51: 7, 47: 6, 48: 6, 52: 5, 46: 3 })[bd.id] || 5;
     };
     while (rem > 0) {
       const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fT = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
@@ -364,6 +373,17 @@
       case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;
       case 34: { let best = 0; for (const g of GOODS_) if (g !== "corn") best = Math.max(best, productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; }
       case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break;
+      // —— Tibs 自制建筑(46-53)：与 game.js evalBuildingValue(5739-5746) 同步 ——
+      // 此前 sim 的 switch 只到 35，46-53 全部只拿裸底分 b.vp*5：
+      // 塔楼(49) 在 game 侧早期值 16，在 sim 里是 0 → **sim 几乎从不买塔楼**，
+      // 于是塔楼那五支效果在搜索里根本不会被触发（AI_STRENGTH §15）。
+      case 46: v += phase === "early" ? 4 : phase === "mid" ? 2 : -2; break;
+      case 47: { const ci = p.plantations.some(pl => pl.good === "corn" || pl.good === "indigo") ? 6 : 1; v += ci + (phase === "late" ? -2 : 2); break; }
+      case 48: v += phase === "early" ? 10 : phase === "mid" ? 6 : 1; break;
+      case 49: v += phase === "early" ? 16 : phase === "mid" ? 12 : 4; break;
+      case 50: v += phase === "mid" ? 16 : phase === "early" ? 8 : 6; break;
+      case 51: { let kinds = 0; for (const g of GOODS_) if (productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++; v += kinds * 3 + (phase === "late" ? 4 : 6); break; }
+      case 52: v += Math.min(8, Math.max(0, p.money - 4)) * 2 + (phase === "late" ? -4 : 2); break;
     }
     // 大紫快照估值(早期低=鼓励晚买正确)；combo 在生产分支处理。与 game.js 同步(*5/28/14, PR#22)
     if (b.type === "large_violet") v += estLVSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
@@ -588,17 +608,72 @@
     }
   }
 
+  // 地产办公室(38) 殖民者支：每位玩家在**自己卖完货之后**触发（game.js:2327 的调用点，
+  // 对每个玩家依次 doTrader → runLandOffice，卖不出货也照样触发）。
+  // ⚠ 近似：sim 的贵族是标量 nobleCount，无法区分"殖民者驻守"与"贵族驻守"，
+  //   故一律按殖民者支处理。game.js 的贵族支(弃田换金) AI 本来就从不使用（3302 注释），
+  //   所以这个近似只在"贵族恰好占住 38"时偏差，方向是高估该建筑的价值。
+  function runLandOffice(st, p) {
+    if (!st.expansionNobles || !isManned(p, 38)) return;
+    if (p.money < 1 || p.plantations.length >= 12 || st.plantationDeck.length === 0) return;
+    if (p.money < 3) return;                       // game.js:3268 的 AI 规则：use = money >= 3
+    p.money -= 1;
+    p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+  }
+
+  // 商人阶段单个玩家的卖货决策。抽出供 doTrader 与因子化(az)层共用口径。
+  // 扩展：贸易驿站(29) 增加"卖给自己驿站"这一目的地——不受贸易站满/重复限制、
+  // 无市场加成(7/13)、货**直接回供应区**而非进贸易站，但**仍享 chooser 加成**（game.js:3230）。
+  function traderBestSale(st, i, chooser) {
+    const p = st.players[i];
+    const houseFull = st.tradingHouse.length >= 4;
+    const office = isManned(p, 12);
+    const hasPost = !!st.expansion && isManned(p, 29);
+    const sellHouse = houseFull ? [] : GOODS_.filter(g => p.goods[g] > 0 && (office || !st.tradingHouse.includes(g)));
+    const sellPost = hasPost ? GOODS_.filter(g => p.goods[g] > 0) : [];
+    if (!sellHouse.length && !sellPost.length) return null;
+    let best = null;
+    for (const g of sellHouse) { const e = traderEarn(st, i, chooser, g, "house"); if (!best || e > best.earn) best = { g, dest: "house", earn: e }; }
+    for (const g of sellPost)  { const e = traderEarn(st, i, chooser, g, "post");  if (!best || e > best.earn) best = { g, dest: "post",  earn: e }; }
+    return best;
+  }
+
+  // 单次售出的收益。抽出供 doTrader 与因子化(az)层共用。
+  // ⚠ 此前 az 层写的是 `earn += 1`，**漏掉了图书馆(33) 把商人特权翻倍**（doTrader 有）。
+  //   33 属新建筑池，故仅该模块开启时体现；现两路统一（AI_STRENGTH §15）。
+  function traderEarn(st, i, chooser, g, dest) {
+    const p = st.players[i];
+    let e = PRICE[g];
+    if (i === chooser) e += isManned(p, 33) ? 2 : 1;
+    if (dest === "house") { if (isManned(p, 7)) e += 1; if (isManned(p, 13)) e += 2; }  // 驿站无市场加成
+    return e;
+  }
+
+  // 因子化层的售出候选：0..4 = 卖给贸易站；10..14 = 卖给自己的贸易驿站(29)
+  const AZ_POST_BASE = 10;
+  function azTraderPostable(st, i) {
+    const p = st.players[i];
+    if (!st.expansion || !isManned(p, 29)) return [];
+    const out = [];
+    for (let k = 0; k < GOODS_.length; k++) if (p.goods[GOODS_[k]] > 0) out.push(AZ_POST_BASE + k);
+    return out;
+  }
+
   function doTrader(st, chooser) {
     for (const i of order(st, chooser)) {
       const p = st.players[i];
-      if (st.tradingHouse.length >= 4) break;
-      const office = isManned(p, 12);
-      const sellable = GOODS_.filter(g => p.goods[g] > 0 && (office || !st.tradingHouse.includes(g)));
-      if (sellable.length === 0) continue;
-      const g = sellable.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b);
-      p.goods[g]--; st.tradingHouse.push(g);
-      let earn = PRICE[g]; if (i === chooser) earn += isManned(p, 33) ? 2 : 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2; // 图书馆翻倍
-      p.money += earn;
+      const pick = traderBestSale(st, i, chooser);
+      if (!pick) {
+        // 基础局：贸易站满即整轮结束（与原实现的 break 一致）。
+        // 有驿站时不能 break —— 后手玩家仍可卖给自己的驿站。
+        if (st.tradingHouse.length >= 4 && !(st.expansion && st.players.some(q => isManned(q, 29)))) break;
+        runLandOffice(st, p);
+        continue;
+      }
+      p.goods[pick.g]--;
+      if (pick.dest === "house") st.tradingHouse.push(pick.g); else st.supply[pick.g]++;
+      p.money += pick.earn;
+      runLandOffice(st, p);
     }
     if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; }
   }
@@ -1246,8 +1321,9 @@
   function azTraderSkipToDecision(st) {
     const az = st.az;
     while (az.oi < az.ord.length) {
-      if (st.tradingHouse.length >= 4) return false; // 贸易站满 → 停(同 doTrader 的 break)
-      if (azTraderSellable(st, az.ord[az.oi]).length > 0) return true;
+      // 贸易站满 → 停(同 doTrader 的 break)；但持有贸易驿站(29) 的玩家仍可卖给自己
+      if (st.tradingHouse.length >= 4 && !azTraderPostable(st, az.ord[az.oi]).length) return false;
+      if (azTraderSellable(st, az.ord[az.oi]).length + azTraderPostable(st, az.ord[az.oi]).length > 0) return true;
       az.oi++;
     }
     return false;
@@ -1255,7 +1331,9 @@
   function azTraderEnd(st) { if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; } }
 
   // captain：把候选编码为动作 int = shipSlot*10 + goodIdx（shipSlot 0..2=船, 3=码头wharf）
-  function azCaptainEncode(c) { return (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS_.indexOf(c.good); }
+  // 3 = 码头(18)，4 = 小码头(31)。此前 "smallwharf" 直接参与乘法得 NaN，
+  // 混进合法动作表后 azApply 会抛 TypeError（rollout 路径正常）——两路不一致，见 AI_STRENGTH §15。
+  function azCaptainEncode(c) { return (c.ship === "wharf" ? 3 : c.ship === "smallwharf" ? 4 : c.ship) * 10 + GOODS_.indexOf(c.good); }
   // 推进到下一个可装船的玩家；整轮无人可装 → 返回 false(装船结束)。轮次用 az.progressed 标记(同 doCaptain 的 while progress)。
   function azCaptainSkipToDecision(st) {
     const az = st.az; let guard = 0;
@@ -1309,7 +1387,7 @@
     if (az.phase === "trader") {
       if (!azTraderSkipToDecision(st)) { azTraderEnd(st); azFinishRole(st); return azDecision(st); }
       const i = az.ord[az.oi];
-      const actions = azTraderSellable(st, i).concat([AZ_PASS]);
+      const actions = azTraderSellable(st, i).concat(azTraderPostable(st, i)).concat([AZ_PASS]);
       return { type: "trade", chooser: i, actions };
     }
     if (az.phase === "craftbonus") {
@@ -1363,11 +1441,13 @@
     if (az.phase === "trader") {
       const i = az.ord[az.oi], p = st.players[i];
       if (action !== AZ_PASS) {
-        const g = GOODS_[action];
-        p.goods[g]--; st.tradingHouse.push(g);
-        let earn = PRICE[g]; if (i === az.chooser) earn += 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2;
-        p.money += earn;
+        const isPost = action >= AZ_POST_BASE;
+        const g = GOODS_[isPost ? action - AZ_POST_BASE : action];
+        p.goods[g]--;
+        if (isPost) st.supply[g]++; else st.tradingHouse.push(g);   // 驿站货直接回供应区
+        p.money += traderEarn(st, i, az.chooser, g, isPost ? "post" : "house");
       }
+      runLandOffice(st, p);   // 地产办公室(38)：每位玩家卖完(或没卖)之后触发
       az.oi++;
       return st;
     }
@@ -1380,7 +1460,8 @@
       const i = az.ord[az.oi], p = st.players[i];
       const shipSlot = Math.floor(action / 10), gi = action % 10, g = GOODS_[gi];
       let pick;
-      if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) };
+      if (shipSlot === 4) pick = { ship: "smallwharf", good: g, amount: p.goods[g] };
+      else if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) };
       else { const ship = st.ships[shipSlot]; pick = { ship: shipSlot, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }; }
       const bset = new Set(); if (az.chooserBonusUsed) bset.add(az.chooser);
       captainLoad(st, i, az.chooser, bset, pick);

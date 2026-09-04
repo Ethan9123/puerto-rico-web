@@ -4,8 +4,9 @@
 //   ③ 逐效果：金矿(46) / 水井(47) / 寄宿屋(48) / 塔楼(49)
 'use strict';
 const { loadEngine } = require('../tools/_sandbox.js');
-const { PRSim: S0 } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js'] });
+const { PRSim: S0, run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js'] });
 const S = Object.assign({}, S0, S0._internal);   // doCraftsman/doSettler 走 _internal 导出
+const GOODS_IDX_COFFEE = 4;   // GOODS = [corn, indigo, sugar, tobacco, coffee]
 let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m); } };
 const give = (p, bid, men) => p.buildings.push({ bid, men });
 
@@ -174,6 +175,134 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   S.doMayor(c, 0);
   ok(c.colonistsLeft < cl0, '③ 塔楼市长支：应从供应堆取人');
   console.log(`③ 塔楼(49) 市长支 OK（岸边 ${u0}→${c.players[1].unplaced}）`);
+}
+
+// ---- ⑤ 贸易驿站(29)：贸易站满时仍可卖给自己；货回供应区；无市场加成但享 chooser 加成 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansion = true; st.governor = 0;
+  const p = st.players[0]; give(p, 29, 1); give(p, 7, 1);   // 驿站 + 小市场
+  p.goods.coffee = 1;
+  st.tradingHouse = ['corn', 'indigo', 'sugar', 'tobacco'];  // 贸易站已满
+  const m0 = p.money, sup0 = st.supply.coffee;
+  S.doTrader(st, 0);
+  ok(p.goods.coffee === 0, `⑤ 贸易站满时应仍能卖给驿站（剩 ${p.goods.coffee}）`);
+  ok(st.supply.coffee === sup0 + 1, '⑤ 驿站货必须回供应区');
+  // GOOD_PRICE.coffee = 4，+ chooser 加成 1 = 5。
+  // 关键：玩家持有小市场(7)，若错误地把市场加成用在驿站上会得 6 —— 断言必须是 5。
+  ok(p.money === m0 + 5, `⑤ 驿站收益应为 4+1=5（小市场不加成），实际 +${p.money - m0}`);
+  console.log(`⑤ 贸易驿站(29) OK（+${p.money - m0} 金，供应 ${sup0}→${st.supply.coffee}）`);
+}
+
+// ---- ⑤ 地产办公室(38)：money>=3 才用，付 1 金抽 1 张地 ----
+{
+  // ⚠ game.js:2327 是 doTrader 之后才 runLandOffice —— **卖货所得计入 money**。
+  //   所以"钱不够"的臂不能给货，否则卖货收益会把 money 顶过 3。
+  const mk = (money, goods) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionNobles = true; st.governor = 0;
+    const p = st.players[0]; give(p, 38, 1); p.money = money;
+    if (goods) p.goods.corn = 1;
+    return { st, p };
+  };
+  const rich = mk(5, true), n0 = rich.p.plantations.length;
+  S.doTrader(rich.st, 0);
+  ok(rich.p.plantations.length === n0 + 1, `⑤ 地产办公室(钱够) 应抽 1 张地（${n0}→${rich.p.plantations.length}）`);
+  const poor = mk(1, false), n1 = poor.p.plantations.length;   // money=1：过 money>=1 守卫，但不过 AI 的 >=3
+  S.doTrader(poor.st, 0);
+  ok(poor.p.plantations.length === n1, `⑤ 地产办公室(money<3) 不应触发（${n1}→${poor.p.plantations.length}）`);
+  console.log('⑤ 地产办公室(38) OK（钱够抽地 / 钱不够不抽）');
+}
+
+// ---- ⑥ az/rollout 商人收益一致（此前 az 漏掉图书馆(33) 把商人特权翻倍）----
+{
+  const mk = () => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansion = true; st.governor = 0;
+    const p = st.players[0]; give(p, 33, 1);   // 图书馆
+    p.goods.coffee = 1;
+    return st;
+  };
+  const a = mk(); const mA0 = a.players[0].money; S.doTrader(a, 0);
+  const gainA = a.players[0].money - mA0;
+  const b = mk(); const mB0 = b.players[0].money;
+  const ti = b.roleCards.findIndex(r => r.name === 'Trader');
+  ok(S.currentChooser(b) === 0, '⑥ 前置：chooser 应为 0');
+  S.azApply(b, ti);                              // 进入 trader 阶段
+  const dec = S.azDecision(b);
+  ok(dec && dec.type === 'trade', `⑥ 应进入 trade 决策（实际 ${dec && dec.type}）`);
+  S.azApply(b, GOODS_IDX_COFFEE);                // 卖咖啡给贸易站
+  const gainB = b.players[0].money - mB0;
+  ok(gainA === gainB, `⑥ 图书馆翻倍：az 应与 rollout 一致（az +${gainB} vs rollout +${gainA}）`);
+  // ⚠ 仅断言"两路一致"是不够的：两路现在共用 traderEarn，一起改错也会一起通过。
+  //   必须再钉住**绝对值**：咖啡 4 + 图书馆把 chooser 特权翻倍(2) = 6。
+  //   旧的 az 内联写 `earn += 1` 会得 5 —— 这条断言才真正抓得住那个 bug。
+  ok(gainB === 6, `⑥ 绝对值：图书馆下 chooser 卖咖啡应 +6（4+2），实际 +${gainB}`);
+  ok(gainA === 6, `⑥ 绝对值：rollout 路径同样应 +6，实际 +${gainA}`);
+  console.log(`⑥ az/rollout 商人收益一致且绝对值正确 OK（各 +${gainA}）`);
+}
+
+// ---- ⑦ clone 必须复制 smallWharfUsed（此前只拷了 wharfUsed）----
+{
+  const st = S.newState(4, [5, 5, 5, 5]);
+  st.players[0].wharfUsed = true; st.players[0].smallWharfUsed = true;
+  const c = S.clone(st);
+  ok(c.players[0].smallWharfUsed === true,
+     '⑦ clone 漏拷 smallWharfUsed → MCTS 分叉后小码头(31) 可再用一次（§14 同类静默状态丢失）');
+  ok(c.players[0].wharfUsed === true, '⑦ wharfUsed 也应拷贝');
+  console.log('⑦ clone 小码头标记 OK');
+}
+
+// ---- ⑦ newState 应初始化贵族池 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]);
+  ok(st.noblesLeft === 0 && st.noblesOnShip === 0,
+     `⑦ newState 应显式初始化 noblesLeft/noblesOnShip（实际 ${st.noblesLeft}/${st.noblesOnShip}）`);
+  console.log('⑦ newState 贵族池初始化 OK');
+}
+
+// ---- ⑦ 结构性防漂移：sim 的采石场折扣上限表必须与 game.js TIER_BY_BID 一致 ----
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sim.js'), 'utf8');
+  const m = src.match(/const maxQ = \{([\s\S]*?)\}\[bld\.id\]/);
+  ok(!!m, '⑦ 找得到 sim.js 的 maxQ 表');
+  const simTable = {};
+  if (m) for (const mm of m[1].matchAll(/(\d+)\s*:\s*(\d+)/g)) simTable[+mm[1]] = +mm[2];
+  const tier = run('JSON.stringify(TIER_BY_BID)');
+  const gameTable = JSON.parse(tier);
+  let bad = 0;
+  for (const id of Object.keys(gameTable)) {
+    if (simTable[id] !== gameTable[id]) { bad++; console.log(`   不一致 id=${id}: sim=${simTable[id]} game=${gameTable[id]}`); }
+  }
+  ok(bad === 0, `⑦ maxQ 表与 game.js TIER_BY_BID 有 ${bad} 处不一致（缺项会让扩展建筑成本偏高）`);
+  console.log(`⑦ 采石场折扣上限表与 TIER_BY_BID 一致（${Object.keys(gameTable).length} 个 id）`);
+}
+
+// ---- ⑦ 因子化层必须能编码小码头(31) 装船，且不产生 NaN ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansion = true; st.governor = 0;
+  const p = st.players[0]; give(p, 31, 1);          // 小码头
+  p.goods.coffee = 3;
+  st.ships.forEach(sh => { sh.good = 'corn'; sh.count = sh.capacity; });   // 货船全满 → 只能走小码头
+  const ci = st.roleCards.findIndex(r => r.name === 'Captain');
+  S.azApply(st, ci);
+  const dec = S.azDecision(st);
+  ok(!!dec, '⑦ 应产生 captain 决策');
+  const acts = (dec && dec.actions) || [];
+  ok(acts.every(a => Number.isFinite(a)), `⑦ 动作表不得含 NaN（实际 ${JSON.stringify(acts)}）`);
+  if (acts.length) {
+    let threw = null;
+    try { S.azApply(st, acts[0]); } catch (e) { threw = e.message; }
+    ok(!threw, `⑦ azApply 不应抛异常（实际 ${threw}）`);
+  }
+  console.log(`⑦ az 小码头装船 OK（动作 ${JSON.stringify(acts)}）`);
+}
+
+// ---- ⑦ Tibs 建筑必须进入建造估值与派工估值（否则效果实现了也不会被搜索用到）----
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sim.js'), 'utf8');
+  for (const id of [46, 47, 48, 49, 50, 51, 52]) {
+    ok(new RegExp(`case ${id}:`).test(src), `⑦ evalBuilding 缺少 case ${id} → 该建筑只拿裸底分，搜索几乎不会买`);
+  }
+  ok(/49: 10/.test(src), '⑦ reallocate 派工价值表缺塔楼(49)=10 → 不派人 → towerActive 恒假');
+  console.log('⑦ Tibs 建筑已进入建造/派工估值');
 }
 
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');
