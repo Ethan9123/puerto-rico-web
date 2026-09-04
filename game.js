@@ -3762,6 +3762,8 @@ function buildSimState(G) {
     gameOver: false, endTriggered: G.endTriggered,
     // 贵族扩展：传标量贵族状态给 sim(让 L5/L6 角色搜索能看见贵族→终局VP)
     expansionNobles: !!G.expansionNobles, noblesLeft: G.noblesLeft || 0, noblesOnShip: G.noblesOnShip || 0,
+    // 新建筑池(24-37) / Tibs 建筑池(46-53)：sim 的扩展效果以此为门，基础局恒 false
+    expansion: !!G.expansion, expansionTibs: !!G.expansionTibs,
     colonistsLeft: G.colonistsLeft, colonistsOnShip: G.colonistsOnShip, vpLeft: G.vpLeft,
     supply: Object.assign({}, G.supply), buildingStock: Object.assign({}, G.buildingStock),
     quarriesLeft: G.quarriesLeft,
@@ -3774,7 +3776,7 @@ function buildSimState(G) {
     picksThisTurn: G.roleCards.filter(r => r.taken).length,
     rnd: Math.random,
     players: G.players.map(p => ({
-      idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0,
+      idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0, _invest: p._invest || 0,
       plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
       buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
       goods: Object.assign({}, p.goods),

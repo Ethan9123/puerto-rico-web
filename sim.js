@@ -75,6 +75,10 @@
     for (const o of st.players) { if (o === me) continue; if (simProduces(o, g)) return true; }
     return false;
   }
+  // Tibs 塔楼(49)：镇守且不是本回合 governor(起始玩家) 时，在各阶段享受近似 chooser 的待遇。
+  // 与 game.js Game.towerActive(626) 同口径——排除的是 governor，不是当前 chooser。
+  function towerActive(st, p) { return !!st.expansionTibs && isManned(p, 49) && p.idx !== st.governor; }
+
   function effectiveCost(p, bld, np) {
     const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
       24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4 }[bld.id] || 1; // 含扩展 24-37
@@ -118,7 +122,7 @@
         idx: i, money: 0, vp: 0, shippingVP: 0,
         plantations: [], buildings: [],
         goods: { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 },
-        unplaced: 0, wharfUsed: false,
+        unplaced: 0, wharfUsed: false, _invest: 0,
         aiLevel: levels ? levels[i % levels.length] : 5,
       });
     }
@@ -137,6 +141,8 @@
       plantationDeck: deck, plantationDiscard: [], plantationPool: [],
       ships: [], tradingHouse: [], roleCards: [],
       picksThisTurn: 0, players, rnd: rnd || Math.random,
+      // 模块开关：由 buildSimState 覆盖；newState 默认基础局全 false
+      expansionNobles: false, expansion: false, expansionTibs: false,
     };
     BUILDINGS_.forEach(b => st.buildingStock[b.id] = (numPlayers === 2) ? (BLD[b.id].type === "production" ? 2 : 1) : b.qty);
     if (numPlayers <= 2) { for (const cap of [4, 6]) st.ships.push({ capacity: cap, good: null, count: 0 }); }
@@ -169,6 +175,7 @@
       numPlayers: st.numPlayers, governor: st.governor, turnNumber: st.turnNumber,
       gameOver: st.gameOver, endTriggered: st.endTriggered,
       expansionNobles: st.expansionNobles, noblesLeft: st.noblesLeft, noblesOnShip: st.noblesOnShip, // 贵族扩展(标量)
+      expansion: st.expansion, expansionTibs: st.expansionTibs,   // 新建筑池 / Tibs 建筑池（漏加此行 = MCTS 分叉丢模块，见 AI_STRENGTH §15）
       colonistsLeft: st.colonistsLeft, colonistsOnShip: st.colonistsOnShip, vpLeft: st.vpLeft,
       supply: Object.assign({}, st.supply), buildingStock: Object.assign({}, st.buildingStock),
       quarriesLeft: st.quarriesLeft,
@@ -184,6 +191,7 @@
         buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
         nobleCount: p.nobleCount, // 贵族扩展(标量)
+        _invest: p._invest,       // Tibs 银行(52) 已投资金额
       })),
     };
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
@@ -371,6 +379,21 @@
   // ---------- 角色阶段（顺时针 from chooser）----------
   function order(st, chooser) { const o = []; for (let i = 0; i < st.numPlayers; i++) o.push((chooser + i) % st.numPlayers); return o; }
 
+  // 新地块自动上人：济贫院(11) + Tibs 寄宿屋(48)。
+  // 抽成共享函数供 doSettler 与因子化(az)层共用——两处各有一份 settler 实现，
+  // 内联会漂移（craftsmanProduce 已是同样的处置）。
+  // 寄宿屋与济贫院**非叠加**(!pl.manned 守卫)，且**对采石场同样生效**(game.js:2473 不排除 quarry)。
+  function settleNewTile(st, p, pl) {
+    if (isManned(p, 11)) {
+      if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; }
+      else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; }
+    }
+    if (st.expansionTibs && !pl.manned && isManned(p, 48)) {
+      if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; }
+      else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; }
+    }
+  }
+
   function doSettler(st, chooser) {
     for (const i of order(st, chooser)) {
       const p = st.players[i];
@@ -386,7 +409,7 @@
       else { pl = { good: pick.good, manned: false }; st.plantationPool.splice(pick.idx, 1); }
       p.plantations.push(pl);
       if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
-      if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } }
+      settleNewTile(st, p, pl);
     }
     // 扩展：图书馆(33) 拓殖翻倍 — chooser 再从剩余明牌池拿 1 张种植园
     const sc = st.players[chooser];
@@ -481,6 +504,20 @@
         if (big3 && big3.men > 0 && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; perKinds[i].add("indigo"); }
         if (big4 && big4.men > 0 && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; perKinds[i].add("sugar"); }
       }
+      // Tibs 金矿(46)：满员(2 殖民者)时自动把 2 人移回岸边换 1 金；建筑清空需重新上人才再触发。
+      // 注意用 ownsBuilding+men>=2 而非 isManned（game.js:3175 同）。
+      if (st.expansionTibs) {
+        const gm = ownsBuilding(p, 46);
+        if (gm && gm.men >= 2) { gm.men = 0; p.unplaced = (p.unplaced || 0) + 2; p.money += 1; }
+      }
+      // Tibs 水井(47)：本轮产过靛蓝(优先)/玉米且供应尚有 → +1 桶。
+      // 计入 perCount(喂专业工厂 34)，但不进 perKinds(不改工厂 15 的种类数)——与 game.js:3183 一致。
+      if (st.expansionTibs && isManned(p, 47)) {
+        let wg = null;
+        if (perCount[i].indigo > 0 && st.supply.indigo > 0) wg = "indigo";
+        else if (perCount[i].corn > 0 && st.supply.corn > 0) wg = "corn";
+        if (wg) { p.goods[wg]++; st.supply[wg]--; perCount[i][wg]++; }
+      }
       if (isManned(p, 34)) {
         // 专业工厂：最多单货(非玉米) - 第二多；只有一种时全部计入
         const sfc = GOODS_.filter(g => g !== "corn").map(g => perCount[i][g]).sort((a, b) => b - a);
@@ -494,6 +531,18 @@
       if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; }
       // 贵族扩展(标量)：珠宝匠(44) 每名贵族 +1金（强金币引擎）
       if (st.expansionNobles && isManned(p, 44)) p.money += (p.nobleCount || 0);
+    }
+    // Tibs 塔楼(49)：非 chooser 且非 governor → +1 个自己本轮产出的最贵货
+    if (st.expansionTibs) {
+      for (let i = 0; i < st.players.length; i++) {
+        if (i === chooser) continue;
+        const p = st.players[i];
+        if (!towerActive(st, p)) continue;
+        const kinds = [...perKinds[i]].filter(g => st.supply[g] > 0);
+        if (!kinds.length) continue;
+        const g = kinds.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b);
+        p.goods[g]++; st.supply[g]--;
+      }
     }
     return perKinds[chooser]; // 规则：工匠特权只能拿"自己本回合产出"的种类
   }
@@ -1258,7 +1307,7 @@
       else { const good = GOODS_[action]; const idx = st.plantationPool.indexOf(good); pl = { good, manned: false }; st.plantationPool.splice(idx, 1); }
       p.plantations.push(pl);
       if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false }); // Hacienda
-      if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } } // Hospice
+      settleNewTile(st, p, pl);   // 济贫院(11) + Tibs 寄宿屋(48)
       az.oi++;
       return st;
     }
