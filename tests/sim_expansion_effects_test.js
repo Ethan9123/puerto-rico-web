@@ -99,5 +99,53 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   console.log(`③ 塔楼(49) OK（非 governor +${gainA}，governor +${gainB}）`);
 }
 
+// ---- ③ 海关站(50)：chooser +1VP（不装货也给）+ 满船清空后每艘退 1 桶 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+  const p = st.players[0]; give(p, 50, 1);
+  const vp0 = p.vp, sh0 = p.shippingVP;
+  S.doCaptain(st, 0);
+  ok(p.vp >= vp0 + 1, `③ 海关站 chooser 应 +1VP（${vp0}→${p.vp}）`);
+  ok(p.shippingVP >= sh0 + 1, '③ 海关站的 VP 计入 shippingVP');
+  console.log(`③ 海关站(50) chooser 奖励 OK（vp ${vp0}→${p.vp}）`);
+}
+
+// ---- ③ 档案馆(51)：每种货至少留 1 且即时 +1VP/种 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+  st.ships = [];                            // 无船 → 不装货，隔离出"存货步"这一段
+  const p = st.players[0]; give(p, 51, 1);
+  p.goods.corn = 3; p.goods.indigo = 2; p.goods.coffee = 1;   // 3 种
+  const vp0 = p.vp;
+  S.doCaptain(st, 1);                       // 别人当 chooser，避免混入 chooser 奖励
+  const kinds = ['corn', 'indigo', 'coffee'].filter(g => p.goods[g] > 0).length;
+  ok(p.vp >= vp0 + 1, `③ 档案馆应即时给 VP（${vp0}→${p.vp}）`);
+  ok(kinds >= 1, `③ 档案馆应每种至少留 1（剩 ${kinds} 种）`);
+  console.log(`③ 档案馆(51) OK（vp ${vp0}→${p.vp}，保留 ${kinds} 种）`);
+}
+
+// ---- ④ az 路径与 rollout 路径的装船开场奖励一致（本次修掉的分歧）----
+{
+  //  工会大厅(35)+灯塔(32) 此前只在 doCaptain 结算，az 层进 captain 时完全不给。
+  // chooser = (governor + picksThisTurn) % n → 固定 governor=0 让两臂 chooser 都是 0；
+  // 去掉船，使 doCaptain 只剩"开场奖励 + 存货"，与 az 的"进入 captain"可比。
+  const mk = () => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansion = true; st.governor = 0; st.ships = [];
+    const p = st.players[0]; give(p, 35, 1); give(p, 32, 1);
+    p.goods.corn = 4;                        // 工会大厅：每 2 同货 +1VP → +2
+    return st;
+  };
+  const a = mk(); S.doCaptain(a, 0);
+  const b = mk();
+  const ci = b.roleCards.findIndex(r => r.name === 'Captain');
+  ok(S.currentChooser(b) === 0, '④ 两臂 chooser 必须一致(=0)');
+  S.azApply(b, ci);                          // 走因子化层进入 captain
+  ok(b.players[0].money === a.players[0].money,
+     `④ 灯塔(32)：az 路径应与 rollout 一致（az ${b.players[0].money} vs rollout ${a.players[0].money}）`);
+  ok(b.players[0].vp === a.players[0].vp,
+     `④ 工会大厅(35)：az 路径应与 rollout 一致（az ${b.players[0].vp} vs rollout ${a.players[0].vp}）`);
+  console.log(`④ az/rollout 装船开场奖励一致 OK（money ${b.players[0].money}，vp ${b.players[0].vp}）`);
+}
+
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');
 process.exit(fails ? 1 : 0);

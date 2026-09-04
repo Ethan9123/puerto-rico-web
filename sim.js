@@ -192,6 +192,7 @@
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
         nobleCount: p.nobleCount, // 贵族扩展(标量)
         _invest: p._invest,       // Tibs 银行(52) 已投资金额
+        _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
       })),
     };
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
@@ -645,14 +646,34 @@
     let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
     if (i === chooser && !bonusUsed.has(i) && loaded > 0) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍；选择者奖励仅在实际装货时
     if (isManned(p, 17)) vp += 1;
+    // Tibs 塔楼(49)：非 chooser 且非 governor，本装船阶段**首次**装货 +1VP（game.js:3552 的 towerShipUsed 去重）
+    if (st.expansionTibs && i !== chooser && loaded > 0 && !p._towerShipped && towerActive(st, p)) { vp += 1; p._towerShipped = true; }
     // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
     if (isManned(p, 32)) p.money += 1; // 灯塔：与港口同理，每次装运（含码头/小码头）+1金
     const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
     return loaded;
   }
+  // 装船阶段开场奖励。抽出供 doCaptain 与因子化(az)层共用——
+  // ⚠ 此前 az 层进入 captain 时**从未**结算工会大厅(35)/灯塔(32)（只有 doCaptain 有），
+  //   两路动力学不一致；一并修掉（AI_STRENGTH §15）。
+  function captainStartBonuses(st, chooser) {
+    for (const i of order(st, chooser)) {
+      const p = st.players[i]; if (!isManned(p, 35)) continue;
+      let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2);
+      if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; }
+    }
+    if (isManned(st.players[chooser], 32)) st.players[chooser].money += 1;
+    // Tibs 海关站(50)：选择者 +1VP(计 shippingVP)，**不论是否装货**
+    if (st.expansionTibs && isManned(st.players[chooser], 50) && st.vpLeft > 0) {
+      const c = st.players[chooser]; c.vp += 1; c.shippingVP += 1; st.vpLeft -= 1;
+    }
+    for (const p of st.players) p._towerShipped = false;   // 塔楼(49) 每阶段首装去重
+  }
+
   // 装船阶段末：满船清空 + 各玩家留货(storageKinds 满 + 1)。抽出供两路共用。
   function captainCleanupKeep(st) {
-    for (const ship of st.ships) if (ship.count >= ship.capacity) { st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
+    const cleared = [];   // Tibs 海关站(50)：本阶段被清空的**满船**货种
+    for (const ship of st.ships) if (ship.count >= ship.capacity) { if (st.expansionTibs && ship.good) cleared.push(ship.good); st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
     for (const p of st.players) {
       const total = GOODS_.reduce((s, g) => s + p.goods[g], 0);
       if (total > 0) {
@@ -662,20 +683,32 @@
         for (const g of full) keep[g] = p.goods[g];
         let singleSlots = 1 + (isManned(p, 27) ? 3 : 0); // 扩展：储藏库 +3 单货槽
         for (const g of sorted) { if (singleSlots <= 0) break; if (full.includes(g)) continue; const take = Math.min(p.goods[g], singleSlots); keep[g] = (keep[g] || 0) + take; singleSlots -= take; }
+        // Tibs 档案馆(51)：每种持有货至少留 1，并**即时** +1VP/种（终局不再加，game.js:6477）。
+        // Math.max 保证不会削减仓库已预留的更大数量；不计 shippingVP。
+        if (st.expansionTibs && isManned(p, 51)) {
+          let types = 0;
+          for (const g of GOODS_) if (p.goods[g] > 0) { keep[g] = Math.max(keep[g] || 0, 1); types++; }
+          if (types > 0 && st.vpLeft > 0) { const gain = Math.min(types, st.vpLeft); p.vp += gain; st.vpLeft -= gain; }
+        }
         for (const g of GOODS_) { const disc = p.goods[g] - (keep[g] || 0); if (disc > 0) st.supply[g] += disc; p.goods[g] = keep[g] || 0; }
       }
       p.wharfUsed = false;
       p.smallWharfUsed = false;
+    }
+    // Tibs 海关站(50)：每艘清空的满船，给**每个**持有者退 1 桶（彼此不竞争）。
+    // 放在存货步之后 → 这些桶不触发档案馆(51)、也不参与本轮留货判定（game.js:3646 同）。
+    if (st.expansionTibs && cleared.length) {
+      for (const p of st.players) {
+        if (!isManned(p, 50)) continue;
+        for (const cg of cleared) if (st.supply[cg] > 0) { p.goods[cg]++; st.supply[cg]--; }
+      }
     }
   }
   function doCaptain(st, chooser) {
     const phase = phaseOf(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
-    // 扩展：工会大厅(35) 装船前，手上每 2 个同货 +1 VP
-    for (const i of ord) { const p = st.players[i]; if (!isManned(p, 35)) continue; let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2); if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
-    // 扩展：灯塔(32) — 船长 chooser 不论是否装货都 +1 金
-    if (isManned(st.players[chooser], 32)) st.players[chooser].money += 1;
+    captainStartBonuses(st, chooser);   // 工会大厅(35) / 灯塔(32) / Tibs 海关站(50) / 塔楼去重复位
     let progress = true;
     while (progress) {
       progress = false;
@@ -1348,7 +1381,7 @@
     if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
-    if (card.name === "Captain") { az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
+    if (card.name === "Captain") { captainStartBonuses(st, chooser); az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
     // 其余阶段：回退到启发式 do*（Mayor 派工保留贪心）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
