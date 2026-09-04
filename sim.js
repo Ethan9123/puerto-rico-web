@@ -427,9 +427,25 @@
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
   }
 
+  // 采金：chooser +1 金（图书馆翻倍）；Tibs 塔楼(49) 非 chooser 且非 governor 也 +1 金。
+  // 抽成共享函数——applyRole 与因子化层各有一份相同内联，内联会漂移。
+  function doProspector(st, chooser) {
+    st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1;
+    if (!st.expansionTibs) return;
+    for (const p of st.players) { if (p.idx === chooser) continue; if (towerActive(st, p)) p.money += 1; }
+  }
+
   function doMayor(st, chooser) {
     const ord = order(st, chooser);
     { const p = st.players[chooser]; let take = isManned(p, 33) ? 2 : 1; while (take-- > 0 && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 图书馆翻倍
+    // Tibs 塔楼(49)：非 chooser 且非 governor，从供应堆额外得 1 殖民者（game.js:2498）
+    if (st.expansionTibs) {
+      for (const i of ord) {
+        if (i === chooser) continue;
+        const tp = st.players[i];
+        if (towerActive(st, tp) && st.colonistsLeft > 0) { st.colonistsLeft--; tp.unplaced = (tp.unplaced || 0) + 1; }
+      }
+    }
     let safety = 0;
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
@@ -458,7 +474,7 @@
         if (st.buildingStock[b.id] <= 0) continue;
         if (ownsBuilding(p, b.id)) continue;
         if (12 - buildingUsedSpaces(p) < b.size) continue;
-        const cost = effectiveCostBonus(p, b, i === chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === chooser || towerActive(st, p), st.numPlayers);
         const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
         if (p.money + bm < cost) continue;
         opts.push({ b, cost });
@@ -742,7 +758,7 @@
       case "Craftsman": doCraftsman(st, chooser); break;
       case "Trader": doTrader(st, chooser); break;
       case "Captain": doCaptain(st, chooser); break;
-      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
+      case "Prospector": doProspector(st, chooser); break;
     }
     checkEnd(st);
     st.picksThisTurn++;
@@ -1202,7 +1218,7 @@
       if (st.buildingStock[b.id] <= 0) continue;
       if (ownsBuilding(p, b.id)) continue;
       if (12 - buildingUsedSpaces(p) < b.size) continue;
-      const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
+      const cost = effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers);
       if (p.money < cost) continue;
       opts.push(b.id);
     }
@@ -1325,7 +1341,7 @@
       const p = st.players[i];
       if (action !== AZ_PASS) {
         const b = BLD[action];
-        const cost = effectiveCostBonus(p, b, i === az.chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === az.chooser || towerActive(st, p), st.numPlayers);
         p.money -= cost; st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
         if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
       }
@@ -1385,7 +1401,7 @@
     // 其余阶段：回退到启发式 do*（Mayor 派工保留贪心）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
-      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
+      case "Prospector": doProspector(st, chooser); break;
     }
     azFinishRole(st);
     return st;
@@ -1430,7 +1446,7 @@
       for (const a of dec.actions) {
         if (a === AZ_PASS) continue;
         const b = BLD[a];
-        const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers);
         const s = evalBuilding(st, p, b, phase) - cost * 3 + (i === st.az.chooser ? 5 : 0);
         if (s > bestS) { bestS = s; best = a; }
       }

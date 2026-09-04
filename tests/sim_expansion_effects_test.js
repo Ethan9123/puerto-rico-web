@@ -147,5 +147,34 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   console.log(`④ az/rollout 装船开场奖励一致 OK（money ${b.players[0].money}，vp ${b.players[0].vp}）`);
 }
 
+// ---- ③ 塔楼(49) 采金/市长支：非 governor 的非 chooser 得额外收益 ----
+{
+  // chooser = (governor + picksThisTurn) % n。picksThisTurn=0 时 chooser===governor，
+  // 于是"玩家1 是 governor"与"玩家1 是 chooser"是同一状态，两者都 +1 但成因不同 —— 会混淆。
+  // 取 picksThisTurn=1 把两者分开：gov=3→chooser=0（玩家1 既非二者，应吃塔楼）；
+  //                                gov=1→chooser=2（玩家1 是 governor 非 chooser，应吃不到）。
+  const mkP = (gov) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+    st.governor = gov; st.picksThisTurn = 1;
+    give(st.players[1], 49, 1); return st;
+  };
+  const a = mkP(3), m0 = a.players[1].money;
+  a.roleCards.forEach(r => { r.taken = false; });
+  ok(S.currentChooser(a) === 0, '③ 前置：a 臂 chooser 应为 0');
+  S.applyRole(a, a.roleCards.findIndex(r => r.name === 'Prospector'));
+  const b = mkP(1), m1 = b.players[1].money;      // 玩家1 是 governor(非 chooser) → 不得
+  b.roleCards.forEach(r => { r.taken = false; });
+  ok(S.currentChooser(b) === 2, '③ 前置：b 臂 chooser 应为 2');
+  S.applyRole(b, b.roleCards.findIndex(r => r.name === 'Prospector'));
+  const gA = a.players[1].money - m0, gB = b.players[1].money - m1;
+  ok(gA > gB, `③ 塔楼采金支：非 governor 应多得（${gA} vs ${gB}）`);
+  console.log(`③ 塔楼(49) 采金支 OK（非 governor +${gA}，governor +${gB}）`);
+
+  const c = mkP(0), u0 = c.players[1].unplaced || 0, cl0 = c.colonistsLeft;
+  S.doMayor(c, 0);
+  ok(c.colonistsLeft < cl0, '③ 塔楼市长支：应从供应堆取人');
+  console.log(`③ 塔楼(49) 市长支 OK（岸边 ${u0}→${c.players[1].unplaced}）`);
+}
+
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');
 process.exit(fails ? 1 : 0);
