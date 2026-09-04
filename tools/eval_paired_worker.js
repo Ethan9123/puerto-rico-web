@@ -60,6 +60,9 @@ const L6_SOLVER_CAP = process.env.L6_SOLVER_CAP ? parseFloat(process.env.L6_SOLV
 // Phase 2：任意 window 旋钮以 JSON 注入(参数位置不变)，例如
 //   L6_KNOBS='{"_l6ValueNet":true,"_l6LeafTruncate":0,"__MCTS_VALUE_VNET__":"mcts_value_vnet.json","_aiThinkBudget":{...,"alphaIters":2400}}'
 // 注入在默认预算之后 → 可覆盖 _aiThinkBudget；_l6ValueNet 为真时断言价值网已加载(否则测量无意义)。
+// 扩展模块（可选）：MODS='{"tibsBuildings":true,"nobles":true}' 开启后跑扩展局配对评测。
+// 默认 {} = 基础局，与既有基线逐字节一致。
+const MODS = process.env.MODS ? JSON.parse(process.env.MODS) : {};
 const KNOBS = process.env.L6_KNOBS ? JSON.parse(process.env.L6_KNOBS) : null;
 
 const src = `(async () => {
@@ -85,7 +88,7 @@ const src = `(async () => {
     __setSeed(seed);
     const seat = g % N;
     const levels = [${LO},${LO},${LO},${LO}]; levels[seat] = 6;
-    G = new Game(N, 'AI');
+    G = new Game(N, 'AI', ${JSON.stringify(MODS)});
     G.players.forEach((p,i)=>{ p.isHuman=false; loadDNA(p, i); p._aiLevel=levels[i]; });
     await runMainLoop();
     if (!G.gameOver) continue;
