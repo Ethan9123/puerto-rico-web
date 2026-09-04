@@ -3789,13 +3789,24 @@ function buildSimState(G) {
 // build 是终局最高分歧子决策(74%)。iters=40 配对 A/B 测得 +3.3pp(z=3.75)，但 iters=150 复核(110 局)
 // 仅 +0.9pp(z=1.0，不显著)且求解触发率 0.43→0.27/局——**增益随对弈变强而缩小**(更强的角色搜索改变了
 // 终局局面，求解器触发更少、修正更小)。未达 z>1.96 换挡标准 → 保持默认关闭。仅基础局生效。
+// AI 高级决策层(终局精确求解器 / az 因子化层)未完整建模的模块开关。
+// 任一开启 → 相关函数返回 null，回退到启发式。
+// ⚠ 只能用构造函数真正赋过值的属性名。本函数存在的原因：原先三处内联写的是
+//   G.expansionNewBuildings / G.expansionFestival —— 这两个属性从未被赋值(恒 undefined)，
+//   于是节庆局静默绕过守卫：sim.js 零建模 festival，而节庆目标③「首位建成指定建筑 +3VP」
+//   恰恰作用在 solverPickBuilding 正在做的那个决策上(AI_STRENGTH §14)。
+//   新建筑由 G.expansion 覆盖(见构造函数 this.expansion = this.modNewBuildings)。
+function aiUnmodeledMods() {
+  return !!(G.expansion || G.expansionNobles || G.expansionTibs || G.moduleFestival);
+}
+
 // 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
 function solverPickBuilding(p, options, isChooser) {
   // 群友·建筑大师(西西/拾光/SC)即使全局开关关闭也启用终局精确建造求解器
   if ((!window._l6SolverBuild && !(p._persona && p._persona.build)) || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
   // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
-  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  if (aiUnmodeledMods()) return null;
   try {
     const st = buildSimState(G);
     if (!st.endTriggered) return null;                 // 仅终局触发后
@@ -3838,7 +3849,7 @@ function vnetPickBuilding(p, options, isChooser) {
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.azDecision !== "function" || typeof PRSim.evalLeafVecNN !== "function") return null;
   const useRollout = window._l6BuildEval === "rollout";                        // Phase 6 实验 1：无偏 rollout 评估器
   if (!useRollout && (!PRSim.isLoaded || !PRSim.isLoaded())) return null;      // 网未加载 → 启发式（rollout 模式不需要网）
-  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null; // az 层未完整建模扩展
+  if (aiUnmodeledMods()) return null; // az 层未完整建模扩展
   if (!useRollout && G.numPlayers !== 4) return null;                           // evalLeafVecNN 仅 4 人局（rollout 模式无此限制）
   try {
     const st = buildSimState(G);
@@ -3914,7 +3925,7 @@ function vnetPickBuilding(p, options, isChooser) {
 function solverPickCaptain(p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet) {
   if (!window._l6SolverCaptain || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
-  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  if (aiUnmodeledMods()) return null;
   try {
     const st = buildSimState(G);
     if (!st.endTriggered) return null;

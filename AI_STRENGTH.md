@@ -812,3 +812,76 @@ window._aiThinkBudget = { ...window._aiThinkBudget, alphaIters: 691 };  // 等�
 1-ply argmax 怕方差 → 混合兼得）与数据方向一致；但在本项目的算力与评测精度下，
 效应量不足以稳健地区分于零。**它没有被证伪，也没有被证实。**
 
+
+---
+
+## 14. 模块守卫 bug：节庆局静默绕过 AI 高级决策层的扩展守卫
+
+### 为什么去找它
+
+§13.8 的账目摆得很清楚：本轮**唯一**的真实棋力提升来自一个 bug（贵族钳制，
+宗师 vs 3×困难 23.7%→**83.8%**），比四条 ML 路线加起来还多一个数量级。
+于是按同一形态做了一次系统性排查：**"守卫读了一个从不存在的属性"**。
+
+### 排查方法（可复现）
+
+扫描 `game.js` 中所有被读取的 `G.<prop>`，减去所有真正被赋值/定义过的
+（`this.x =` / `G.x =` / `Game.prototype.x` / `class Game` 方法），列出差集：
+
+```
+G.expansionFestival      —— 3 处读取，0 处赋值
+G.expansionNewBuildings  —— 3 处读取，0 处赋值
+G.guildHallVPs           —— 1 处读取，0 处赋值（仅 UI 标签，已有 ?: 兜底，恒显示空）
+```
+
+### bug 本体
+
+三个 AI 高级决策函数（`solverPickBuilding` / `vnetPickBuilding` / `solverPickCaptain`）
+各自内联同一条守卫：
+
+```js
+if (G.expansion || G.expansionNobles || G.expansionTibs
+    || G.expansionNewBuildings || G.expansionFestival) return null;  // ← 后两个恒 undefined
+```
+
+构造函数里真正赋值的是 `this.expansion` / `this.expansionNobles` / `this.expansionTibs` /
+**`this.moduleFestival`**。所以：
+
+- `expansionNewBuildings` 是死项（新建筑已由 `G.expansion` 覆盖）——无害；
+- **`expansionFestival` 恒 `undefined` → 节庆局完全不触发守卫。**
+
+**为什么这条有实质危害**：`sim.js` 对 festival 的引用数为 **0**（完全未建模），
+而节庆目标③是**「首位建成指定建筑 +3VP」**——正好作用在 `solverPickBuilding`
+所做的那个决策上。终局精确求解器于是**自信地**优化一个漏掉了 +3VP 的目标函数；
+§9 记录收官期决策的胜负毛差本就只有 **1–3 分**，3 分足以翻盘。
+比启发式更糟：启发式只是不知道，求解器是"确信自己算对了"。
+
+**可达性（不是纯理论）**：`solverPickBuilding` 的开关是
+`window._l6SolverBuild || (p._persona && p._persona.build)`——**人格分支绕过全局开关**。
+`AI_PERSONAS` 中西西(`build:1`)、拾光(`build:1`)、SC(`build:0.6`) 三位带 `build`，
+而 `maybeAssignPersonas()` 在普通开局即被调用，每位独立掷 `PERSONA_CHANCE=0.12`
+（注释：约 81% 的局至少 1 位）。故「节庆 + 上述人格之一」是**默认路径**可达组合，
+无需用户开任何调试开关。
+
+### 修复
+
+三处内联合并为单一 `aiUnmodeledMods()`（`game.js`），杜绝再次漂移；
+属性名改为构造函数真正赋值的 `G.moduleFestival`，删掉死项 `expansionNewBuildings`。
+
+### 验证
+
+- `tests/mod_guard_test.js`：四个模块单开逐一断言守卫触发；基础局必须放行；
+  **静态断言守卫引用的每个属性在 `game.js` 里都有赋值点**（直接盯住这一 bug 形态）。
+- **反向验证**：把守卫改回原样跑该测试 → **3 条 FAIL**（含 festival 症状本身），
+  确认测试不是恒真的摆设。
+- 默认路径 `eval_paired_worker DEPLOY 5 0 2` 与历史基线**逐字节一致**；七项测试全绿。
+
+### 尚未处理（如实记录，不静默改）
+
+- **Buccaneer 未进守卫**。原守卫也没列它，可能是有意的（`buildSimState` 已把该角色剔除，
+  AI 也选不到）。但求解器展开的是**未来**的树，而人类仍可再选 Buccaneer
+  （劫掠货船／洗劫贸易站／突袭殖民者堆），这些在 sim 里同样零建模。
+  与 festival 的区别是：festival 明确写在守卫列表里、只是名字写错（**意图明确，实现有误**）；
+  Buccaneer 从未列入（**可能是刻意取舍**）。故只报告、不擅自改。
+- **强度影响未做局数测量**。festival 局的配对评测尚未跑；本节主张的是
+  **正确性**（求解器在未建模机制下接管决策），不是已测得的 pp 数。
