@@ -922,3 +922,102 @@ if (G.expansion || G.expansionNobles || G.expansionTibs
 23.7%→83.8% 远好于被降级成 L3）。列在此处供后续实现，不作为缺陷。
 
 **未测**：扩展局的配对评测尚未做，上述缺口的 pp 代价未知。
+
+---
+
+## 15. 给 sim.js 补扩展建筑效果（§14.2 缺口）
+
+### 动机与边界
+
+§14.2 记录的缺口：`alphazeroPickRole` **没有** `aiUnmodeledMods()` 守卫，
+扩展局照常走 `buildSimState` → `ismctsPickRoleIdx`——即 **L6 的主角色搜索在扩展局
+一直带着不完整的世界模型跑**。这与 §14 的 bug 性质不同：§14 是守卫失效让**求解器**
+在未建模机制上接管；这里是**主搜索**本就看不见那些规则。
+
+**基础局不在范围内**：§14.1 #4 已确认基础局 game.js↔sim.js 建筑效果零分歧。
+本节所有代码一律以模块标志为门，默认路径必须逐字节不变（每次提交都实测）。
+
+### 先修正我自己在 §14.2 写错的断言
+
+§14.2 称 "46–53 全部未建模"。**不准确**，来源是粗糙的 id 提及 grep：
+
+- **森林屋(26) 的建造折扣**与**大教堂(53) 的按人数造价**，`sim.js` 本就已实现
+  （`sim.js:82` / `:87`）。
+- 反过来，那次 grep 还**漏报**了金矿(46) —— 它经 `ownsBuilding(p,46)` + `men>=2`
+  访问，不走 `isManned`，所以按 `isManned` 找必然找不到。
+
+教训与 §14.1 同源：**按单一访问模式 grep 会双向出错**（既漏报也误报），
+须逐 id 搜证。
+
+### 第 0 步：sim 此前根本不知道自己在扩展局
+
+`buildSimState` 只传了 `expansionNobles`，**没传** `expansion` / `expansionTibs`。
+现补齐，并在 `newState` / `clone` 同步（外加玩家 `_invest`、`_towerShipped`）。
+`clone` 那几行带了注释：**漏加即 MCTS 分叉静默丢状态**，与 §14 同类 bug，
+故 `tests/sim_expansion_effects_test.js` 对 clone 做逐字段断言。
+
+### 已实现（均以模块标志为门）
+
+| id | 阶段 | 要点 |
+|---|---|---|
+| 46 金矿 | 工匠 | 满员 2 人 → 清空建筑、2 人回岸边、+1 金 |
+| 47 水井 | 工匠 | 产过靛蓝(优先)/玉米 → +1 桶；计入 `perCount`(喂专业工厂 34) 但不进 `perKinds`(不改工厂 15 的种类数) |
+| 48 寄宿屋 | 拓殖 | 新地块自带 1 殖民者；**对采石场也生效**；与济贫院非叠加 |
+| 49 塔楼 | 采金/市长/建造/工匠/装船 **五支** | 非 chooser 且**非 governor**；装船支以 `_towerShipped` 做每阶段首装去重 |
+| 50 海关站 | 装船 | chooser +1VP(计 shippingVP，不论是否装货)；每艘清空的**满船**给每个持有者退 1 桶，**放在存货步之后**故不触发档案馆 |
+| 51 档案馆 | 装船存货步 | 每种持有货至少留 1，**即时** +1VP/种（终局不再加，game.js:6477）；`Math.max` 不削减仓库已预留量 |
+
+塔楼的 Settler / Trader 两支 **game.js 自己也没实现**（`grep towerActive` 只有五个落点），
+故 sim 与 game.js 一致，不是缺口。
+
+### 顺带修掉一处**既有**分歧（非本次引入）
+
+az 因子化层进入 captain 阶段时**从不结算**工会大厅(35) / 灯塔(32)——这两项此前只在
+`doCaptain` 里。即 az 路径与 rollout 路径的装船动力学不一致。
+现抽出 `captainStartBonuses()` 供两路共用。
+
+**影响面**：默认 L6 角色搜索走 `applyRole → doCaptain`，**不受影响**；
+受影响的是 `solverPickBuilding` / `vnetPickBuilding` / `azPlayHeuristic` 等 az 消费者，
+且 32/35 属新建筑池，仅该模块开启时体现。
+
+### 结构性教训：az 层各有一份 settler/trader/captain/builder
+
+原以为 `azApply` 全面复用 `doX`，**错了**——它只复用 `doMayor` 与 `craftsmanProduce`，
+settler/trader/captain/builder 各有独立实现。内联效果必然漂移（上面那处分歧正是这么来的）。
+故凡跨两路的效果一律抽共享函数：`settleNewTile` / `captainStartBonuses` / `doProspector`。
+
+### 验证
+
+- **默认路径**：每次提交后 `eval_paired_worker DEPLOY 5 0 2` 与历史基线**逐字节一致**。
+- `tests/sim_expansion_effects_test.js`：clone 逐字段完整性、基础局零触发、逐效果、
+  以及 **az/rollout 一致性**。该一致性用例做过反向验证：回退修复后 FAIL
+  （az `vp 0` vs rollout `vp 2`），确认非恒真。
+- 期间修正了**两处我自己写错的用例假设**（不是代码错）：
+  ① `chooser = (governor + picksThisTurn) % n`，`picksThisTurn=0` 时 chooser≡governor，
+     导致"是 governor"与"是 chooser"无法分离；改用 `picksThisTurn=1` 才可证伪。
+  ② `doCaptain` 跑完整阶段而 `azApply` 只**进入**阶段，需去掉船才可比。
+
+### 强度评测：**进行中**
+
+`tools/run_expansion_ab.sh`：扩展局(Tibs+贵族) 同种子配对，
+A 臂 = 补效果前（`git worktree` 检出 `f4257c2`），B 臂 = 补效果后。
+用 worktree 而非给生产代码加"关掉正确规则"的开关——被测对象是 `sim.js` 本身，
+测量工具两臂统一（已核对 A 臂对新helper 的引用数为 0，B 臂为 16）。
+
+**预注册：每臂 480 局，一次定论，不追加样本**（§13.10 的教训）。
+
+> ⚠ **判定的是棋力，不是规则忠实度。** §13 已有"叶评估 MSE 更准但搜索更弱"的先例，
+> §13.10 的首轮显著也在复现臂上蒸发。**"现在规则实现对了"本身不构成合并理由**；
+> 若配对评测为负，如实记录并考虑回滚。
+
+**结果**：（测量中）
+
+### 尚未实现（如实列出，不宣称"已补齐"）
+
+- **需要决策的效果**：贸易驿站(29)、地产办公室(38)、皇家供应商(42)、
+  森林屋(26) 的"取森林"支、银行(52) 的两处投资。
+  game.js 里都有确定的 AI 规则可镜像，但 29 需要在因子化层新增动作编码。
+- **依赖贵族分支的效果**：礼拜堂(39)、营建办公室(41)、狩猎小屋(40) 贵族支、
+  银行(52) 角色卡投资。要求把 sim 的贵族从标量 `nobleCount` 改成 `b.nobles` 每建筑记账，
+  会动到已正常工作的贵族建模(43/44/45 + doMayor 分配)，**风险高于收益**，暂不做。
+- 因此扩展局的 sim↔game.js 仍有残差，**不能说"扩展局已完全建模"**。
