@@ -4,24 +4,10 @@
 // 用法: node tools/tier_winrate_top.js [gamesPerMatchup] [lowList]
 //   node tools/tier_winrate_top.js 40            # 宗师 vs 3×{专家,困难,普通,进化,入门}
 //   node tools/tier_winrate_top.js 80 5          # 只测最难: 宗师 vs 3×专家, 80 局
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false, dataset:{},
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-  getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 // 必须含 sim_features + sim_nn, 否则 L6 没 NN 会回退到 L5
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) load(f);
+const { run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'] });
 
 const GAMES = parseInt(process.argv[2] || '40');
 const LOWS = process.argv[3] ? process.argv[3].split(',').map(Number) : [5,4,3,2,1];
@@ -65,7 +51,7 @@ const src = `(async () => {
 const NM = {1:'入门',2:'进化',3:'普通',4:'困难',5:'专家',6:'宗师'};
 const t0 = Date.now();
 console.log(`宗师(L6) vs 3×低档 胜率（每组 ${GAMES} 局，座位轮转，alphaIters=400/expertIters=400）NN=${NN_OVERRIDE||'mcts_value_nn.json(部署)'}`);
-vm.runInContext(src, sandbox).then(rows => {
+run(src).then(rows => {
   console.log(`\n=== 结果 / ${((Date.now()-t0)/1000).toFixed(0)}s ===`);
   let allPass = true;
   for (const r of rows) {

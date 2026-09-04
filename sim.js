@@ -75,9 +75,16 @@
     for (const o of st.players) { if (o === me) continue; if (simProduces(o, g)) return true; }
     return false;
   }
+  // Tibs 塔楼(49)：镇守且不是本回合 governor(起始玩家) 时，在各阶段享受近似 chooser 的待遇。
+  // 与 game.js Game.towerActive(626) 同口径——排除的是 governor，不是当前 chooser。
+  function towerActive(st, p) { return !!st.expansionTibs && isManned(p, 49) && p.idx !== st.governor; }
+
   function effectiveCost(p, bld, np) {
     const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
-      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4 }[bld.id] || 1; // 含扩展 24-37
+      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
+      38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,                 // 贵族建筑（game.js:161）
+      46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 }[bld.id] || 1;  // Tibs 建筑（game.js:212）
+    // 本表是 game.js TIER_BY_BID 的副本；缺项会让扩展建筑的成本偏高。测试里有逐 id 交叉校验防漂移。
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
     const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
     const baseCost = (bld.id === 53 && np) ? (7 + np) : bld.cost; // Tibs 大教堂(53)：官方造价 7 + 玩家数（非固定 10）
@@ -118,7 +125,7 @@
         idx: i, money: 0, vp: 0, shippingVP: 0,
         plantations: [], buildings: [],
         goods: { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 },
-        unplaced: 0, wharfUsed: false,
+        unplaced: 0, wharfUsed: false, _invest: 0,
         aiLevel: levels ? levels[i % levels.length] : 5,
       });
     }
@@ -137,6 +144,9 @@
       plantationDeck: deck, plantationDiscard: [], plantationPool: [],
       ships: [], tradingHouse: [], roleCards: [],
       picksThisTurn: 0, players, rnd: rnd || Math.random,
+      // 模块开关：由 buildSimState 覆盖；newState 默认基础局全 false
+      expansionNobles: false, expansion: false, expansionTibs: false,
+      noblesLeft: 0, noblesOnShip: 0,   // 贵族池：由 buildSimState 覆盖；此前未初始化 → 只置 expansionNobles 的状态里贵族永远发不出来
     };
     BUILDINGS_.forEach(b => st.buildingStock[b.id] = (numPlayers === 2) ? (BLD[b.id].type === "production" ? 2 : 1) : b.qty);
     if (numPlayers <= 2) { for (const cap of [4, 6]) st.ships.push({ capacity: cap, good: null, count: 0 }); }
@@ -169,6 +179,7 @@
       numPlayers: st.numPlayers, governor: st.governor, turnNumber: st.turnNumber,
       gameOver: st.gameOver, endTriggered: st.endTriggered,
       expansionNobles: st.expansionNobles, noblesLeft: st.noblesLeft, noblesOnShip: st.noblesOnShip, // 贵族扩展(标量)
+      expansion: st.expansion, expansionTibs: st.expansionTibs,   // 新建筑池 / Tibs 建筑池（漏加此行 = MCTS 分叉丢模块，见 AI_STRENGTH §15）
       colonistsLeft: st.colonistsLeft, colonistsOnShip: st.colonistsOnShip, vpLeft: st.vpLeft,
       supply: Object.assign({}, st.supply), buildingStock: Object.assign({}, st.buildingStock),
       quarriesLeft: st.quarriesLeft,
@@ -183,7 +194,10 @@
         plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
         buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
         goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
+        smallWharfUsed: p.smallWharfUsed,   // 小码头(31) 的每装船阶段一次性标记。漏拷 = MCTS 分叉后可再用一次（§14 同类的静默状态丢失）
         nobleCount: p.nobleCount, // 贵族扩展(标量)
+        _invest: p._invest,       // Tibs 银行(52) 已投资金额
+        _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
       })),
     };
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
@@ -253,7 +267,11 @@
       if (bd.type === "large_violet") return Math.max(8, estLV(bd.id) * 4);
       return ({ 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4,
         // 新建筑扩展先验
-        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5 })[bd.id] || 5;
+        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5,
+      // Tibs 建筑派工价值（game.js aiReallocate violetManValue，2718-2726）。
+      // 缺项会落到 default 5：塔楼(49) 本该是 10，被低估后市长阶段不优先派人 →
+      // 未满员 → isManned 假 → towerActive 假 → 塔楼五支效果静默失效。
+      49: 10, 50: 8, 51: 7, 47: 6, 48: 6, 52: 5, 46: 3 })[bd.id] || 5;
     };
     while (rem > 0) {
       const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fT = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
@@ -355,6 +373,17 @@
       case 33: v += phase === "mid" ? 20 : phase === "early" ? 16 : 8; break;
       case 34: { let best = 0; for (const g of GOODS_) if (g !== "corn") best = Math.max(best, productionCapacity(p, g)); v += best * 7 + (phase === "early" ? 22 : phase === "mid" ? 14 : -2); break; }
       case 35: v += phase === "mid" ? 24 : phase === "early" ? 14 : 10; break;
+      // —— Tibs 自制建筑(46-53)：与 game.js evalBuildingValue(5739-5746) 同步 ——
+      // 此前 sim 的 switch 只到 35，46-53 全部只拿裸底分 b.vp*5：
+      // 塔楼(49) 在 game 侧早期值 16，在 sim 里是 0 → **sim 几乎从不买塔楼**，
+      // 于是塔楼那五支效果在搜索里根本不会被触发（AI_STRENGTH §15）。
+      case 46: v += phase === "early" ? 4 : phase === "mid" ? 2 : -2; break;
+      case 47: { const ci = p.plantations.some(pl => pl.good === "corn" || pl.good === "indigo") ? 6 : 1; v += ci + (phase === "late" ? -2 : 2); break; }
+      case 48: v += phase === "early" ? 10 : phase === "mid" ? 6 : 1; break;
+      case 49: v += phase === "early" ? 16 : phase === "mid" ? 12 : 4; break;
+      case 50: v += phase === "mid" ? 16 : phase === "early" ? 8 : 6; break;
+      case 51: { let kinds = 0; for (const g of GOODS_) if (productionCapacity(p, g) > 0 || p.plantations.some(pl => pl.good === g)) kinds++; v += kinds * 3 + (phase === "late" ? 4 : 6); break; }
+      case 52: v += Math.min(8, Math.max(0, p.money - 4)) * 2 + (phase === "late" ? -4 : 2); break;
     }
     // 大紫快照估值(早期低=鼓励晚买正确)；combo 在生产分支处理。与 game.js 同步(*5/28/14, PR#22)
     if (b.type === "large_violet") v += estLVSpecial(p, id) * 5 + (phase === "late" ? 28 : phase === "mid" ? 14 : 0);
@@ -371,6 +400,21 @@
   // ---------- 角色阶段（顺时针 from chooser）----------
   function order(st, chooser) { const o = []; for (let i = 0; i < st.numPlayers; i++) o.push((chooser + i) % st.numPlayers); return o; }
 
+  // 新地块自动上人：济贫院(11) + Tibs 寄宿屋(48)。
+  // 抽成共享函数供 doSettler 与因子化(az)层共用——两处各有一份 settler 实现，
+  // 内联会漂移（craftsmanProduce 已是同样的处置）。
+  // 寄宿屋与济贫院**非叠加**(!pl.manned 守卫)，且**对采石场同样生效**(game.js:2473 不排除 quarry)。
+  function settleNewTile(st, p, pl) {
+    if (isManned(p, 11)) {
+      if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; }
+      else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; }
+    }
+    if (st.expansionTibs && !pl.manned && isManned(p, 48)) {
+      if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; }
+      else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; }
+    }
+  }
+
   function doSettler(st, chooser) {
     for (const i of order(st, chooser)) {
       const p = st.players[i];
@@ -386,7 +430,7 @@
       else { pl = { good: pick.good, manned: false }; st.plantationPool.splice(pick.idx, 1); }
       p.plantations.push(pl);
       if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
-      if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } }
+      settleNewTile(st, p, pl);
     }
     // 扩展：图书馆(33) 拓殖翻倍 — chooser 再从剩余明牌池拿 1 张种植园
     const sc = st.players[chooser];
@@ -403,9 +447,25 @@
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
   }
 
+  // 采金：chooser +1 金（图书馆翻倍）；Tibs 塔楼(49) 非 chooser 且非 governor 也 +1 金。
+  // 抽成共享函数——applyRole 与因子化层各有一份相同内联，内联会漂移。
+  function doProspector(st, chooser) {
+    st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1;
+    if (!st.expansionTibs) return;
+    for (const p of st.players) { if (p.idx === chooser) continue; if (towerActive(st, p)) p.money += 1; }
+  }
+
   function doMayor(st, chooser) {
     const ord = order(st, chooser);
     { const p = st.players[chooser]; let take = isManned(p, 33) ? 2 : 1; while (take-- > 0 && st.colonistsLeft > 0) { st.colonistsLeft--; p.unplaced = (p.unplaced || 0) + 1; } } // 图书馆翻倍
+    // Tibs 塔楼(49)：非 chooser 且非 governor，从供应堆额外得 1 殖民者（game.js:2498）
+    if (st.expansionTibs) {
+      for (const i of ord) {
+        if (i === chooser) continue;
+        const tp = st.players[i];
+        if (towerActive(st, tp) && st.colonistsLeft > 0) { st.colonistsLeft--; tp.unplaced = (tp.unplaced || 0) + 1; }
+      }
+    }
     let safety = 0;
     while (st.colonistsOnShip > 0 && safety++ < 200) {
       for (const i of ord) { if (st.colonistsOnShip <= 0) break; st.players[i].unplaced = (st.players[i].unplaced || 0) + 1; st.colonistsOnShip--; }
@@ -434,7 +494,7 @@
         if (st.buildingStock[b.id] <= 0) continue;
         if (ownsBuilding(p, b.id)) continue;
         if (12 - buildingUsedSpaces(p) < b.size) continue;
-        const cost = effectiveCostBonus(p, b, i === chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === chooser || towerActive(st, p), st.numPlayers);
         const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
         if (p.money + bm < cost) continue;
         opts.push({ b, cost });
@@ -481,6 +541,20 @@
         if (big3 && big3.men > 0 && perCount[i].indigo > 0 && st.supply.indigo > 0) { p.goods.indigo++; st.supply.indigo--; perCount[i].indigo++; perKinds[i].add("indigo"); }
         if (big4 && big4.men > 0 && perCount[i].sugar > 0 && st.supply.sugar > 0) { p.goods.sugar++; st.supply.sugar--; perCount[i].sugar++; perKinds[i].add("sugar"); }
       }
+      // Tibs 金矿(46)：满员(2 殖民者)时自动把 2 人移回岸边换 1 金；建筑清空需重新上人才再触发。
+      // 注意用 ownsBuilding+men>=2 而非 isManned（game.js:3175 同）。
+      if (st.expansionTibs) {
+        const gm = ownsBuilding(p, 46);
+        if (gm && gm.men >= 2) { gm.men = 0; p.unplaced = (p.unplaced || 0) + 2; p.money += 1; }
+      }
+      // Tibs 水井(47)：本轮产过靛蓝(优先)/玉米且供应尚有 → +1 桶。
+      // 计入 perCount(喂专业工厂 34)，但不进 perKinds(不改工厂 15 的种类数)——与 game.js:3183 一致。
+      if (st.expansionTibs && isManned(p, 47)) {
+        let wg = null;
+        if (perCount[i].indigo > 0 && st.supply.indigo > 0) wg = "indigo";
+        else if (perCount[i].corn > 0 && st.supply.corn > 0) wg = "corn";
+        if (wg) { p.goods[wg]++; st.supply[wg]--; perCount[i][wg]++; }
+      }
       if (isManned(p, 34)) {
         // 专业工厂：最多单货(非玉米) - 第二多；只有一种时全部计入
         const sfc = GOODS_.filter(g => g !== "corn").map(g => perCount[i][g]).sort((a, b) => b - a);
@@ -494,6 +568,18 @@
       if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; }
       // 贵族扩展(标量)：珠宝匠(44) 每名贵族 +1金（强金币引擎）
       if (st.expansionNobles && isManned(p, 44)) p.money += (p.nobleCount || 0);
+    }
+    // Tibs 塔楼(49)：非 chooser 且非 governor → +1 个自己本轮产出的最贵货
+    if (st.expansionTibs) {
+      for (let i = 0; i < st.players.length; i++) {
+        if (i === chooser) continue;
+        const p = st.players[i];
+        if (!towerActive(st, p)) continue;
+        const kinds = [...perKinds[i]].filter(g => st.supply[g] > 0);
+        if (!kinds.length) continue;
+        const g = kinds.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b);
+        p.goods[g]++; st.supply[g]--;
+      }
     }
     return perKinds[chooser]; // 规则：工匠特权只能拿"自己本回合产出"的种类
   }
@@ -522,17 +608,72 @@
     }
   }
 
+  // 地产办公室(38) 殖民者支：每位玩家在**自己卖完货之后**触发（game.js:2327 的调用点，
+  // 对每个玩家依次 doTrader → runLandOffice，卖不出货也照样触发）。
+  // ⚠ 近似：sim 的贵族是标量 nobleCount，无法区分"殖民者驻守"与"贵族驻守"，
+  //   故一律按殖民者支处理。game.js 的贵族支(弃田换金) AI 本来就从不使用（3302 注释），
+  //   所以这个近似只在"贵族恰好占住 38"时偏差，方向是高估该建筑的价值。
+  function runLandOffice(st, p) {
+    if (!st.expansionNobles || !isManned(p, 38)) return;
+    if (p.money < 1 || p.plantations.length >= 12 || st.plantationDeck.length === 0) return;
+    if (p.money < 3) return;                       // game.js:3268 的 AI 规则：use = money >= 3
+    p.money -= 1;
+    p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+  }
+
+  // 商人阶段单个玩家的卖货决策。抽出供 doTrader 与因子化(az)层共用口径。
+  // 扩展：贸易驿站(29) 增加"卖给自己驿站"这一目的地——不受贸易站满/重复限制、
+  // 无市场加成(7/13)、货**直接回供应区**而非进贸易站，但**仍享 chooser 加成**（game.js:3230）。
+  function traderBestSale(st, i, chooser) {
+    const p = st.players[i];
+    const houseFull = st.tradingHouse.length >= 4;
+    const office = isManned(p, 12);
+    const hasPost = !!st.expansion && isManned(p, 29);
+    const sellHouse = houseFull ? [] : GOODS_.filter(g => p.goods[g] > 0 && (office || !st.tradingHouse.includes(g)));
+    const sellPost = hasPost ? GOODS_.filter(g => p.goods[g] > 0) : [];
+    if (!sellHouse.length && !sellPost.length) return null;
+    let best = null;
+    for (const g of sellHouse) { const e = traderEarn(st, i, chooser, g, "house"); if (!best || e > best.earn) best = { g, dest: "house", earn: e }; }
+    for (const g of sellPost)  { const e = traderEarn(st, i, chooser, g, "post");  if (!best || e > best.earn) best = { g, dest: "post",  earn: e }; }
+    return best;
+  }
+
+  // 单次售出的收益。抽出供 doTrader 与因子化(az)层共用。
+  // ⚠ 此前 az 层写的是 `earn += 1`，**漏掉了图书馆(33) 把商人特权翻倍**（doTrader 有）。
+  //   33 属新建筑池，故仅该模块开启时体现；现两路统一（AI_STRENGTH §15）。
+  function traderEarn(st, i, chooser, g, dest) {
+    const p = st.players[i];
+    let e = PRICE[g];
+    if (i === chooser) e += isManned(p, 33) ? 2 : 1;
+    if (dest === "house") { if (isManned(p, 7)) e += 1; if (isManned(p, 13)) e += 2; }  // 驿站无市场加成
+    return e;
+  }
+
+  // 因子化层的售出候选：0..4 = 卖给贸易站；10..14 = 卖给自己的贸易驿站(29)
+  const AZ_POST_BASE = 10;
+  function azTraderPostable(st, i) {
+    const p = st.players[i];
+    if (!st.expansion || !isManned(p, 29)) return [];
+    const out = [];
+    for (let k = 0; k < GOODS_.length; k++) if (p.goods[GOODS_[k]] > 0) out.push(AZ_POST_BASE + k);
+    return out;
+  }
+
   function doTrader(st, chooser) {
     for (const i of order(st, chooser)) {
       const p = st.players[i];
-      if (st.tradingHouse.length >= 4) break;
-      const office = isManned(p, 12);
-      const sellable = GOODS_.filter(g => p.goods[g] > 0 && (office || !st.tradingHouse.includes(g)));
-      if (sellable.length === 0) continue;
-      const g = sellable.reduce((a, b) => PRICE[a] >= PRICE[b] ? a : b);
-      p.goods[g]--; st.tradingHouse.push(g);
-      let earn = PRICE[g]; if (i === chooser) earn += isManned(p, 33) ? 2 : 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2; // 图书馆翻倍
-      p.money += earn;
+      const pick = traderBestSale(st, i, chooser);
+      if (!pick) {
+        // 基础局：贸易站满即整轮结束（与原实现的 break 一致）。
+        // 有驿站时不能 break —— 后手玩家仍可卖给自己的驿站。
+        if (st.tradingHouse.length >= 4 && !(st.expansion && st.players.some(q => isManned(q, 29)))) break;
+        runLandOffice(st, p);
+        continue;
+      }
+      p.goods[pick.g]--;
+      if (pick.dest === "house") st.tradingHouse.push(pick.g); else st.supply[pick.g]++;
+      p.money += pick.earn;
+      runLandOffice(st, p);
     }
     if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; }
   }
@@ -596,14 +737,34 @@
     let vp = isSmallWharf ? Math.floor(loaded / 2) : loaded;
     if (i === chooser && !bonusUsed.has(i) && loaded > 0) { vp += isManned(p, 33) ? 2 : 1; bonusUsed.add(i); } // 图书馆翻倍；选择者奖励仅在实际装货时
     if (isManned(p, 17)) vp += 1;
+    // Tibs 塔楼(49)：非 chooser 且非 governor，本装船阶段**首次**装货 +1VP（game.js:3552 的 towerShipUsed 去重）
+    if (st.expansionTibs && i !== chooser && loaded > 0 && !p._towerShipped && towerActive(st, p)) { vp += 1; p._towerShipped = true; }
     // 扩展：灯塔装货船 +1金（船长特权在 doCaptain 开始时已给）
     if (isManned(p, 32)) p.money += 1; // 灯塔：与港口同理，每次装运（含码头/小码头）+1金
     const g = Math.min(vp, st.vpLeft); p.vp += g; p.shippingVP += g; st.vpLeft -= g;
     return loaded;
   }
+  // 装船阶段开场奖励。抽出供 doCaptain 与因子化(az)层共用——
+  // ⚠ 此前 az 层进入 captain 时**从未**结算工会大厅(35)/灯塔(32)（只有 doCaptain 有），
+  //   两路动力学不一致；一并修掉（AI_STRENGTH §15）。
+  function captainStartBonuses(st, chooser) {
+    for (const i of order(st, chooser)) {
+      const p = st.players[i]; if (!isManned(p, 35)) continue;
+      let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2);
+      if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; }
+    }
+    if (isManned(st.players[chooser], 32)) st.players[chooser].money += 1;
+    // Tibs 海关站(50)：选择者 +1VP(计 shippingVP)，**不论是否装货**
+    if (st.expansionTibs && isManned(st.players[chooser], 50) && st.vpLeft > 0) {
+      const c = st.players[chooser]; c.vp += 1; c.shippingVP += 1; st.vpLeft -= 1;
+    }
+    for (const p of st.players) p._towerShipped = false;   // 塔楼(49) 每阶段首装去重
+  }
+
   // 装船阶段末：满船清空 + 各玩家留货(storageKinds 满 + 1)。抽出供两路共用。
   function captainCleanupKeep(st) {
-    for (const ship of st.ships) if (ship.count >= ship.capacity) { st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
+    const cleared = [];   // Tibs 海关站(50)：本阶段被清空的**满船**货种
+    for (const ship of st.ships) if (ship.count >= ship.capacity) { if (st.expansionTibs && ship.good) cleared.push(ship.good); st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
     for (const p of st.players) {
       const total = GOODS_.reduce((s, g) => s + p.goods[g], 0);
       if (total > 0) {
@@ -613,20 +774,32 @@
         for (const g of full) keep[g] = p.goods[g];
         let singleSlots = 1 + (isManned(p, 27) ? 3 : 0); // 扩展：储藏库 +3 单货槽
         for (const g of sorted) { if (singleSlots <= 0) break; if (full.includes(g)) continue; const take = Math.min(p.goods[g], singleSlots); keep[g] = (keep[g] || 0) + take; singleSlots -= take; }
+        // Tibs 档案馆(51)：每种持有货至少留 1，并**即时** +1VP/种（终局不再加，game.js:6477）。
+        // Math.max 保证不会削减仓库已预留的更大数量；不计 shippingVP。
+        if (st.expansionTibs && isManned(p, 51)) {
+          let types = 0;
+          for (const g of GOODS_) if (p.goods[g] > 0) { keep[g] = Math.max(keep[g] || 0, 1); types++; }
+          if (types > 0 && st.vpLeft > 0) { const gain = Math.min(types, st.vpLeft); p.vp += gain; st.vpLeft -= gain; }
+        }
         for (const g of GOODS_) { const disc = p.goods[g] - (keep[g] || 0); if (disc > 0) st.supply[g] += disc; p.goods[g] = keep[g] || 0; }
       }
       p.wharfUsed = false;
       p.smallWharfUsed = false;
+    }
+    // Tibs 海关站(50)：每艘清空的满船，给**每个**持有者退 1 桶（彼此不竞争）。
+    // 放在存货步之后 → 这些桶不触发档案馆(51)、也不参与本轮留货判定（game.js:3646 同）。
+    if (st.expansionTibs && cleared.length) {
+      for (const p of st.players) {
+        if (!isManned(p, 50)) continue;
+        for (const cg of cleared) if (st.supply[cg] > 0) { p.goods[cg]++; st.supply[cg]--; }
+      }
     }
   }
   function doCaptain(st, chooser) {
     const phase = phaseOf(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
-    // 扩展：工会大厅(35) 装船前，手上每 2 个同货 +1 VP
-    for (const i of ord) { const p = st.players[i]; if (!isManned(p, 35)) continue; let uh = 0; for (const g of GOODS_) uh += Math.floor(p.goods[g] / 2); if (uh > 0 && st.vpLeft > 0) { const got = Math.min(uh, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
-    // 扩展：灯塔(32) — 船长 chooser 不论是否装货都 +1 金
-    if (isManned(st.players[chooser], 32)) st.players[chooser].money += 1;
+    captainStartBonuses(st, chooser);   // 工会大厅(35) / 灯塔(32) / Tibs 海关站(50) / 塔楼去重复位
     let progress = true;
     while (progress) {
       progress = false;
@@ -660,7 +833,7 @@
       case "Craftsman": doCraftsman(st, chooser); break;
       case "Trader": doTrader(st, chooser); break;
       case "Captain": doCaptain(st, chooser); break;
-      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
+      case "Prospector": doProspector(st, chooser); break;
     }
     checkEnd(st);
     st.picksThisTurn++;
@@ -912,9 +1085,12 @@
     const evalLeafFn = opts.evalLeafFn || null;
     const evalLeafVecFn = opts.evalLeafVecFn || null;
     const priorPolicyFn = opts.priorPolicyFn || null;
-    if (currentChooser(rootState) < 0) return -1;
+    // Phase 2：rolloutFrac ∈ (0,1] 时，每次迭代以该概率改走完整 rollout（reward 尺度）而非 NN 叶评估；
+    // 仅在 >0 时才消耗 rootState.rnd，默认 0 路径的 PRNG 流与旧版逐位一致。
+    const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
+    if (currentChooser(rootState) < 0) return opts.returnStats ? { idx: -1, stats: [], iters: 0 } : -1;
     const rootLegal = legalRoleIdxs(rootState);
-    if (rootLegal.length <= 1) return rootLegal[0];
+    if (rootLegal.length <= 1) return opts.returnStats ? { idx: rootLegal[0], stats: [], iters: 0 } : rootLegal[0];
 
     // 信息集树：节点 children keyed by 角色名（角色卡公开 → 各确定化下动作集一致）。
     const treeRoot = { N: 0, Q: 0, children: new Map(), P: null };
@@ -960,7 +1136,9 @@
         if (wasUnvisited) break; // 扩展一个新节点后转 rollout / NN eval
       }
       let leafEval;
-      if (evalLeafFn || evalLeafVecFn) {
+      const useNet = (evalLeafFn || evalLeafVecFn) &&
+        (rolloutFrac <= 0 || (rootState.rnd ? rootState.rnd() : Math.random()) >= rolloutFrac);
+      if (useNet) {
         // Hybrid 叶评估：先用启发式 rollout 走 truncate 步（这能让 NN 摆脱
         // "训练时见过的偏见状态"），再在新状态上调用 NN value。原本纯 NN
         // 评估会被 NN 的策略偏差锚定（NN 训于 L5/PUCT-导向数据，会偏向
@@ -997,10 +1175,25 @@
       treeRoot.N++;
       for (const v of visited) { v.child.N++; v.child.Q += leafEval(v.chooser); }
     }
+    // 根动作统计 → 交给 selectRootRole 选（argmax N + 可选近平局温度采样）。
+    // 顺序 = Map 插入序，与原先直接遍历 treeRoot.children 完全一致。
+    const stats = [];
+    for (const [nm, c] of treeRoot.children) stats.push({ nm, N: c.N, Q: c.Q });
+    const ri = selectRootRole(stats, rootState, opts);
+    // opts.returnStats: 供 root-parallel（多 worker 各自搜索、主线程合并 N/Q 后再 selectRootRole）
+    if (opts.returnStats) return { idx: ri, stats, iters };
+    return ri;
+  }
+
+  // 根选择（纯函数）：stats=[{nm, N, Q}]（Q 为累计回报，v=Q/N）→ rootState.roleCards 索引。
+  // 从 ismctsPickRoleIdx 拆出，使多个 worker 的根统计可按角色名合并（N/Q 相加）后用同一规则选角。
+  function selectRootRole(stats, rootState, opts) {
+    opts = opts || {};
+    const rootLegal = legalRoleIdxs(rootState);
     // 选访问最多的根动作（默认最稳健的 argmax N）
     let bestName = null, bestN = -1;
     const kids = [];
-    for (const [nm, c] of treeRoot.children) { if (c.N > bestN) { bestN = c.N; bestName = nm; } kids.push({ nm, N: c.N, v: c.N > 0 ? c.Q / c.N : -Infinity }); }
+    for (const c of stats) { if (c.N > bestN) { bestN = c.N; bestName = c.nm; } kids.push({ nm: c.nm, N: c.N, v: c.N > 0 ? c.Q / c.N : -Infinity }); }
     // #5 近平局温度采样(仅 opts.tempSample=生产真人局+deep档)：top-2 访问 且 价值 都接近时按 N^(1/τ) 在近平局角色里采样,
     //   打散人类可背的确定性响应表(反剥削)。双门(访问ratio+价值eps): 低预算下访问是噪声, 单访问门会误触发(实测 iters=300 −4~5pp);
     //   价值门(v0−v1<eps≈<1分毛差)保证只在"选哪个都几乎免费"的真平局随机 → 生产档(iters=800)配对验无损(−1.0pp,z=−0.28)。self-play 默认 argmax 可复现。
@@ -1017,7 +1210,44 @@
       }
     }
     const ri = rootLegal.find(i => rootState.roleCards[i].name === bestName);
-    return ri != null ? ri : rootLegal[0];
+    return ri != null ? ri : (rootLegal.length ? rootLegal[0] : -1);
+  }
+
+  // 按"档位"重建 ismctsPickRoleIdx 的函数型选项（evalLeafFn / priorPolicyFn 不能跨线程传递，
+  // worker 侧据此重建；与 game.js ismctsPickRole/alphazeroPickRole 内联写法逐字对齐）。
+  //   mode: "hard"  → evalLeafFn = econReward（截断前瞻 + 手写经济评估）
+  //         "expert" → 无函数型选项（纯 rollout / valueW 线性价值）
+  //         "alpha"  → evalLeafFn = PRSim.evalLeafNN, priorPolicyFn = NN policy[7] → 合法角色名分布
+  //   base: { maxIters, budgetMs, C, truncate, valueW, tempSample, returnStats } 等可序列化选项，原样浅拷贝。
+  const ROLE_NAMES_7 = ["Settler", "Mayor", "Builder", "Craftsman", "Trader", "Captain", "Prospector"];
+  function searchOptsForMode(mode, base) {
+    const opts = Object.assign({}, base || {});
+    if (mode === "hard") {
+      opts.evalLeafFn = (s2, persp) => econReward(s2, persp);
+    } else if (mode === "alpha") {
+      opts.evalLeafFn = (state, seat) => API.evalLeafNN(state, seat);
+      // Phase 2：root._l6ValueNet 为真 → 叶评估用独立价值网的向量版（一次前向给 4 座位；VNET 缺失时 sim_nn 退回大网价值头）
+      if (root._l6ValueNet && typeof API.evalLeafVecNN === "function") opts.evalLeafVecFn = (state) => API.evalLeafVecNN(state);
+      opts.priorPolicyFn = (state, seat) => {
+        const out = API.networkEval(state, seat);
+        if (!out) return null;
+        // 把 policy[7] 映射回当前 legal 的角色名 → 概率
+        const legal = legalRoleIdxs(state);
+        const legalNames = new Set(legal.map(i => state.roleCards[i].name));
+        const dist = {};
+        let s = 0;
+        for (let k = 0; k < ROLE_NAMES_7.length; k++) {
+          if (legalNames.has(ROLE_NAMES_7[k])) {
+            dist[ROLE_NAMES_7[k]] = out.policy[k];
+            s += out.policy[k];
+          }
+        }
+        if (s > 0) for (const k of Object.keys(dist)) dist[k] /= s;
+        else { for (const k of Object.keys(dist)) dist[k] = 1 / Math.max(1, Object.keys(dist).length); }
+        return dist;
+      };
+    }
+    return opts;
   }
 
   // ============================================================
@@ -1063,7 +1293,7 @@
       if (st.buildingStock[b.id] <= 0) continue;
       if (ownsBuilding(p, b.id)) continue;
       if (12 - buildingUsedSpaces(p) < b.size) continue;
-      const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
+      const cost = effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers);
       if (p.money < cost) continue;
       opts.push(b.id);
     }
@@ -1091,8 +1321,9 @@
   function azTraderSkipToDecision(st) {
     const az = st.az;
     while (az.oi < az.ord.length) {
-      if (st.tradingHouse.length >= 4) return false; // 贸易站满 → 停(同 doTrader 的 break)
-      if (azTraderSellable(st, az.ord[az.oi]).length > 0) return true;
+      // 贸易站满 → 停(同 doTrader 的 break)；但持有贸易驿站(29) 的玩家仍可卖给自己
+      if (st.tradingHouse.length >= 4 && !azTraderPostable(st, az.ord[az.oi]).length) return false;
+      if (azTraderSellable(st, az.ord[az.oi]).length + azTraderPostable(st, az.ord[az.oi]).length > 0) return true;
       az.oi++;
     }
     return false;
@@ -1100,7 +1331,9 @@
   function azTraderEnd(st) { if (st.tradingHouse.length >= 4) { for (const g of st.tradingHouse) st.supply[g]++; st.tradingHouse = []; } }
 
   // captain：把候选编码为动作 int = shipSlot*10 + goodIdx（shipSlot 0..2=船, 3=码头wharf）
-  function azCaptainEncode(c) { return (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS_.indexOf(c.good); }
+  // 3 = 码头(18)，4 = 小码头(31)。此前 "smallwharf" 直接参与乘法得 NaN，
+  // 混进合法动作表后 azApply 会抛 TypeError（rollout 路径正常）——两路不一致，见 AI_STRENGTH §15。
+  function azCaptainEncode(c) { return (c.ship === "wharf" ? 3 : c.ship === "smallwharf" ? 4 : c.ship) * 10 + GOODS_.indexOf(c.good); }
   // 推进到下一个可装船的玩家；整轮无人可装 → 返回 false(装船结束)。轮次用 az.progressed 标记(同 doCaptain 的 while progress)。
   function azCaptainSkipToDecision(st) {
     const az = st.az; let guard = 0;
@@ -1119,7 +1352,7 @@
   function azFinishRole(st) {
     checkEnd(st);
     st.picksThisTurn++;
-    if (st.picksThisTurn >= st.numPlayers || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1154,7 +1387,7 @@
     if (az.phase === "trader") {
       if (!azTraderSkipToDecision(st)) { azTraderEnd(st); azFinishRole(st); return azDecision(st); }
       const i = az.ord[az.oi];
-      const actions = azTraderSellable(st, i).concat([AZ_PASS]);
+      const actions = azTraderSellable(st, i).concat(azTraderPostable(st, i)).concat([AZ_PASS]);
       return { type: "trade", chooser: i, actions };
     }
     if (az.phase === "craftbonus") {
@@ -1186,7 +1419,7 @@
       const p = st.players[i];
       if (action !== AZ_PASS) {
         const b = BLD[action];
-        const cost = effectiveCostBonus(p, b, i === az.chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === az.chooser || towerActive(st, p), st.numPlayers);
         p.money -= cost; st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
         if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
       }
@@ -1201,18 +1434,20 @@
       else { const good = GOODS_[action]; const idx = st.plantationPool.indexOf(good); pl = { good, manned: false }; st.plantationPool.splice(idx, 1); }
       p.plantations.push(pl);
       if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false }); // Hacienda
-      if (isManned(p, 11)) { if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { pl.manned = true; st.colonistsOnShip--; } } // Hospice
+      settleNewTile(st, p, pl);   // 济贫院(11) + Tibs 寄宿屋(48)
       az.oi++;
       return st;
     }
     if (az.phase === "trader") {
       const i = az.ord[az.oi], p = st.players[i];
       if (action !== AZ_PASS) {
-        const g = GOODS_[action];
-        p.goods[g]--; st.tradingHouse.push(g);
-        let earn = PRICE[g]; if (i === az.chooser) earn += 1; if (isManned(p, 7)) earn += 1; if (isManned(p, 13)) earn += 2;
-        p.money += earn;
+        const isPost = action >= AZ_POST_BASE;
+        const g = GOODS_[isPost ? action - AZ_POST_BASE : action];
+        p.goods[g]--;
+        if (isPost) st.supply[g]++; else st.tradingHouse.push(g);   // 驿站货直接回供应区
+        p.money += traderEarn(st, i, az.chooser, g, isPost ? "post" : "house");
       }
+      runLandOffice(st, p);   // 地产办公室(38)：每位玩家卖完(或没卖)之后触发
       az.oi++;
       return st;
     }
@@ -1225,7 +1460,8 @@
       const i = az.ord[az.oi], p = st.players[i];
       const shipSlot = Math.floor(action / 10), gi = action % 10, g = GOODS_[gi];
       let pick;
-      if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) };
+      if (shipSlot === 4) pick = { ship: "smallwharf", good: g, amount: p.goods[g] };
+      else if (shipSlot === 3) pick = { ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) };
       else { const ship = st.ships[shipSlot]; pick = { ship: shipSlot, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }; }
       const bset = new Set(); if (az.chooserBonusUsed) bset.add(az.chooser);
       captainLoad(st, i, az.chooser, bset, pick);
@@ -1242,11 +1478,11 @@
     if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
-    if (card.name === "Captain") { az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
+    if (card.name === "Captain") { captainStartBonuses(st, chooser); az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
     // 其余阶段：回退到启发式 do*（Mayor 派工保留贪心）
     switch (card.name) {
       case "Mayor": doMayor(st, chooser); break;
-      case "Prospector": st.players[chooser].money += isManned(st.players[chooser], 33) ? 2 : 1; break; // 图书馆翻倍
+      case "Prospector": doProspector(st, chooser); break;
     }
     azFinishRole(st);
     return st;
@@ -1291,7 +1527,7 @@
       for (const a of dec.actions) {
         if (a === AZ_PASS) continue;
         const b = BLD[a];
-        const cost = effectiveCostBonus(p, b, i === st.az.chooser, st.numPlayers);
+        const cost = effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers);
         const s = evalBuilding(st, p, b, phase) - cost * 3 + (i === st.az.chooser ? 5 : 0);
         if (s > bestS) { bestS = s; best = a; }
       }
@@ -1312,7 +1548,7 @@
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
-    ismctsPickRoleIdx, phaseOf, totalColonists, productionCapacity,
+    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },

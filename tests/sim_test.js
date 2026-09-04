@@ -1,20 +1,8 @@
 // 验证 sim.js：① 自对弈守恒 + 终局（规则移植忠实）② ISMCTS 强于启发式
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
 
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-  appendChild(){}, addEventListener(){}, querySelector(){return null;}, querySelectorAll(){return [];},
-  insertAdjacentHTML(){}, getBoundingClientRect(){return{left:0,top:0,width:0,height:0};}, cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document: { getElementById: id => (_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), addEventListener(){} },
-  console, setTimeout, performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}},
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname,'..','game.js'),'utf8'), sandbox, {filename:'game.js'});
-vm.runInContext(fs.readFileSync(path.join(__dirname,'..','sim.js'),'utf8'), sandbox, {filename:'sim.js'});
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先每个测试各自复制的 makeEl()/vm 样板
+const { loadEngine } = require('../tools/_sandbox.js');
+const { sandbox } = loadEngine({ files: ['game.js', 'sim.js'] });
 
 const S = sandbox.PRSim;
 const GOODS = ["corn", "indigo", "sugar", "tobacco", "coffee"];

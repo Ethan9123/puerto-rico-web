@@ -1,0 +1,14 @@
+{
+  "name": "波多黎各 Puerto Rico",
+  "short_name": "Puerto Rico",
+  "description": "经典策略桌游，支持联机对战",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#2c4a1e",
+  "background_color": "#1a2e0e",
+  "categories": ["games"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
