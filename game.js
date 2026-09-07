@@ -3777,11 +3777,12 @@ function buildSimState(G) {
     rnd: Math.random,
     players: G.players.map(p => ({
       idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0, _invest: p._invest || 0,
-      plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
-      buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
+      unplacedNobles: p._unplacedNobles || 0,
+      // 贵族扩展：nobles/noble 决定 isNobleManned vs isColonistManned，漏传则 sim 全按殖民者算
+      plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned, noble: !!pl.noble })),
+      buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men, nobles: b.nobles || 0 })),
       goods: Object.assign({}, p.goods),
       unplaced: p._unplacedMen || 0, wharfUsed: p._wharfUsedThisRound || false, aiLevel: p._aiLevel || 5,
-      nobleCount: G.expansionNobles ? G.nobleCount(p) : 0, // 贵族扩展：玩家板上贵族总数(终局每名+1VP)
     })),
   };
   return st;
