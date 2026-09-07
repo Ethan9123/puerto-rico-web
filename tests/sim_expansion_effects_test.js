@@ -305,5 +305,69 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   console.log('⑦ Tibs 建筑已进入建造/派工估值');
 }
 
+// ---- ⑧ 银行(52)：建造时投资 + 终局仅在镇守时换 VP ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+  const p = st.players[0]; p.money = 12;
+  // 直接走 doBuilder 不好控成本，这里只验计分与投资语义
+  p.buildings.push({ bid: 52, men: 1 }); p._invest = 5;
+  const withMan = S.finalScore(p, st);
+  p.buildings[0].men = 0;                       // 未镇守 → 投资作废
+  const noMan = S.finalScore(p, st);
+  ok(withMan - noMan === 5, `⑧ 银行投资应仅在镇守时计入终局（差 ${withMan - noMan}，应为 5）`);
+  console.log(`⑧ 银行(52) 终局计分 OK（镇守 ${withMan} / 未镇守 ${noMan}）`);
+}
+
+// ---- ⑧ 大教堂(53)：每个对手的 large_violet +2VP，需自己镇守、不要求对方镇守 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+  const p = st.players[0]; p.buildings.push({ bid: 53, men: 1 });
+  st.players[1].buildings.push({ bid: 19, men: 0 });   // 对手的大紫，未镇守
+  st.players[2].buildings.push({ bid: 20, men: 0 });
+  const withSt = S.finalScore(p, st);
+  p.buildings[0].men = 0;
+  const noMan = S.finalScore(p, st);
+  ok(withSt - noMan === 4, `⑧ 大教堂应 +2×2=4（实际 ${withSt - noMan}）`);
+  console.log(`⑧ 大教堂(53) 终局计分 OK（+${withSt - noMan}）`);
+}
+
+// ---- ⑧ finalScore 的第二参防御：players.map(finalScore) 会把下标当第二参传进来 ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true;
+  // ⚠ 大教堂必须放在**下标 ≥1** 的玩家身上：下标 0 是 falsy，
+  //   即使守卫写成 `x || null` 也会退化成 null，那样这条用例根本无法失败。
+  st.players[2].buildings.push({ bid: 53, men: 1 });
+  st.players[1].buildings.push({ bid: 19, men: 0 });
+  const viaMap = st.players.map(S.finalScore);          // 第二参 = 下标(数字)
+  const viaExplicit = st.players.map(q => S.finalScore(q));
+  ok(JSON.stringify(viaMap) === JSON.stringify(viaExplicit),
+     `⑧ map(finalScore) 不得把下标误当状态（map=${JSON.stringify(viaMap)} vs 显式=${JSON.stringify(viaExplicit)}）`);
+  console.log('⑧ finalScore 第二参防御 OK（下标不会被误解析为状态）');
+}
+
+// ---- ⑧ 皇家供应商(42)：按贵族数弃不同种便宜货换 VP ----
+{
+  // ⚠ doCaptain 末尾的 captainCleanupKeep 也会丢弃超出仓储的货，
+  //   直接数"少了几个货"会把两者混在一起。改用双臂：只变 nobleCount，差值即 RS 的效果。
+  const mk = (nobles) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionNobles = true; st.governor = 1;
+    const p = st.players[0]; p.buildings.push({ bid: 42, men: 1 }); p.nobleCount = nobles;
+    p.goods.corn = 2; p.goods.indigo = 2;        // 便宜货(0/1)，AI 规则只弃这些
+    st.ships = [];                                // 无船 → 隔离掉装船得分
+    return { st, p };
+  };
+  const a = mk(2), b = mk(0);
+  const av0 = a.p.vp, bv0 = b.p.vp;
+  S.doCaptain(a.st, 1); S.doCaptain(b.st, 1);
+  const gain = (a.p.vp - av0) - (b.p.vp - bv0);
+  ok(gain === 2, `⑧ 2 名贵族应换到 2VP（双臂差 ${gain}）`);
+
+  // 货物守恒：玩家手上减少的总量 = 供应区增加的总量
+  const tot = (st) => S.newState(4,[5,5,5,5]) && ['corn','indigo','sugar','tobacco','coffee']
+    .reduce((s2,g)=> s2 + st.supply[g] + st.players.reduce((s3,q)=>s3+q.goods[g],0), 0);
+  ok(tot(a.st) === tot(b.st), `⑧ 货物守恒：两臂总量应相同（${tot(a.st)} vs ${tot(b.st)}）`);
+  console.log(`⑧ 皇家供应商(42) OK（双臂 VP 差 +${gain}，货物守恒）`);
+}
+
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');
 process.exit(fails ? 1 : 0);

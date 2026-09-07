@@ -92,7 +92,13 @@
   }
   function effectiveCostBonus(p, bld, chooser, np) { let c = effectiveCost(p, bld, np); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
 
-  function specialVPs(p) {
+  // 第二参 st 可选。⚠ 多处工具以 players.map(finalScore) 调用，
+  // 那样第二参收到的是**数组下标**（数字）。故这里显式校验形状，
+  // 收到非状态对象一律按"无跨玩家信息"处理，退化为原有的纯 per-player 行为。
+  function asState(x) { return (x && typeof x === "object" && Array.isArray(x.players)) ? x : null; }
+
+  function specialVPs(p, st) {
+    const S = asState(st);
     let v = 0;
     if (isManned(p, 19)) for (const b of p.buildings) { const bd = BLD[b.bid]; if (bd.type === "production") v += (bd.men === 1 ? 1 : 2); }
     if (isManned(p, 20)) { const n = p.plantations.length; v += (n <= 9 ? 4 : n === 10 ? 5 : n === 11 ? 6 : 7); }
@@ -109,12 +115,22 @@
     // 贵族扩展(标量)：每名贵族终局 +1VP；皇家花园(45) 镇守时每名贵族再 +1VP
     const nb = p.nobleCount || 0;
     if (nb > 0) { v += nb; if (isManned(p, 45)) v += nb; }
+    // Tibs 银行(52)：每枚投资 +1VP，**需终局仍镇守**（未镇守则投资作废，game.js:6476）。
+    // 只有 Tibs 局才存在建筑 52，故无需再查模块标志。
+    if (isManned(p, 52)) v += (p._invest || 0);
+    // Tibs 大教堂(53)：每个**其他玩家**拥有的 large_violet +2VP（不要求对方镇守，game.js:6470）。
+    // 需要跨玩家信息 → 只有拿到 st 时才能算。
+    if (S && isManned(p, 53)) {
+      let n = 0;
+      for (const op of S.players) { if (op === p) continue; n += op.buildings.filter(b => BLD[b.bid].type === "large_violet").length; }
+      v += n * 2;
+    }
     return v;
   }
-  function finalScore(p) {
+  function finalScore(p, st) {
     let s = p.vp;
     for (const b of p.buildings) s += BLD[b.bid].vp;
-    return s + specialVPs(p);
+    return s + specialVPs(p, asState(st));
   }
 
   // ---------- 初始局面 ----------
@@ -512,6 +528,13 @@
         p.money = 0;
       } else p.money -= cost;
       st.buildingStock[b.id]--; p.buildings.push({ bid: b.id, men: 0 });
+      // Tibs 银行(52) 建造时投资（game.js:2925）：AI 规则 min(8, max(0, money-4))。
+      // 此路径不要求镇守也不要求贵族，只看刚建成的是不是 52。
+      // 投资立刻从 money 扣走并锁进 _invest，终局仅在镇守时才换成 VP。
+      if (st.expansionTibs && b.id === 52) {
+        const inv = Math.min(8, Math.max(0, p.money - 4));
+        if (inv > 0) { p.money -= inv; p._invest = (p._invest || 0) + inv; }
+      }
       // 扩展：教堂(30) 按建造列得 VP（建教堂本身不得分）
       if (b.id !== 30 && isManned(p, 30)) { const tier = b.cost <= 3 ? 1 : b.cost <= 6 ? 2 : b.cost <= 9 ? 3 : 4; const cv = tier >= 4 ? 2 : tier >= 2 ? 1 : 0; if (cv > 0 && st.vpLeft > 0) { const got = Math.min(cv, st.vpLeft); p.vp += got; st.vpLeft -= got; } }
       if (isManned(p, 16)) { const nb = p.buildings[p.buildings.length - 1]; if (st.colonistsLeft > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsLeft--; } else if (st.colonistsOnShip > 0) { nb.men = Math.min(1, BLD[b.id].men); st.colonistsOnShip--; } }
@@ -758,6 +781,24 @@
     if (st.expansionTibs && isManned(st.players[chooser], 50) && st.vpLeft > 0) {
       const c = st.players[chooser]; c.vp += 1; c.shippingVP += 1; st.vpLeft -= 1;
     }
+    // 贵族扩展 皇家供应商(42)：装船前，按**全场贵族数**弃掉至多 that many 个
+    // **不同种**的货，每个换 1VP(计 shippingVP)，货回供应区而非上船
+    // → 不触发港口(17)/码头/灯塔(32)。AI 规则见 game.js:3410：只弃便宜货。
+    if (st.expansionNobles) {
+      const late = phaseOf(st) === "late";
+      for (const i of order(st, chooser)) {
+        const p = st.players[i];
+        if (!isManned(p, 42)) continue;
+        const limit = p.nobleCount || 0;
+        if (limit <= 0) continue;
+        const cheap = GOODS_.filter(g => p.goods[g] > 0 && PRICE[g] <= (late ? 4 : 2));
+        for (const g of cheap.slice(0, limit)) {
+          p.goods[g]--; st.supply[g]++;
+          const got = Math.min(1, st.vpLeft);
+          p.vp += got; p.shippingVP += got; st.vpLeft -= got;
+        }
+      }
+    }
     for (const p of st.players) p._towerShipped = false;   // 塔楼(49) 每阶段首装去重
   }
 
@@ -869,7 +910,7 @@
     const downstream = st.players[(chooser + 1) % st.numPlayers];
     const office = isManned(p, 12);
     // 对手聚合量(每次调用算一次)
-    const myScore = finalScore(p);
+    const myScore = finalScore(p, st);
     let oppMaxProd = 0, oppOpenMax = 0, oppGoodsMax = 0, lead = 0, oppMature = false;
     for (const o of st.players) {
       if (o === p) continue;
@@ -878,7 +919,7 @@
       let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
       if (op > oppOpenMax) oppOpenMax = op;
       const og = GOODS_.reduce((a, g) => a + o.goods[g], 0); if (og > oppGoodsMax) oppGoodsMax = og;
-      const sc = finalScore(o); if (sc > lead) lead = sc;
+      const sc = finalScore(o, st); if (sc > lead) lead = sc;
       if (pr >= 5 && o.buildings.length >= 5) oppMature = true;
     }
     const behind = myScore < lead - 3;
@@ -957,7 +998,7 @@
 
   // 终局奖励（从 perspective 玩家视角）：胜=1、平分摊、负=0；叠加小幅分差降噪
   function reward(st, perspective) {
-    const scores = st.players.map(finalScore);
+    const scores = st.players.map(q => finalScore(q, st));
     const my = scores[perspective];
     const best = Math.max(...scores);
     const winners = scores.filter(s => s === best).length;
@@ -974,7 +1015,7 @@
   function econEval(st, seat) {
     const me = st.players[seat];
     const phase = phaseOf(st);
-    let v = finalScore(me); // 已实现 VP（含建筑分+大紫终局特殊分）
+    let v = finalScore(me, st); // 已实现 VP（含建筑分+大紫终局特殊分）
     let income = 0, goodsVal = 0;
     for (const g of GOODS_) {
       income += productionCapacity(me, g) * (1 + PRICE[g]); // 收入引擎：玉米1 靛2 糖3 烟4 咖5
@@ -999,13 +1040,13 @@
   // 从 perspective 玩家视角抽取状态特征（与对手相对）。第 0 维为偏置。
   function extractFeatures(st, idx) {
     const me = st.players[idx];
-    const myScore = finalScore(me);
+    const myScore = finalScore(me, st);
     const oppCount = st.numPlayers - 1;
     let bestOpp = 0, sumOpp = 0, avgOppProd = 0, avgOppBuild = 0;
     let myProd = 0; for (const g of GOODS_) myProd += productionCapacity(me, g);
     for (const p of st.players) {
       if (p === me) continue;
-      const s = finalScore(p); if (s > bestOpp) bestOpp = s; sumOpp += s;
+      const s = finalScore(p, st); if (s > bestOpp) bestOpp = s; sumOpp += s;
       let pr = 0; for (const g of GOODS_) pr += productionCapacity(p, g);
       avgOppProd += pr; avgOppBuild += p.buildings.length;
     }
