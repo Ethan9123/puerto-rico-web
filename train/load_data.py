@@ -18,6 +18,7 @@ VVDIM = 4  # value 向量维度（每玩家一个，perspective-ordered）
 class SelfPlayDataset(Dataset):
     def __init__(self, paths: Iterable[Path]):
         feats, actions, values = [], [], []
+        skipped_sub = 0  # 子决策行（{"k":"sub",...}，452 维 build 子决策，PR #56）不属于角色策略数据，跳过
         for p in paths:
             with open(p, "r", encoding="utf-8") as fh:
                 for line in fh:
@@ -25,6 +26,9 @@ class SelfPlayDataset(Dataset):
                     if not line:
                         continue
                     d = json.loads(line)
+                    if d.get("k") == "sub":
+                        skipped_sub += 1
+                        continue
                     feats.append(d["f"])
                     actions.append(d["a"])
                     # value 目标：优先用向量 vv（4 维）；旧数据只有标量 v 时
@@ -36,6 +40,8 @@ class SelfPlayDataset(Dataset):
                         values.append(vv[:VVDIM])
                     else:
                         values.append([d["v"]] + [0.0] * (VVDIM - 1))
+        if skipped_sub:
+            print(f"skipped {skipped_sub} sub-decision lines (k=sub)")
         self.X = torch.tensor(np.asarray(feats, dtype=np.float32))
         self.A = torch.tensor(actions, dtype=torch.long)
         self.V = torch.tensor(np.asarray(values, dtype=np.float32))  # [N, VVDIM]

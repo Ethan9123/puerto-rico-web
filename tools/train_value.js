@@ -3,21 +3,9 @@
 // 用法: node tools/train_value.js [gamesPerN] [valIters] [valGames]
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
-
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-  getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), addEventListener(){} },
-  console, setTimeout, performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}},
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname,'..','game.js'),'utf8'), sandbox, {filename:'game.js'});
-vm.runInContext(fs.readFileSync(path.join(__dirname,'..','sim.js'),'utf8'), sandbox, {filename:'sim.js'});
-const S = sandbox.PRSim;
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
+const { PRSim: S } = loadEngine({ files: ['game.js', 'sim.js'] }); // 仅 game.js + sim.js(与旧样板一致)
 
 const GAMES_PER_N = parseInt(process.argv[2] || '600');
 const VAL_ITERS = parseInt(process.argv[3] || '120');

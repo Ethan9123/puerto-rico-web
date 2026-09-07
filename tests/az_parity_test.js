@@ -2,18 +2,15 @@
 // 先跑: python tests/_make_az_ref.py  (生成 az_smoke.json + _az_ref.json)
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
-function makeEl() { return { innerHTML:'', style:{}, classList:{add(){},remove(){}}, appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} }; }
-const _e = {};
-const sb = { document:{ getElementById:id=>(_e[id]||(_e[id]=makeEl())), createElement:()=>makeEl(), body:makeEl(), addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[] }, console, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array, setTimeout, performance:{now:()=>Date.now()} };
-sb.window = sb; sb.globalThis = sb; vm.createContext(sb);
-for (const f of ['game.js','sim.js','sim_features.js','sim_az.js']) vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sb, { filename: f });
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先每个测试各自复制的 makeEl()/vm 样板
+const { loadEngine } = require('../tools/_sandbox.js');
+const { sandbox: sb } = loadEngine({ files: ['game.js', 'sim.js', 'sim_features.js', 'sim_az.js'] });
 const azmod = sb.module.exports; // sim_az.js 的 module.exports (azForward 等)
 
 const refPath = path.join(__dirname, '_az_ref.json');
 const netPath = path.join(__dirname, '..', 'train', 'exports', 'az_smoke.json');
-if (!fs.existsSync(refPath) || !fs.existsSync(netPath)) { console.error('missing ref/net; run: python tests/_make_az_ref.py'); process.exit(2); }
+if (!fs.existsSync(refPath) || !fs.existsSync(netPath)) { console.error('skipped: missing ref — missing ref/net; run: python tests/_make_az_ref.py'); process.exit(2); }
 const ref = JSON.parse(fs.readFileSync(refPath, 'utf8'));
 const net = JSON.parse(fs.readFileSync(netPath, 'utf8'));
 

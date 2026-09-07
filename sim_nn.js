@@ -6,7 +6,9 @@
 //  - 给 ISMCTS 提供 P(role) + V(state)；替换 evalLeaf 的截断+线性 value
 //  - 单次 forward < 1ms（CPU），可在 MCTS 内大量调用
 //
-// 加载顺序：game.js → sim.js → sim_features.js → sim_nn.js
+// 加载顺序：game.js → sim.js → sim_features.js → (nn_wasm.js, 可选) → sim_nn.js
+// 加速：若之前加载了 nn_wasm.js（root.PRNNWasm），loadNetwork 会把前向切到 wasm(SIMD) 内核，
+//       约 5-10× 快；root._nnForceJS = true 可强制走纯 JS（对拍/基准用）。PRSim.nnBackend() 查看当前后端。
 // 用法：
 //   await PRSim.loadNetwork('train/exports/weights-v1.json');
 //   const { policy, value } = PRSim.networkEval(state, perspectiveSeat);
@@ -20,6 +22,9 @@
 
   // 当前加载的网络（layers 顺序执行）
   let NET = null;
+  // Phase 2：独立的小价值网（value_only，无 policy 头）。加载后 evalLeafVecNN 优先用它做叶评估；
+  // 目标尺度 = sim.js reward()（0.8·胜份 + 0.2·分差项），与完整 rollout 同尺度，可与 rolloutFrac 混合。
+  let VNET = null;
 
   function _softmax(arr) {
     let m = -Infinity; for (const v of arr) if (v > m) m = v;
@@ -73,6 +78,11 @@
   // valueVec: 价值向量头的完整输出(4 维, perspective-ordered: [k]=视角玩家顺时针第 k 位的价值)。
   // 旧标量网络 valueVec 长度为 1。value === valueVec[0] 不变。
   function _forward(net, features) {
+    // WebAssembly 后端（nn_wasm.js, 由 loadNetwork 挂到 net._wasmForward）；root._nnForceJS=true 强制走 JS
+    if (net._wasmForward && !root._nnForceJS) {
+      const r = net._wasmForward(features);
+      return { policy: r.policyLogits ? _softmax(r.policyLogits) : null, policyLogits: r.policyLogits || null, value: r.value, valueVec: r.valueVec };
+    }
     if (features.length !== net.feature_dim) {
       throw new Error(`forward: feature dim mismatch ${features.length} vs ${net.feature_dim}`);
     }
@@ -103,33 +113,68 @@
       // 在最后一个 ReLU 之后、head 之前，记录 trunk 输出
       if (L.type === "relu" && L.name && L.name.startsWith("trunk.5")) trunkOut = cur;
     }
-    if (!policyLogits) throw new Error("network has no policy head");
+    if (!policyLogits && !net.value_only) throw new Error("network has no policy head");
     if (value === null) throw new Error("network has no value head");
-    return { policy: _softmax(policyLogits), policyLogits, value, valueVec };
+    return { policy: policyLogits ? _softmax(policyLogits) : null, policyLogits, value, valueVec };
   }
 
   // 加载网络。src 可以是：
   //   (1) 已内嵌的权重对象 —— 离线双击 index.html(file://) 时用，规避 fetch 本地 json 被 CORS 拦截；
   //   (2) url 字符串 —— 浏览器相对/绝对路径；Node 由调用方注入 fetch。
-  async function loadNetwork(src) {
+  // 读取 + 预处理 + 可选 wasm 前向（loadNetwork / loadValueNet 共用）
+  async function _loadNet(src, label) {
     let net;
     if (src && typeof src === "object") {
       net = src;
     } else {
       const res = await fetch(src);
-      if (!res.ok) throw new Error("loadNetwork: HTTP " + res.status);
+      if (!res.ok) throw new Error(label + ": HTTP " + res.status);
       net = await res.json();
     }
     if (!net.feature_dim || !net.layers || !Array.isArray(net.layers)) {
-      throw new Error("loadNetwork: invalid network JSON");
+      throw new Error(label + ": invalid network JSON");
     }
     _prep(net);
+    // 可选 wasm(SIMD) 后端：nn_wasm.js 在本文件之前加载则尝试启用；任何失败都静默回退纯 JS
+    net._wasmForward = null;
+    if (root.PRNNWasm && typeof root.PRNNWasm.ready === "function") {
+      try {
+        const ok = await root.PRNNWasm.ready();
+        if (ok) net._wasmForward = root.PRNNWasm.createForward(net);
+      } catch (e) {
+        net._wasmForward = null;
+        console.warn("[sim_nn] wasm backend unavailable, using JS forward:", e && e.message ? e.message : e);
+      }
+    }
+    return net;
+  }
+  function _backendOf(net) {
+    if (root._nnForceJS) return "js";
+    if (net && net._wasmForward && root.PRNNWasm && root.PRNNWasm.available) return root.PRNNWasm.simd ? "wasm-simd" : "wasm";
+    return "js";
+  }
+
+  async function loadNetwork(src) {
+    const net = await _loadNet(src, "loadNetwork");
     NET = net;
-    console.log(`[sim_nn] loaded ${net.layers.length} layers, feature_dim=${net.feature_dim}, n_roles=${net.n_roles}, val_loss=${(net.val_loss || 0).toFixed(4)}`);
+    console.log(`[sim_nn] loaded ${net.layers.length} layers, feature_dim=${net.feature_dim}, n_roles=${net.n_roles}, val_loss=${(net.val_loss || 0).toFixed(4)}, backend=${nnBackend()}`);
     return net;
   }
 
   function unloadNetwork() { NET = null; }
+
+  // Phase 2：加载独立价值网（value_only JSON，见 train/train_value_np.py 导出）。
+  // src 同 loadNetwork（对象或 URL）。加载后 evalLeafVecNN 用它；不影响 networkEval / policy 先验。
+  async function loadValueNet(src) {
+    const net = await _loadNet(src, "loadValueNet");
+    if (!net.value_only) console.warn("[sim_nn] loadValueNet: network is not marked value_only; using its value head");
+    VNET = net;
+    console.log(`[sim_nn] value net loaded: ${net.layers.length} layers, arch=${net.arch || "?"}, val_mse=${net.val_mse != null ? Number(net.val_mse).toFixed(5) : "?"}, backend=${_backendOf(net)}`);
+    return net;
+  }
+  function unloadValueNet() { VNET = null; }
+  function valueNetLoaded() { return VNET !== null; }
+  function valueNetBackend() { return _backendOf(VNET); }
 
   // 公开评估：返回 {policy: [7], value: scalar}
   function networkEval(state, perspectiveSeat) {
@@ -151,11 +196,13 @@
   // 本函数把它压到 1 次。代价: 视角玩家以外的价值来自辅助头 vv[1..3](同目标联合训练,
   // 精度略低于各自视角的 vv[0])。仅支持 4 人局(vv 固定 4 维); 其余人数返回 null,
   // 调用方应回退 evalLeafNN。
+  // Phase 2：若已加载独立价值网(VNET)则优先用它；否则退回大网的价值头（旧行为）。
   function evalLeafVecNN(state) {
-    if (!NET) return null;
+    const net = VNET || NET;
+    if (!net) return null;
     const N = state.numPlayers;
     if (N !== 4) return null;
-    const out = networkEval(state, 0); // 视角=座位0 → valueVec[k] 即玩家 k 的价值
+    const out = _forward(net, PRSim.extractRich(state, 0)); // 视角=座位0 → valueVec[k] 即玩家 k 的价值
     if (!out || !out.valueVec || out.valueVec.length < N) return null;
     const vec = out.valueVec;
     return (persp) => {
@@ -166,9 +213,14 @@
 
   function isLoaded() { return NET !== null; }
 
-  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded });
+  // 当前网络实际使用的前向后端：'wasm-simd' | 'wasm' | 'js'（未加载网络或 _nnForceJS 时为 'js'）
+  function nnBackend() { return _backendOf(NET); }
+
+  Object.assign(PRSim, { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, nnBackend,
+    loadValueNet, unloadValueNet, valueNetLoaded, valueNetBackend });
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, _forward, _softmax };
+    module.exports = { loadNetwork, unloadNetwork, networkEval, evalLeafNN, evalLeafVecNN, isLoaded, nnBackend,
+      loadValueNet, unloadValueNet, valueNetLoaded, valueNetBackend, _forward, _softmax };
   }
 })(typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : this));

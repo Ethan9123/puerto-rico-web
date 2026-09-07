@@ -9,27 +9,9 @@
 // 用法: node tools/eval_az.js [games] [opp] [nn_path] [numsims]
 //   node tools/eval_az.js 24 l5 mcts_value_az.json 64
 'use strict';
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-
-function makeEl() {
-  const el = { _c:[], innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-    appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-    getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();}, dataset:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}} };
-  return el;
-}
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), addEventListener(){} },
-  console, setTimeout, performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ ok:true, status:200, json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')) }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js','sim_az.js']) load(f);
-const S = sandbox.PRSim;
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
+const { PRSim: S } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js'] });
 
 const GAMES = parseInt(process.argv[2] || '24');
 const OPP = process.argv[3] || 'l5';

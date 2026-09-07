@@ -15,10 +15,14 @@
   "use strict";
   const A = (typeof BUILDINGS !== "undefined") ? { BUILDINGS, BLD_BY_ID, GOODS, GOOD_PRICE, ROLE_LIST } : root._PR_STATIC;
   if (!A) throw new Error("sim_features.js: BUILDINGS/GOODS static missing; load game.js first");
-  const { BUILDINGS: BLDS, BLD_BY_ID: BLD, GOODS: GOODS_, ROLE_LIST: ROLES_ } = A;
+  const { BLD_BY_ID: BLD, GOODS: GOODS_, ROLE_LIST: ROLES_ } = A;
 
-  // 静态尺寸（注意：当前规则下，BUILDINGS = 23，ROLE_LIST = 7，GOODS = 5）
-  const N_BUILDINGS = BLDS.length;     // 23
+  // 静态尺寸（ROLE_LIST = 7，GOODS = 5）
+  // 建筑布局固定为 23 个基础建筑（id 1..23），与运行时 BUILDINGS 数组无关：Game 构造会就地改写 BUILDINGS
+  // （扩展局 24-53、Tibs 局移除 11、轮抽 splice），worker 侧的 _PR_STATIC 快照也可能不是 23 个；
+  // 若按 BLDS.length/BLDS[i] 布局，扩展建筑会写越过 23 位宽的槽位串到相邻特征（训练分布只含基础 23 个）。
+  const N_BUILDINGS = 23;
+  const BASE_BLD_IDS = Array.from({ length: N_BUILDINGS }, (_, i) => i + 1);
   const N_ROLES = ROLES_.length;       // 7
   const N_GOODS = GOODS_.length;       // 5
   const MAX_PLAYERS = 5;
@@ -106,7 +110,7 @@
       if ((b.men || 0) >= bd.men) manned.add(b.bid);
     }
     for (let i = 0; i < N_BUILDINGS; i++) {
-      const bid = BLDS[i].id;
+      const bid = BASE_BLD_IDS[i];
       out[base + 19 + i] = owned.has(bid) ? 1 : 0;
       out[base + 42 + i] = manned.has(bid) ? 1 : 0;
     }
@@ -127,7 +131,7 @@
     out[base + 3] = _clamp01((st.turnNumber || 1) / 25);
     for (let g = 0; g < N_GOODS; g++) out[base + 4 + g] = _clamp01((st.supply?.[GOODS_[g]] || 0) / 11);
     for (let i = 0; i < N_BUILDINGS; i++) {
-      const bid = BLDS[i].id;
+      const bid = BASE_BLD_IDS[i];
       out[base + 9 + i] = (st.buildingStock?.[bid] || 0) > 0 ? 1 : 0;
     }
     out[base + 32] = _clamp01((st.quarriesLeft || 0) / 8);

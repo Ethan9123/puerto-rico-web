@@ -100,9 +100,11 @@
     const reqId = (_myId || "h") + ":" + (++_reqSeq);
     const snap = (typeof PRSpectate !== "undefined" && PRSpectate.snapshot) ? PRSpectate.snapshot() : null;
     showOverlay(seat, kind, payload);
+    const ms = idleMs();
     const p = new Promise((resolve) => { _pending[reqId] = { resolve, seat, kind, payload }; });
     // 3 分钟无响应 → 专家 AI 接管该座位（含本次挂起请求）
-    _pending[reqId].timer = setTimeout(() => aiTakeover(seat, "3 分钟未操作"), idleMs());
+    _pending[reqId].timer = setTimeout(() => aiTakeover(seat, "3 分钟未操作"), ms);
+    _pending[reqId].deadline = Date.now() + ms;
     try { _session.send({ type: "input-request", reqId, seat, kind, payload, snap }); } catch (e) {}
     return p;
   }
@@ -314,13 +316,22 @@
   function manualTakeover() {
     for (const reqId in _pending) { aiTakeover(_pending[reqId].seat, "房主手动"); return; }
   }
+  let _countdownTimer = null;
+  function _updateCountdown() {
+    const cdEl = document.getElementById("np-countdown");
+    if (!cdEl) return;
+    let earliest = Infinity;
+    for (const id in _pending) { if (_pending[id].deadline && _pending[id].deadline < earliest) earliest = _pending[id].deadline; }
+    if (earliest === Infinity) { cdEl.textContent = "—"; return; }
+    cdEl.textContent = String(Math.max(0, Math.ceil((earliest - Date.now()) / 1000)));
+  }
   function showOverlay(seat, kind, payload) {
     let ov = document.getElementById("netplay-overlay");
     if (!ov) {
       ov = document.createElement("div");
       ov.id = "netplay-overlay";
       ov.innerHTML = '<div class="np-card"><div class="np-spin"></div><div class="np-msg"></div>' +
-        '<div class="np-sub">3 分钟无操作将自动由专家 AI 接管</div>' +
+        '<div class="np-sub">将在 <span id="np-countdown">180</span> 秒后由专家 AI 接管</div>' +
         '<button type="button" class="np-takeover">🤖 立即让 AI 接管</button></div>';
       document.body.appendChild(ov);
       ov.querySelector(".np-takeover").onclick = manualTakeover;
@@ -329,8 +340,14 @@
     const nm = (g && g.players[seat] && g.players[seat].name) || ("座位 " + (seat + 1));
     ov.querySelector(".np-msg").textContent = "⏳ 等待 " + nm + " 出手……";
     ov.classList.add("show");
+    if (!_countdownTimer) _countdownTimer = setInterval(_updateCountdown, 1000);
+    _updateCountdown();
   }
-  function removeOverlay() { const ov = document.getElementById("netplay-overlay"); if (ov) ov.classList.remove("show"); }
+  function removeOverlay() {
+    const ov = document.getElementById("netplay-overlay");
+    if (ov) ov.classList.remove("show");
+    if (_countdownTimer) { clearInterval(_countdownTimer); _countdownTimer = null; }
+  }
 
   root.PRNetPlay = {
     setup, teardown, maybeRoute, handleMessage, onPresence,

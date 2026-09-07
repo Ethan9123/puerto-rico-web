@@ -1,21 +1,7 @@
 // 测量相邻档位 "1 高 vs 3 低" 的胜率(座位轮转)。用法: node tools/tier_winrate.js [games]
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-  getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}},
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-load('ai_dna.js'); load('game.js'); load('sim.js');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
+const { run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js'] });
 
 const GAMES = parseInt(process.argv[2] || '60');
 // 每组 [高档, 低档]
@@ -54,7 +40,7 @@ const src = `(async () => {
 
 const NM = {1:'入门',2:'进化',3:'普通',4:'困难',5:'专家'};
 const t0 = Date.now();
-vm.runInContext(src, sandbox).then(rows => {
+run(src).then(rows => {
   console.log(`相邻档位 1 高 vs 3 低 胜率（每组 ${GAMES} 局，座位轮转） / ${((Date.now()-t0)/1000).toFixed(0)}s`);
   let allPass = true;
   for (const r of rows) {

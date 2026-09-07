@@ -1663,6 +1663,11 @@ function startGame(netOpts) {
   render();
   // L6 异步加载 NN（不阻塞 startup；未加载完前若选 L6 会回退到 L5）
   if (needsNN) loadAlphaZeroNN();
+  // Phase 2 叶评估 / Phase 3a 建造前瞻都要用独立价值网（否则 evalLeafVecNN 会静默退回大网价值头）
+  if (needsNN && (window._l6ValueNet || window._l6VnetBuild)) loadValueNetOnce();
+  // L4/L5/L6 搜索 AI：提前预热 worker 池（不阻塞；不可用时首次选角自动回退同步搜索）
+  // （needsNN 时顺带让 worker 预取 NN 权重，不阻塞 L4/L5 的首次选角；worker 仅在 L6 选角时才需要 NN）
+  if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(needsNN);
   if (typeof PRTrace !== "undefined") PRTrace.begin(G); // 对局日志：开局
   runMainLoop();
 }
@@ -1680,24 +1685,55 @@ function showNetBadge(text) {
   document.body.appendChild(b);
 }
 let _nnLoadPromise = null;
-function loadAlphaZeroNN() {
-  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
-  if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
-  if (_nnLoadPromise) return _nnLoadPromise;
-  // 默认用内嵌(离线)或部署网；URL 加 ?net=rank 时强制加载 rank 候选网（测试用，不影响默认部署网）
+// NN 权重来源（主线程 loadAlphaZeroNN 与 AI worker 池 PRAIPool 共用同一规则）：
+//   默认用内嵌(离线)或部署网；URL 加 ?net=rank 时强制加载 rank 候选网（测试用，不影响默认部署网）
+function resolveNNSource() {
   let src, netTag = "deploy";
   let netParam = null;
   try { netParam = new URLSearchParams(location.search).get("net"); } catch (e) {}
   if (netParam === "rank") {
     src = "mcts_value_nn_rank.json"; netTag = "rank候选";
-    showNetBadge("🧪 测试网: rank 候选（抢第一目标）");
   } else {
     src = (typeof window !== "undefined" && window.__MCTS_VALUE_NN__) ? window.__MCTS_VALUE_NN__ : "mcts_value_nn.json";
   }
+  return { src, netTag };
+}
+function loadAlphaZeroNN() {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadNetwork) return Promise.resolve(null);
+  if (PRSim.isLoaded && PRSim.isLoaded()) return Promise.resolve(true);
+  if (_nnLoadPromise) return _nnLoadPromise;
+  const { src, netTag } = resolveNNSource();
+  if (netTag === "rank候选") showNetBadge("🧪 测试网: rank 候选（抢第一目标）");
   _nnLoadPromise = PRSim.loadNetwork(src)
     .then(() => { console.log(`[L6] AlphaZero NN loaded (${netTag})`); return true; })
     .catch(e => { console.warn("[L6] AlphaZero NN missing, fallback to L5 behavior:", e.message); return false; });
   return _nnLoadPromise;
+}
+
+// ---- Phase 2：独立小价值网（叶评估替代完整 rollout；opt-in，默认关）----
+// 旋钮（同步/worker 两条路径一致；worker 经 PRAIPool._knobs 透传）：
+//   window._l6ValueNet     true → 叶评估用价值网 PRSim.evalLeafVecNN（需 mcts_value_vnet.json 已加载）
+//   window._l6LeafTruncate 叶评估前先走的启发式步数（默认 999 = 完整 rollout，即现状）
+//   window._l6RolloutFrac  每次迭代以该概率改走完整 rollout（0..1，默认 0；与价值网同尺度可混合）
+// 权重来源规则与 resolveNNSource 相同：内嵌 window.__MCTS_VALUE_VNET__（离线包）否则 fetch mcts_value_vnet.json。
+function resolveValueNetSource() {
+  return (typeof window !== "undefined" && window.__MCTS_VALUE_VNET__) ? window.__MCTS_VALUE_VNET__ : "mcts_value_vnet.json";
+}
+let _vnetLoadPromise = null;
+function loadValueNetOnce() {
+  if (typeof PRSim === "undefined" || !PRSim || !PRSim.loadValueNet) return Promise.resolve(false);
+  if (PRSim.valueNetLoaded && PRSim.valueNetLoaded()) return Promise.resolve(true);
+  if (_vnetLoadPromise) return _vnetLoadPromise;
+  _vnetLoadPromise = PRSim.loadValueNet(resolveValueNetSource())
+    .then(() => { console.log("[L6] value net loaded"); return true; })
+    .catch(e => { console.warn("[L6] value net missing, leaf eval stays rollout:", e.message); return false; });
+  return _vnetLoadPromise;
+}
+function l6LeafOpts() {
+  return {
+    truncate: (window._l6LeafTruncate != null ? window._l6LeafTruncate : 999),
+    rolloutFrac: (window._l6RolloutFrac > 0 ? window._l6RolloutFrac : 0),
+  };
 }
 
 // 动态渲染每个 CPU 的难度下拉
@@ -1875,6 +1911,7 @@ function resumeGame(str) {
   document.getElementById("game-screen").classList.remove("hidden");
   const cbox = document.getElementById("commentary-box"); if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }
   if (G.players.some(p => (p._aiLevel || 0) >= 6) && typeof loadAlphaZeroNN === "function") loadAlphaZeroNN();
+  if (G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4)) PRAIPool.warm(G.players.some(p => !p.isHuman && (p._aiLevel || 0) >= 6)); // 与 startGame 一致：预热 worker 池
   if (typeof PRTrace !== "undefined") PRTrace.begin(G); // 续局起新 trace（半局，采集端按需丢弃）
   render();
   runMainLoop();
@@ -1896,8 +1933,9 @@ async function maybeOfferResume() {
   box.insertBefore(btn, box.firstChild);
 }
 // 离开页面 / 切后台时，把最新本地存档推一份到 KV（跨设备续局）
-window.addEventListener("pagehide", kvSyncBeacon);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") kvSyncBeacon(); });
+// Node 沙盒(tests/tools)里 window/document 可能没有 addEventListener，故加守卫；浏览器行为不变
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("pagehide", kvSyncBeacon);
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") kvSyncBeacon(); });
 maybeOfferResume();
 
 // ============================================================
@@ -1998,7 +2036,7 @@ async function runMainLoop() {
           castPred = commentaryPreRole(player, available);
           await sleep(spectatorOn() ? CAST_PREDICT_MS : CAST_PVE_PREDICT_MS);
         } else if (!window._allAIMode) await sleep(700);
-        chosenIdx = aiPickRole(player, available);
+        chosenIdx = await aiPickRoleAsync(player, available); // L4-L6 走 worker 池(主线程不冻结)；其余/不可用时同步
         // 解说：开牌后核对
         if (castPred) { commentaryPostRole(player, castPred, available[chosenIdx].name); await sleep(spectatorOn() ? CAST_REACT_MS : CAST_PVE_REACT_MS); }
       }
@@ -2836,8 +2874,10 @@ async function doBuilder(playerIdx, isChooser) {
     });
     if (pickIdx === null) return;
   } else {
-    const sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
-    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser); // 终局精确(opt-in) 否则启发式
+    // 优先级：终局精确求解(opt-in) → 价值网 1-ply 前瞻(opt-in, Phase 3a) → 启发式
+    let sp = (typeof solverPickBuilding === "function") ? solverPickBuilding(p, options, isChooser) : null;
+    if (sp === null && typeof vnetPickBuilding === "function") sp = vnetPickBuilding(p, options, isChooser);
+    pickIdx = (sp !== null) ? sp : aiPickBuilding(p, options, isChooser);
     if (pickIdx < 0) return;
   }
   const { b, cost } = options[pickIdx];
@@ -3665,11 +3705,9 @@ function gamePhase() {
   return "late";
 }
 
-function aiPickRole(p, available) {
-  let lvl = p._aiLevel || 3;
-  // 贵族扩展：sim 引擎未建模贵族 → L4/L5/L6 回退到 L3 强启发式
-  if (G.expansionNobles && lvl >= 4) lvl = 3;
-  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
+// 群友人格的角色"抢先手"（spite/攒钱/大建筑/拿币）：命中返回 available 索引，否则 null。
+// 同步 aiPickRole 与异步 aiPickRoleAsync 共用，保证两条路径的随机数消耗顺序完全一致。
+function _personaRolePick(p, available) {
   // 群友·苦寒/仲达：以 spite 概率抢人类最想要的角色（恶心人类，牺牲一点最优）
   if (_spiteRoll(p)) {
     const si = spiteRolePick(p, available);
@@ -3690,6 +3728,16 @@ function aiPickRole(p, available) {
     const ci = coinRolePick(p, available);
     if (ci != null) return ci;
   }
+  return null;
+}
+
+function aiPickRole(p, available) {
+  let lvl = p._aiLevel || 3;
+  // 贵族扩展：自 457ba47 起 sim.js 已建模贵族(标量 nobleCount)，L4/L5/L6 不再回退到 L3；
+  // 此前的回退钳制让 §10 的"移植后"天梯实际是 L3 打 L3(AI_STRENGTH §12)。
+  updatePlan(p); // 每回合刷新该 AI 的全局对局计划，供选角色/建筑/派工等各处保持连贯
+  const persona = _personaRolePick(p, available);
+  if (persona != null) return persona;
   if (lvl === 1) return level1PickRole(p, available);
   if (lvl === 2) {
     // DNA AI + 浅层自我前瞻（往后看几轮微调，仍以基因为主）
@@ -3714,6 +3762,8 @@ function buildSimState(G) {
     gameOver: false, endTriggered: G.endTriggered,
     // 贵族扩展：传标量贵族状态给 sim(让 L5/L6 角色搜索能看见贵族→终局VP)
     expansionNobles: !!G.expansionNobles, noblesLeft: G.noblesLeft || 0, noblesOnShip: G.noblesOnShip || 0,
+    // 新建筑池(24-37) / Tibs 建筑池(46-53)：sim 的扩展效果以此为门，基础局恒 false
+    expansion: !!G.expansion, expansionTibs: !!G.expansionTibs,
     colonistsLeft: G.colonistsLeft, colonistsOnShip: G.colonistsOnShip, vpLeft: G.vpLeft,
     supply: Object.assign({}, G.supply), buildingStock: Object.assign({}, G.buildingStock),
     quarriesLeft: G.quarriesLeft,
@@ -3726,7 +3776,7 @@ function buildSimState(G) {
     picksThisTurn: G.roleCards.filter(r => r.taken).length,
     rnd: Math.random,
     players: G.players.map(p => ({
-      idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0,
+      idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP || 0, _invest: p._invest || 0,
       plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
       buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
       goods: Object.assign({}, p.goods),
@@ -3741,13 +3791,24 @@ function buildSimState(G) {
 // build 是终局最高分歧子决策(74%)。iters=40 配对 A/B 测得 +3.3pp(z=3.75)，但 iters=150 复核(110 局)
 // 仅 +0.9pp(z=1.0，不显著)且求解触发率 0.43→0.27/局——**增益随对弈变强而缩小**(更强的角色搜索改变了
 // 终局局面，求解器触发更少、修正更小)。未达 z>1.96 换挡标准 → 保持默认关闭。仅基础局生效。
+// AI 高级决策层(终局精确求解器 / az 因子化层)未完整建模的模块开关。
+// 任一开启 → 相关函数返回 null，回退到启发式。
+// ⚠ 只能用构造函数真正赋过值的属性名。本函数存在的原因：原先三处内联写的是
+//   G.expansionNewBuildings / G.expansionFestival —— 这两个属性从未被赋值(恒 undefined)，
+//   于是节庆局静默绕过守卫：sim.js 零建模 festival，而节庆目标③「首位建成指定建筑 +3VP」
+//   恰恰作用在 solverPickBuilding 正在做的那个决策上(AI_STRENGTH §14)。
+//   新建筑由 G.expansion 覆盖(见构造函数 this.expansion = this.modNewBuildings)。
+function aiUnmodeledMods() {
+  return !!(G.expansion || G.expansionNobles || G.expansionTibs || G.moduleFestival);
+}
+
 // 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
 function solverPickBuilding(p, options, isChooser) {
   // 群友·建筑大师(西西/拾光/SC)即使全局开关关闭也启用终局精确建造求解器
   if ((!window._l6SolverBuild && !(p._persona && p._persona.build)) || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
   // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
-  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  if (aiUnmodeledMods()) return null;
   try {
     const st = buildSimState(G);
     if (!st.endTriggered) return null;                 // 仅终局触发后
@@ -3773,6 +3834,91 @@ function solverPickBuilding(p, options, isChooser) {
   } catch (e) { return null; }
 }
 
+// ---- Phase 3a：价值网 1-ply 前瞻接管 L6 *建造*子决策（opt-in: window._l6VnetBuild，默认关闭）----
+// 动机（AI_STRENGTH §9 `tools/solver_disagree.js`）：终局精确解与启发式的分歧率 build 74% 最高，
+// 而搜索至今**只覆盖 role**（约 62/180 决策）——build 从未被搜索过。终局求解器只在 endTriggered 后
+// 触发（~0.43 次/局）且增益随对弈变强而缩小；价值网前瞻则**全程可用**。
+//
+// 做法：对每个合法建筑（含 PASS），clone → azApply 该 build → 用因子化启发式续到**下一个角色边界**
+// → evalLeafVecNN 取本座位价值 → 取最大。续到角色边界是关键：价值网正是在角色边界上训练的
+// （tools/gen_value_data.js 每个角色决策点记一条），这样评估始终落在训练分布内。
+// 成本（实测）：3.09 ms/次建造决策（平均 14.1 候选，0.22 ms/候选；启发式 0.083 ms → 37×）。
+// 每局约 10-15 次建造 ≈ +45 ms/局，相对每局 ~5 s（400 iters 角色搜索）<1%，可忽略。
+// 安全闸与 solverPickBuilding 同款：az 重建的可建集合须与 doBuilder 逐 id 一致，否则回退启发式。
+// 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
+function vnetPickBuilding(p, options, isChooser) {
+  if (!window._l6VnetBuild || p._aiLevel !== 6) return null;
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.azDecision !== "function" || typeof PRSim.evalLeafVecNN !== "function") return null;
+  const useRollout = window._l6BuildEval === "rollout";                        // Phase 6 实验 1：无偏 rollout 评估器
+  if (!useRollout && (!PRSim.isLoaded || !PRSim.isLoaded())) return null;      // 网未加载 → 启发式（rollout 模式不需要网）
+  if (aiUnmodeledMods()) return null; // az 层未完整建模扩展
+  if (!useRollout && G.numPlayers !== 4) return null;                           // evalLeafVecNN 仅 4 人局（rollout 模式无此限制）
+  try {
+    const st = buildSimState(G);
+    const bcard = st.roleCards.find(r => r.name === "Builder");
+    const chooser = bcard ? bcard.takenBy : null;
+    if (chooser == null) return null;
+    const N = st.numPlayers;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "builder", chooser, ord, oi };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
+    // 安全闸：az 可建集合必须与 game.js doBuilder 完全一致，否则前瞻的是错模型 → 回退
+    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
+    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
+    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+
+    const allowPass = window._l6VnetBuildPass !== false;   // 默认允许"不建造"参与比较
+    // 公共随机数(common random numbers)：每个候选用**同一个种子**的独立 RNG 续局，
+    // 使候选间的价值差只反映"建了什么"，而非续局抽牌运气的分叉（否则不同候选消耗的随机数不同，
+    // 比较里混入牌运噪声）。种子由当前局面派生 → 同一决策点可复现。
+    const seed0 = (((G.turnNumber | 0) * 73856093) ^ ((p.idx | 0) * 19349663) ^ ((st.plantationDeck.length | 0) * 83492791)) >>> 0;
+    const mkRnd = (s) => { let a = s >>> 0; return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+    const K = Math.max(1, window._l6VnetBuildSamples || 1);   // 可选：多次续局取均值进一步降噪
+    let bestAct = null, bestV = -Infinity;
+    for (const act of dec.actions) {
+      if (act < 0 && !allowPass) continue;
+      let acc = 0;
+      for (let k = 0; k < K; k++) {
+      const st2 = PRSim.clone(st);
+      st2.rnd = mkRnd(seed0 + k * 0x9E3779B9);
+      PRSim.azApply(st2, act);
+      // 因子化启发式续局，直到回到角色边界（azDecision 返回 type==="role"）或终局
+      let d2 = PRSim.azDecision(st2), guard = 0;
+      while (d2 && d2.type !== "role" && guard++ < 400) {
+        PRSim.azApply(st2, PRSim.azHeuristicAction(st2, d2));
+        d2 = PRSim.azDecision(st2);
+      }
+      let v;
+      if (PRSim.isTerminal(st2)) {
+        v = PRSim.reward(st2, p.idx);                       // 终局用真实回报（与价值网同尺度）
+      } else if (window._l6BuildEval === "rollout") {
+        // Phase 6 实验 1：把评估器换成**无偏但高方差**的完整 rollout，直接检验
+        // §13.6/§13.8 那个"价值网的系统性偏差才是 −5.1pp 主因"的解释。
+        // 若偏差是主因 → 差距应大幅收窄；若仍 −5pp → 偏差不是主因（horizon effect 或
+        // §4"启发式建造已近最优"成立），届时必须回头修正文档措辞。
+        // 与价值网同尺度（都是 reward）；配合公共随机数 + K 次均值压方差。
+        PRSim.rolloutToEnd(st2, st2.rnd);
+        v = PRSim.reward(st2, p.idx);
+      } else {
+        const fn = PRSim.evalLeafVecNN(st2);
+        if (!fn) return null;                               // 网不可用 → 整体回退启发式
+        v = fn(p.idx);
+      }
+      acc += v;
+      }
+      const vAvg = acc / K;
+      if (vAvg > bestV) { bestV = vAvg; bestAct = act; }
+    }
+    if (bestAct == null) return null;
+    if (bestAct < 0) return -1;                             // PASS
+    const idx = options.findIndex(o => o.b.id === bestAct);
+    return idx >= 0 ? idx : null;
+  } catch (e) { return null; }
+}
+
 // 终局精确求解器接入 L6 *船长装船*子决策（opt-in: window._l6SolverCaptain，默认关闭；AI_STRENGTH §9）。
 // captain 是终局第二高分歧子决策(55%)，专家共识(BGA/BGG)也视装船为最关键决策。az captainCands 与
 // doCaptain 候选逐口径一致(base game)，captain 游标 {phase,chooser,ord,oi,progressed,chooserBonusUsed}
@@ -3781,7 +3927,7 @@ function solverPickBuilding(p, options, isChooser) {
 function solverPickCaptain(p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet) {
   if (!window._l6SolverCaptain || p._aiLevel !== 6) return null;
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
-  if (G.expansion || G.expansionNobles || G.expansionTibs || G.expansionNewBuildings || G.expansionFestival) return null;
+  if (aiUnmodeledMods()) return null;
   try {
     const st = buildSimState(G);
     if (!st.endTriggered) return null;
@@ -3873,8 +4019,12 @@ function alphazeroPickRole(p, available) {
       //   对 MCTS 近平局角色按温度采样打散确定性响应表; self-play/低预算默认 argmax 可复现。生产档(800)配对验无损(−1.0pp,z=−0.28), 见 AI_STRENGTH §13。
       tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
       C: (window._alphaC != null ? window._alphaC : 1.5), // PUCT 常数；NN policy 比较自信，稍微鼓励探索（_alphaC 供调参注入）
-      truncate: 999, // 全 rollout 到终局：用 NN 仅作 policy prior，value 用真实回报
+      // 默认 truncate 999 = 全 rollout 到终局：NN 仅作 policy prior，value 用真实回报。
+      // Phase 2 旋钮 _l6LeafTruncate/_l6RolloutFrac/_l6ValueNet（见 l6LeafOpts）可切到价值网叶评估。
+      truncate: l6LeafOpts().truncate,
+      rolloutFrac: l6LeafOpts().rolloutFrac,
       evalLeafFn: (state, seat) => PRSim.evalLeafNN(state, seat),
+      evalLeafVecFn: (window._l6ValueNet && PRSim.evalLeafVecNN) ? ((state) => PRSim.evalLeafVecNN(state)) : undefined,
       priorPolicyFn: (state, seat) => {
         const out = PRSim.networkEval(state, seat);
         if (!out) return null;
@@ -3902,6 +4052,266 @@ function alphazeroPickRole(p, available) {
     console.warn("AlphaZero ISMCTS failed, fallback to L5", e);
     return ismctsPickRole(p, available, "expert");
   }
+}
+
+// ============================================================
+// AI Worker 池（root-parallel ISMCTS，把搜索搬离主线程）
+// ============================================================
+// K 个 ai_worker.js 各自用不同种子、同一预算独立跑 ISMCTS，回传根统计 {nm,N,Q}；主线程按角色名
+// 合并(N/Q 相加)后用 PRSim.selectRootRole 选角 → 同样墙钟约 K× 模拟量，且 UI 不再冻结。
+// 不可用时（Node 沙盒 / file:// 离线 / 无 Worker / 显式关闭：?aiworker=0 或 window._aiNoWorker=true）
+// 或任何出错，调用方回退到原同步函数 → Node 评测工具行为逐位不变。
+const PRAIPool = {
+  K: 0, nn: false, wasm: false, vnet: false, lastIters: 0,
+  _slots: [], _initP: null, _nnP: null, _vnetP: null, _broken: false, _reqId: 0, _hooked: false,
+  available() {
+    if (this._broken) return false;
+    try {
+      return typeof Worker !== "undefined" && typeof location !== "undefined" && location.protocol !== "file:"
+        && !window._aiNoWorker && !/[?&]aiworker=0/.test(location.search || "");
+    } catch (e) { return false; }
+  },
+  // 预热：起 worker（withNN=true 时再让 worker 预取 NN 权重）；全部不阻塞、失败静默（首次选角自动回退同步）
+  warm(withNN) {
+    if (!this.available()) return;
+    const p = this.ensure();
+    if (withNN) p.then(ok => ok ? this.ensureNN() : false).catch(() => {});
+    else p.catch(() => {});
+  },
+  ensure() { if (!this._initP) this._initP = this._init().catch(e => { console.warn("[ai-worker] init failed", e); this._broken = true; return false; }); return this._initP; },
+  // 搜索旋钮：sim.js 通过 root._mctsC/_mctsEps、window._captainDeny 读取；worker 内 self 即 root/window
+  _knobs() {
+    const k = {};
+    for (const n of ["_mctsC", "_mctsEps", "_captainDeny", "_alphaC", "_l6ValueNet", "_l6LeafTruncate", "_l6RolloutFrac"]) if (window[n] != null) k[n] = window[n];
+    return k;
+  },
+  // 本局在场建筑表 + 造价：Game 构造/轮抽会就地改写 BUILDINGS、平衡模式改 BLD_BY_ID[15/16].cost，
+  // 每次 pick 随消息下发（很小），worker 侧就地同步 → 搜索规则与主线程同步路径完全一致。
+  _tables() {
+    const costs = {};
+    for (const id in BLD_BY_ID) costs[id] = BLD_BY_ID[id].cost;
+    return { ids: BUILDINGS.map(b => b.id), costs };
+  },
+  // 页面生命周期：pagehide 时终止 worker；bfcache 恢复(pageshow persisted)后允许下次选角重新起池
+  _hookLifecycle() {
+    if (this._hooked || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    this._hooked = true;
+    window.addEventListener("pagehide", () => this.terminate());
+    window.addEventListener("pageshow", (ev) => {
+      if (!ev || !ev.persisted) return;
+      this._broken = false; this._initP = null; this._nnP = null; this._slots = []; this.K = 0;
+      try {
+        if (typeof G !== "undefined" && G && G.players && !G.gameOver && G.players.some(p => !p.isHuman && (p._aiLevel || 3) >= 4))
+          this.warm(G.players.some(p => !p.isHuman && (p._aiLevel || 0) >= 6));
+      } catch (e) {}
+    });
+  },
+  _spawn(staticData, knobs) {
+    const slot = { w: null, alive: false, cur: null, resolve: null, ready: null, nnResolve: null };
+    try {
+      const w = new Worker("ai_worker.js");
+      slot.w = w;
+      slot.ready = new Promise(resolve => {
+        w.onmessage = (ev) => {
+          const m = (ev && ev.data) || {};
+          if (m.type === "ready") { slot.alive = true; resolve(m); return; }
+          if (m.type === "error" && m.id == null) { console.warn("[ai-worker] init failed:", m.message); resolve(null); return; } // init 失败
+          if (m.type === "nnready") { if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(m); } return; }
+          // 只接受当前请求 id 的回复；过期回复（超时后才到）直接丢弃
+          if ((m.type === "result" || m.type === "error") && m.id === slot.cur && slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r(m); }
+        };
+        w.onerror = (e) => {
+          console.warn("[ai-worker] worker error:", (e && e.message) || e);
+          slot.alive = false; resolve(null);
+          if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(null); }
+          if (slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r({ type: "error", message: String((e && e.message) || e) }); }
+        };
+        try { w.postMessage({ type: "init", staticData, nnUrl: null, knobs }); }
+        catch (e) { console.warn("[ai-worker] init postMessage failed:", (e && e.message) || e); resolve(null); } // 如 DataCloneError：仅此 slot 作废
+      });
+    } catch (e) { console.warn("[ai-worker] spawn failed:", (e && e.message) || e); slot.ready = Promise.resolve(null); }
+    return slot;
+  },
+  async _init() {
+    if (!this.available()) return false;
+    this._hookLifecycle();
+    const K = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    // 纯数据，可 structured-clone。BUILDINGS 用纯净基础 23 个（与主线程页面加载时 sim_features 看到的一致）；
+    // 本局实际在场建筑/造价随每次 pick 由 _tables() 下发（见 pickRoleParallel）。NN 权重按需再加载（ensureNN）。
+    const staticData = { BUILDINGS: BASE_BUILDINGS.slice(), BLD_BY_ID, GOODS, GOOD_PRICE, ROLE_LIST };
+    const knobs = this._knobs();
+    const slots = []; for (let k = 0; k < K; k++) slots.push(this._spawn(staticData, knobs));
+    const readies = await Promise.all(slots.map(s => s.ready));
+    this._slots = slots.filter((s, i) => { if (!readies[i]) { try { if (s.w) s.w.terminate(); } catch (e) {} return false; } return true; });
+    const ok = readies.filter(Boolean);
+    this.K = this._slots.length;
+    this.nn = false;
+    this.wasm = this.K > 0 && ok.every(r => r.wasm);
+    if (!this.K) { this._broken = true; console.warn("[ai-worker] no worker came up → sync fallback"); return false; }
+    if (this.K < K) console.warn(`[ai-worker] ${K - this.K}/${K} workers failed to start`);
+    console.log(`[ai-worker] pool=${this.K} nn=${this.nn} wasm=${this.wasm}`);
+    return true;
+  },
+  // 按需让所有 worker 加载 NN（仅 L6/alpha 需要；L4/L5 不为 5MB 权重付费）。返回 Promise<boolean>（全部 worker 都有 NN）。
+  ensureNN() {
+    if (!this._nnP) this._nnP = this._loadNN("nn").catch(e => { console.warn("[ai-worker] NN load failed", e); return false; });
+    return this._nnP;
+  },
+  // Phase 2：按需让所有 worker 加载独立价值网（仅 _l6ValueNet 开启时）。返回 Promise<boolean>。
+  ensureVNet() {
+    if (!this._vnetP) this._vnetP = this._loadNN("vnet").catch(e => { console.warn("[ai-worker] value net load failed", e); return false; });
+    return this._vnetP;
+  },
+  // 权重源 → 可 structured-clone 的 URL 或纯数据副本（主线程 loadNetwork 可能已挂上 _wasmForward 函数）
+  _cloneableSrc(src) {
+    if (typeof src === "string") return new URL(src, location.href).href;
+    const o = Object.assign({}, src); delete o._wasmForward; return o;
+  },
+  async _loadNN(which) {
+    const ok = await this.ensure();
+    if (!ok || !this._slots.length) return false;
+    const msg = { type: "loadnn" };
+    if (which === "vnet") msg.vnetUrl = this._cloneableSrc(resolveValueNetSource());
+    else msg.nnUrl = this._cloneableSrc(resolveNNSource().src); // 与主线程 loadAlphaZeroNN 同一来源
+    const replies = await Promise.all(this._slots.map(slot => new Promise(resolve => {
+      if (!slot.alive) return resolve(null);
+      slot.nnResolve = resolve;
+      try { slot.w.postMessage(msg); }
+      catch (e) { slot.nnResolve = null; console.warn("[ai-worker] loadnn postMessage failed:", (e && e.message) || e); resolve(null); }
+    })));
+    const key = which === "vnet" ? "vnet" : "nn";
+    this[key] = replies.length > 0 && replies.every(r => r && r[key]);
+    if (which !== "vnet") this.wasm = replies.length > 0 && replies.every(r => r && r.wasm);
+    const failed = replies.filter(r => !(r && r[key]));
+    if (failed.length) console.warn(`[ai-worker] ${key} unavailable in ${failed.length}/${replies.length} workers` + (failed.some(r => r && r.message) ? ": " + failed.filter(r => r && r.message).map(r => r.message).join("; ") : ""));
+    else console.log(`[ai-worker] ${key}=${this[key]} wasm=${this.wasm}`);
+    return this[key];
+  },
+  // 终止 worker 并把池复位（不标记 _broken：bfcache 恢复后下次选角可重新起池；真正 init 失败才置 _broken）
+  terminate() {
+    for (const s of this._slots) { try { if (s.w) s.w.terminate(); } catch (e) {} s.alive = false; }
+    this._slots = []; this.K = 0; this.nn = false; this.wasm = false; this.vnet = false; this._initP = null; this._nnP = null; this._vnetP = null;
+  },
+  // st: buildSimState 结果；mode: 'hard'|'expert'|'alpha'；opts: 可序列化搜索选项（函数型选项由 worker 按 mode 重建）
+  // 返回 st.roleCards 索引；池不可用/无任何 worker 返回结果 → 抛错（调用方回退同步搜索）。
+  async pickRoleParallel(st, mode, opts, timeoutMs) {
+    const ok = await this.ensure();
+    if (!ok || !this._slots.length) throw new Error("ai-worker pool unavailable");
+    if (mode === "alpha" && !this.nn) throw new Error("ai-worker NN unavailable");
+    if (mode === "alpha" && window._l6ValueNet && !this.vnet) throw new Error("ai-worker value net unavailable");
+    const id = ++this._reqId;
+    const state = Object.assign({}, st); delete state.rnd; // 函数不能 structured-clone；worker 侧按 seed 自建 RNG
+    const knobs = this._knobs();
+    const tables = this._tables();
+    const seedBase = (Math.random() * 0x100000000) >>> 0;
+    const got = [], errs = [];
+    const ps = this._slots.map((slot, k) => new Promise(resolve => {
+      if (!slot.alive) return resolve(null);
+      slot.cur = id; slot.resolve = (m) => { if (m && m.type === "result") got.push(m); else if (m && m.type === "error") errs.push(m.message); resolve(m); };
+      try { slot.w.postMessage({ type: "pick", id, state, mode, opts, seed: (seedBase + k * 0x9E3779B9) >>> 0, knobs, tables }); }
+      catch (e) { slot.resolve = null; slot.cur = null; errs.push(String((e && e.message) || e)); resolve(null); }
+    }));
+    const tmo = timeoutMs != null ? timeoutMs : ((opts && opts.budgetMs) || 1500) * 1.5 + 3000;
+    let timer = null;
+    await Promise.race([Promise.allSettled(ps), new Promise(r => { timer = setTimeout(r, tmo); })]);
+    if (timer) clearTimeout(timer);
+    for (const slot of this._slots) if (slot.cur === id) { slot.cur = null; slot.resolve = null; } // 超时：之后到达的回复丢弃
+    if (!got.length) throw new Error("ai-worker: no result" + (errs.length ? " (" + errs.join("; ") + ")" : " (timeout)"));
+    if (errs.length) console.warn(`[ai-worker] ${errs.length} worker(s) errored, merging ${got.length}:`, errs.join("; "));
+    // 按角色名合并根统计（N、Q 相加），再用与单线程完全相同的规则(argmax N + 近平局温度采样)选角
+    const merged = new Map();
+    let iters = 0;
+    for (const r of got) {
+      iters += r.iters || 0;
+      for (const s of (r.stats || [])) { const m = merged.get(s.nm); if (m) { m.N += s.N; m.Q += s.Q; } else merged.set(s.nm, { nm: s.nm, N: s.N, Q: s.Q }); }
+    }
+    this.lastIters = iters;
+    if (!merged.size) return got[0].idx; // 根只有 ≤1 个合法角色等退化情形：worker 已直接给出索引
+    return PRSim.selectRootRole(Array.from(merged.values()), st, opts);
+  },
+};
+
+// ---- 异步版角色选择（走 worker 池）：与同步版逻辑镜像；池不可用或出错时回退到同步函数 ----
+async function ismctsPickRoleAsync(p, available, tier) {
+  if (!PRAIPool.available() || typeof PRSim === "undefined" || !PRSim || !PRSim.selectRootRole) return ismctsPickRole(p, available, tier);
+  try {
+    const st = buildSimState(G);
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    const b = window._aiThinkBudget || {};
+    let iters = tier === "hard" ? (b.hardIters || 120) : (b.expertIters || 1500);
+    let ms = tier === "hard" ? (b.hardMs || 1500) : (b.expertMs || 6000);
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); }
+    const valueW = (tier === "expert" && window._mctsValueW) ? window._mctsValueW : null;
+    const opts = { maxIters: iters, budgetMs: ms, valueW, truncate: 8 }; // hard 档的 evalLeafFn=econReward 由 worker 重建
+    const ri = await PRAIPool.pickRoleParallel(st, tier === "hard" ? "hard" : "expert", opts);
+    if (ri == null || ri < 0) return level5Reactive(p, available);
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : level5Reactive(p, available);
+  } catch (e) {
+    console.warn("[ai-worker] ISMCTS pool failed, sync fallback", e);
+    return ismctsPickRole(p, available, tier);
+  }
+}
+
+async function alphazeroPickRoleAsync(p, available) {
+  if (!PRAIPool.available() || typeof PRSim === "undefined" || !PRSim || !PRSim.selectRootRole) return alphazeroPickRole(p, available);
+  try {
+    const ok = await PRAIPool.ensure();
+    const nn = ok && await PRAIPool.ensureNN(); // worker 按需加载 NN（L4/L5 局不加载）
+    if (!nn) return alphazeroPickRole(p, available); // worker 无 NN → 同步路径自行决定 L6/L5
+    if (window._l6ValueNet) { const v = await PRAIPool.ensureVNet(); if (!v) return alphazeroPickRole(p, available); } // Phase 2：价值网叶评估
+    const st = buildSimState(G);
+    if (PRSim.currentChooser(st) !== p.idx) return level5Reactive(p, available);
+    // 终局精确求解器(opt-in: window._l6Solver)：同同步版，在主线程同步求解（有 cap）
+    if (window._l6Solver && st.endTriggered && typeof PRSim.solveEndgame === "function") {
+      try {
+        const sol = PRSim.solveEndgame(st, window._l6SolverCap || 1.5e5);
+        if (sol && sol.type === "role" && sol.action != null && st.roleCards[sol.action]) {
+          const idx = available.findIndex(r => r.name === st.roleCards[sol.action].name);
+          if (idx >= 0) return idx;
+        }
+      } catch (e) { /* 求解失败 → 落到 NN-ISMCTS */ }
+    }
+    const b = window._aiThinkBudget || {};
+    let iters = b.alphaIters || 800;
+    let ms = b.alphaMs || 6000;
+    if (p._thinkMs) { ms = p._thinkMs; iters = Math.max(iters, 100000); }
+    const endBoost = (window._alphaEndBoost != null ? window._alphaEndBoost : 1);
+    if (endBoost > 1 && (st.endTriggered || (st.vpLeft != null && st.vpLeft <= 12) || (st.colonistsLeft != null && st.colonistsLeft <= 6))) {
+      iters = Math.round(iters * endBoost); ms = ms * endBoost;
+    }
+    const opts = {
+      maxIters: iters,
+      budgetMs: ms,
+      tempSample: ((p._roleTempSample || window._roleTempSample || (G.players && G.players.some(pp => pp.isHuman))) && iters >= (window._tsMinIters != null ? window._tsMinIters : 600)) ? { tau: (window._tsTau || 0.4), ratio: (window._tsRatio || 0.75), eps: (window._tsEps != null ? window._tsEps : 0.03) } : null,
+      C: (window._alphaC != null ? window._alphaC : 1.5),
+      truncate: l6LeafOpts().truncate,       // 默认 999（完整 rollout）；Phase 2 旋钮见 l6LeafOpts
+      rolloutFrac: l6LeafOpts().rolloutFrac,
+      // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布 / evalLeafVecFn(价值网, 按 _l6ValueNet 旋钮)：由 worker 按 mode='alpha' 重建
+    };
+    const ri = await PRAIPool.pickRoleParallel(st, "alpha", opts);
+    if (ri == null || ri < 0) return ismctsPickRoleAsync(p, available, "expert");
+    const name = st.roleCards[ri].name;
+    const idx = available.findIndex(r => r.name === name);
+    return idx >= 0 ? idx : ismctsPickRoleAsync(p, available, "expert");
+  } catch (e) {
+    console.warn("[ai-worker] AlphaZero pool failed, fallback", e);
+    return ismctsPickRoleAsync(p, available, "expert");
+  }
+}
+
+// 主循环用：L4/L5/L6 走 worker 池（await，不冻结 UI）；其余等级或池不可用时等价于同步 aiPickRole。
+// 注意 level5Reactive 内的对手预测递归与 netplay 的 aiDefaultFor 仍调用同步 aiPickRole。
+async function aiPickRoleAsync(p, available) {
+  let lvl = p._aiLevel || 3;
+  if (lvl < 4 || lvl > 6 || !PRAIPool.available()) return aiPickRole(p, available);
+  updatePlan(p);
+  const persona = _personaRolePick(p, available);
+  if (persona != null) return persona;
+  if (lvl === 4) return ismctsPickRoleAsync(p, available, "hard");
+  if (lvl === 5) return ismctsPickRoleAsync(p, available, "expert");
+  return alphazeroPickRoleAsync(p, available);
 }
 
 // 进化(L2)浅层前瞻：在 DNA 首选基础上，往后推演几轮(纯启发式续局)、只看"自己"的投影分来微调。
@@ -5838,9 +6248,10 @@ function render() {
   for (let s = 0; s < G.ships.length; s++) {
     const ship = G.ships[s];
     const div = document.createElement("div");
-    div.className = "ship" + (ship.count >= ship.capacity ? " full" : "");
+    const isFull = ship.count >= ship.capacity;
+    div.className = "ship" + (isFull ? " full" : "");
     div.innerHTML = `
-      <div class="ship-header">船 ${s + 1} (${ship.count}/${ship.capacity})</div>
+      <div class="ship-header">船 ${s + 1} (${ship.count}/${ship.capacity})${isFull ? ' <span class="ship-full-badge">满</span>' : ''}</div>
       <div class="ship-cargo">${ship.good ? plantEmoji(ship.good).repeat(ship.count) : "（空）"}</div>
     `;
     shipsDiv.appendChild(div);

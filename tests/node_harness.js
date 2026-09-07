@@ -1,53 +1,10 @@
 // 最小 DOM shim + vm 沙箱，用于在 Node 里跑全 AI 自对弈，验证 AI 强度梯队与守恒不变量。
 // 用法: node tests/node_harness.js [perConfig] [mixed]
-const fs = require('fs');
-const path = require('path');
 const vm = require('vm');
 
-function makeEl() {
-  const el = {
-    _c: [], innerHTML: '', textContent: '', style: {}, className: '', dataset: {},
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-    value: '', checked: false,
-    appendChild(c) { this._c.push(c); return c; },
-    removeChild() {}, remove() {}, addEventListener() {}, removeEventListener() {},
-    setAttribute() {}, getAttribute() { return null; }, insertAdjacentHTML() {},
-    querySelector() { return null; }, querySelectorAll() { return []; },
-    getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }; },
-    cloneNode() { return makeEl(); }, closest() { return null; }, focus() {}, click() {},
-    onclick: null,
-  };
-  return el;
-}
-const _els = {};
-const documentStub = {
-  getElementById: (id) => (_els[id] || (_els[id] = makeEl())),
-  querySelector: () => null, querySelectorAll: () => [],
-  createElement: () => makeEl(), createElementNS: () => makeEl(),
-  body: makeEl(), documentElement: makeEl(), addEventListener() {},
-};
-const sandbox = {
-  document: documentStub, console,
-  setTimeout, clearTimeout, setInterval, clearInterval,
-  requestAnimationFrame: (fn) => setTimeout(fn, 0), cancelAnimationFrame: () => {},
-  performance: { now: () => Date.now() },
-  Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp,
-  isNaN, parseInt, parseFloat, Infinity, NaN,
-  fetch: async (f) => {
-    const txt = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
-    return { json: async () => JSON.parse(txt), text: async () => txt, ok: true };
-  },
-};
-sandbox.window = sandbox;
-sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-
-function load(file) {
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), sandbox, { filename: file });
-}
-load('ai_dna.js');
-load('game.js');
-load('sim.js'); // L5(专家)=ISMCTS 需要 sim
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先每个测试各自复制的 makeEl()/vm 样板
+const { loadEngine } = require('../tools/_sandbox.js');
+const { sandbox } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js'] });
 
 const perConfig = parseInt(process.argv[2] || '8');
 const mixedGames = parseInt(process.argv[3] || '20');
@@ -65,7 +22,7 @@ const testSrc = `(async () => {
   await loadAIDNA();
 
   const expectedGoods = { corn: 10, indigo: 12, sugar: 11, tobacco: 9, coffee: 8 };
-  const expectedColonists = { 3: 55, 4: 75, 5: 95 };
+  const expectedColonists = { 3: 58, 4: 79, 5: 100 }; // 官方总数 = 供应池(55/75/95) + 初始殖民船(玩家数)，与 sim_test 一致
   const builtSeen = new Set(), rolesSeen = new Set();
   const levelVpSums = {1:0,2:0,3:0,4:0,5:0}, levelCounts = {1:0,2:0,3:0,4:0,5:0};
   const problems = [];

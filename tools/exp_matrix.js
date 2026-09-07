@@ -2,23 +2,15 @@
 // 检查: 游戏正常结束 / 无抛错 / sim 无崩溃(ISMCTS failed) / 分数合理(非0/NaN) / AI 是否建了扩展建筑。
 // 用法: node tools/exp_matrix.js [gamesPerCell=3]
 'use strict';
-const fs = require('fs'); const path = require('path'); const vm = require('vm');
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false, dataset:{},
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){}, getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 let simErrs = 0;
 const realErr = console.error;
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console: { log: console.log, warn: () => {}, error: (...a) => { if (String(a.join(' ')).match(/ISMCTS failed|failed|TypeError|undefined/)) simErrs++; } },
-  setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js']) load(f);
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'],
+  // 与旧样板一致: 沙盒内 console.error 只计数 sim 崩溃, warn 静音
+  extraGlobals: { console: { log: console.log, warn: () => {}, error: (...a) => { if (String(a.join(' ')).match(/ISMCTS failed|failed|TypeError|undefined/)) simErrs++; } } },
+});
 
 const GPC = parseInt(process.argv[2] || '3');
 const MODES = ['none', 'newbuildings', 'nobles', 'tibs'];
@@ -56,7 +48,7 @@ const src = `(async () => {
 })()`;
 
 console.log('鲁棒性矩阵: 4 模式 × 6 难度 × ' + GPC + ' 局/格 (4×同档全AI)\n');
-vm.runInContext(src, sandbox).then(rows => {
+run(src).then(rows => {
   // 按模式分组打印
   for (const mode of MODES) {
     console.log('=== ' + mode + ' ===');

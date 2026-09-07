@@ -61,8 +61,9 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 | **L6** | 宗师 (Grandmaster) | **AlphaZero**：自对弈训练的神经网络制导 MCTS（NN policy/value + PUCT），最强 |
 
 > 📊 **实测强度与天梯基准** 见 [AI_STRENGTH.md](AI_STRENGTH.md)：宗师头对头胜过所有其他档位
-> (横扫 L1–L3，险胜 L4/L5)，以及为何对近似同强的顶端档难破 60%(4 人对称局的结构性上限)、
-> AlphaZero 全决策探索的结论。
+> (横扫 L1–L3；对 L4 约 56%，对 L5 为 **35.4%**——1×宗师 vs 3×专家、480 局同种子配对评测，
+> 公平份额 25%，SE≈±2.7pp，见 AI_STRENGTH.md §6；早期 20–40 局天梯里"过半"的数字属高方差样本，
+> 不作依据)，以及为何对近似同强的顶端档难破 60%(4 人对称局的结构性上限)、AlphaZero 全决策探索的结论。
 
 ### 🧠 可调 AI 思考时间
 

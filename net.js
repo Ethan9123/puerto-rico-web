@@ -79,7 +79,7 @@
     return _supaClient;
   }
   function SupabaseTransport(room, clientId) {
-    let ch = null, onMsg = null, onPres = null;
+    let ch = null, onMsg = null, onPres = null, _onVisible = null;
     function presList() {
       const st = ch ? ch.presenceState() : {};
       const out = [];
@@ -94,11 +94,17 @@
         ch.on("broadcast", { event: "msg" }, (e) => onMsg && onMsg(e.payload));
         ch.on("presence", { event: "sync" }, () => onPres && onPres(presList()));
         await new Promise((res) => ch.subscribe((status) => { if (status === "SUBSCRIBED") { ch.track(meta); res(); } }));
+        // iOS Safari freezes backgrounded tabs → re-track presence on tab focus to clear ghost records
+        _onVisible = () => { if (document.visibilityState === "visible" && ch) ch.track(meta); };
+        document.addEventListener("visibilitychange", _onVisible);
       },
       send(msg) { if (ch) ch.send({ type: "broadcast", event: "msg", payload: msg }); },
       presence() { return presList(); },
       updateMeta(meta) { if (ch) ch.track(meta); },
-      close() { if (ch) { try { ch.unsubscribe(); } catch (e) {} ch = null; } },
+      close() {
+        if (_onVisible) { document.removeEventListener("visibilitychange", _onVisible); _onVisible = null; }
+        if (ch) { try { ch.unsubscribe(); } catch (e) {} ch = null; }
+      },
     };
   }
 

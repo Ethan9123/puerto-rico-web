@@ -198,7 +198,8 @@ body {
   background: linear-gradient(135deg, #4a3a2a, #6b5b3a);
   border: 2px solid #8a7245;
   border-radius: 8px;
-  width: 130px;
+  min-width: 100px;
+  flex: 1 1 110px;
   padding: 8px;
   cursor: pointer;
   position: relative;
@@ -378,7 +379,7 @@ body {
 /* ---- Players — 紧凑布局 ---- */
 #players-area {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
   gap: 8px;
   margin-top: 10px;
 }
@@ -388,6 +389,8 @@ body {
   padding: 8px;
   border: 2px solid transparent;
   transition: border-color 0.2s, box-shadow 0.2s;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 600px;
 }
 .player-board.current { border-color: #f3c969; box-shadow: 0 0 12px rgba(243, 201, 105, 0.5); }
 .player-board.governor::before { content: "👑 "; }
@@ -746,3 +749,14 @@ body.final-round::after {
 #lobby-panel .lobby-pulse { animation: lobbyPulse 1.1s ease-in-out infinite; }
 @keyframes lobbyPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(243,201,105,.5); } 50% { box-shadow: 0 0 0 6px rgba(243,201,105,0); } }
 #lobby-panel .lobby-invite { background: rgba(0,0,0,.22); border-radius: 4px; padding: 5px 8px; }
+
+/* 移动端触控目标 */
+@media (hover: none) and (pointer: coarse) {
+  .qs-btn, .skip-btn, .small { min-height: 44px; min-width: 44px; padding: 10px 14px; }
+}
+
+/* 减少布局重绘 */
+.role-card, .building-card, .plantation { contain: layout paint; }
+
+/* 满载船只徽章 */
+.ship-full-badge { font-size: 10px; background: #c0392b; color: #fff; border-radius: 3px; padding: 1px 4px; vertical-align: middle; }

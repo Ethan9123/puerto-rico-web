@@ -4,39 +4,14 @@
 //   games    : 对战局数，默认 24
 //   nn_path  : NN JSON 路径，默认 mcts_value_nn.json
 'use strict';
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 
 const BUDGET = parseInt(process.argv[2] || '800');
 const GAMES = parseInt(process.argv[3] || '24');
 const NN_PATH = process.argv[4] || 'mcts_value_nn.json';
 
-function makeEl() {
-  const el = { innerHTML:'', style:{}, classList:{add(){},remove(){}}, value:'', checked:false,
-    appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-    getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} };
-  return el;
-}
-const _els = {};
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), addEventListener(){} },
-  console, setTimeout, performance:{now:()=>Date.now()}, Math, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => {
-    const data = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'));
-    return { ok: true, status: 200, json: async () => data };
-  },
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), sandbox, { filename: f });
-load('ai_dna.js');
-load('game.js');
-load('sim.js');
-load('sim_features.js');
-load('sim_nn.js');
-
-const S = sandbox.PRSim;
+const { PRSim: S } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js'] });
 const ROLE_NAMES = ['Settler','Mayor','Builder','Craftsman','Trader','Captain','Prospector'];
 
 async function main() {

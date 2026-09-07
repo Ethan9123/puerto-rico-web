@@ -13,7 +13,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
+// 共享 Node 沙盒（tools/_sandbox.js）替代原先各工具自带的 makeEl()/vm 样板
+const { loadEngine } = require('./_sandbox.js');
 
 const NN_ARG = process.argv[2] || 'DEPLOY';
 const LO = parseInt(process.argv[3] || '5');
@@ -42,26 +43,27 @@ const MathSeeded = {};
 for (const k of Object.getOwnPropertyNames(Math)) MathSeeded[k] = Math[k];
 MathSeeded.random = () => _rng();
 
-const makeEl = () => ({ innerHTML:'', style:{}, classList:{add(){},remove(){},toggle(){},contains(){return false;}}, value:'', checked:false, dataset:{},
-  appendChild(){}, addEventListener(){}, querySelector:()=>null, querySelectorAll:()=>[], insertAdjacentHTML(){},
-  getBoundingClientRect:()=>({left:0,top:0,width:0,height:0}), cloneNode(){return makeEl();} });
-const _els = {};
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 const _fd = fs.openSync(OUT, 'w'); // 逐局追加写(崩溃不丢已完成对局)
-const sandbox = {
-  document:{ getElementById:id=>(_els[id]||(_els[id]=makeEl())), querySelector:()=>null, querySelectorAll:()=>[], createElement:()=>makeEl(), body:makeEl(), documentElement:makeEl(), addEventListener(){} },
-  console, setTimeout, clearTimeout, requestAnimationFrame:fn=>setTimeout(fn,0),
-  performance:{now:()=>Date.now()}, Math: MathSeeded, Date, JSON, Object, Array, Set, Map, Number, String, Boolean, Promise, Symbol, RegExp, isNaN, parseInt, parseFloat, Infinity, NaN, module:{exports:{}}, Float32Array,
-  fetch: async f => ({ json: async ()=>JSON.parse(fs.readFileSync(path.join(__dirname,'..',f),'utf8')), ok:true }),
-  __setSeed: s => { _rng = mulberry32(s >>> 0); },
-  __writeRow: json => { fs.writeSync(_fd, json + '\n'); },
-};
-sandbox.window = sandbox; sandbox.globalThis = sandbox;
-vm.createContext(sandbox);
-const load = f => vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'), sandbox, {filename:f});
-for (const f of ['ai_dna.js','game.js','sim.js','sim_features.js','sim_nn.js','sim_az.js','sim_solve.js']) load(f);
+// 共享沙盒: 带种子的 Math 与 __setSeed/__writeRow 经 beforeLoad 在任何引擎文件加载前注入,
+// 保证 game.js 里 `rnd: Math.random` 之类的引用捕获拿到的是稳定的 wrapper(结果逐位一致)
+const { run } = loadEngine({
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'],
+  beforeLoad: sb => {
+    sb.Math = MathSeeded;
+    sb.__setSeed = s => { _rng = mulberry32(s >>> 0); };
+    sb.__writeRow = json => { fs.writeSync(_fd, json + '\n'); };
+  },
+});
 const L6_SOLVER = process.env.L6_SOLVER ? true : false; // 终局精确求解器开关(真实评测 A/B)
 const L6_SOLVER_CAP = process.env.L6_SOLVER_CAP ? parseFloat(process.env.L6_SOLVER_CAP) : null;
+// Phase 2：任意 window 旋钮以 JSON 注入(参数位置不变)，例如
+//   L6_KNOBS='{"_l6ValueNet":true,"_l6LeafTruncate":0,"__MCTS_VALUE_VNET__":"mcts_value_vnet.json","_aiThinkBudget":{...,"alphaIters":2400}}'
+// 注入在默认预算之后 → 可覆盖 _aiThinkBudget；_l6ValueNet 为真时断言价值网已加载(否则测量无意义)。
+// 扩展模块（可选）：MODS='{"tibsBuildings":true,"nobles":true}' 开启后跑扩展局配对评测。
+// 默认 {} = 基础局，与既有基线逐字节一致。
+const MODS = process.env.MODS ? JSON.parse(process.env.MODS) : {};
+const KNOBS = process.env.L6_KNOBS ? JSON.parse(process.env.L6_KNOBS) : null;
 
 const src = `(async () => {
   render=function(){}; flyToDest=function(){}; showToast=function(){};
@@ -74,9 +76,11 @@ const src = `(async () => {
   ${HEUR_OBJ ? `window._l6Heur = ${JSON.stringify(HEUR_OBJ)};` : ''}
   ${L6_SOLVER ? `window._l6Solver = true;` : ''}
   ${L6_SOLVER_CAP != null ? `window._l6SolverCap = ${L6_SOLVER_CAP};` : ''}
+  ${KNOBS ? `Object.assign(window, ${JSON.stringify(KNOBS)});` : ''}
   await loadAIDNA();
   const nnOk = await loadAlphaZeroNN();
   if (!nnOk || !(PRSim.isLoaded && PRSim.isLoaded())) throw new Error('NN 未加载 → L6 会回退 L5, 测量无意义');
+  ${KNOBS && (KNOBS._l6ValueNet || KNOBS._l6VnetBuild) ? `{ const vOk = await loadValueNetOnce(); if (!vOk || !(PRSim.valueNetLoaded && PRSim.valueNetLoaded())) throw new Error('价值网未加载(_l6ValueNet/_l6VnetBuild) → 会静默退回大网价值头, 测量无意义'); }` : ''}
   const N = 4;
   const rows = [];
   for (let g = ${G_START}; g < ${G_END}; g++) {
@@ -84,7 +88,7 @@ const src = `(async () => {
     __setSeed(seed);
     const seat = g % N;
     const levels = [${LO},${LO},${LO},${LO}]; levels[seat] = 6;
-    G = new Game(N, 'AI');
+    G = new Game(N, 'AI', ${JSON.stringify(MODS)});
     G.players.forEach((p,i)=>{ p.isHuman=false; loadDNA(p, i); p._aiLevel=levels[i]; });
     await runMainLoop();
     if (!G.gameOver) continue;
@@ -102,7 +106,7 @@ const src = `(async () => {
 })()`;
 
 const t0 = Date.now();
-vm.runInContext(src, sandbox).then(rows => {
+run(src).then(rows => {
   fs.closeSync(_fd);
   const w = rows.reduce((s, r) => s + r, 0);
   console.log(`[worker] nn=${NN_ARG} lo=${LO} g=[${G_START},${G_END}) played=${rows.length} win=${(w / rows.length * 100).toFixed(1)}% ${(((Date.now()-t0))/1000).toFixed(0)}s -> ${OUT}`);
