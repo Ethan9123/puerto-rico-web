@@ -15,12 +15,14 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   const st = S.newState(4, [5, 5, 5, 5]);
   st.expansionTibs = true; st.expansion = true; st.expansionNobles = true;
   st.noblesLeft = 7; st.noblesOnShip = 2;
-  st.players[0]._invest = 5; st.players[0].nobleCount = 2;
+  st.players[0]._invest = 5; st.players[0].unplacedNobles = 2;
   const c = S.clone(st);
   for (const k of ['expansion', 'expansionTibs', 'expansionNobles', 'noblesLeft', 'noblesOnShip']) {
     ok(c[k] === st[k], `① clone 丢了 st.${k}（${c[k]} ≠ ${st[k]}）—— 漏加 clone 是 §14 同类 bug`);
   }
-  for (const k of ['_invest', 'nobleCount']) {
+  // nobleCount 已改为**派生**（unplacedNobles + 地块贵族 + 建筑贵族），不再是被 clone 的字段；
+  // 需要 clone 的是它的三个来源，由 ⑨ 的用例逐字段断言。
+  for (const k of ['_invest', 'unplacedNobles']) {
     ok(c.players[0][k] === st.players[0][k], `① clone 丢了 player.${k}`);
   }
   console.log('① clone 完整性 OK（含 expansion/expansionTibs/_invest）');
@@ -351,7 +353,8 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   //   直接数"少了几个货"会把两者混在一起。改用双臂：只变 nobleCount，差值即 RS 的效果。
   const mk = (nobles) => {
     const st = S.newState(4, [5, 5, 5, 5]); st.expansionNobles = true; st.governor = 1;
-    const p = st.players[0]; p.buildings.push({ bid: 42, men: 1 }); p.nobleCount = nobles;
+    const p = st.players[0]; p.buildings.push({ bid: 42, men: 1 });
+    p.unplacedNobles = nobles;   // nobleCount 现为派生值，直接赋标量会被忽略
     p.goods.corn = 2; p.goods.indigo = 2;        // 便宜货(0/1)，AI 规则只弃这些
     st.ships = [];                                // 无船 → 隔离掉装船得分
     return { st, p };
@@ -367,6 +370,110 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
     .reduce((s2,g)=> s2 + st.supply[g] + st.players.reduce((s3,q)=>s3+q.goods[g],0), 0);
   ok(tot(a.st) === tot(b.st), `⑧ 货物守恒：两臂总量应相同（${tot(a.st)} vs ${tot(b.st)}）`);
   console.log(`⑧ 皇家供应商(42) OK（双臂 VP 差 +${gain}，货物守恒）`);
+}
+
+// ================= 贵族分支（原 C 期） =================
+
+// ---- ⑨ 不变式：贵族守恒。派生 nobleCount 必须等于发放过的贵族总数 ----
+{
+  // 这是把"标量 nobleCount 改成派生"之后唯一的真风险：派生值与实际安置漂移。
+  // 随机跑若干局，每步都断言 未安置 + 地块贵族 + 建筑贵族 == 发放总数。
+  const mul = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  let worst = 0, checked = 0;
+  for (let seed = 0; seed < 6; seed++) {
+    const st = S.newState(4, [5, 5, 5, 5], mul(900 + seed));
+    st.expansionNobles = true; st.noblesLeft = 12; st.noblesOnShip = 0;
+    let guard = 0;
+    while (!S.isTerminal(st) && guard++ < 120) {
+      const legal = S.legalRoleIdxs(st); const ch = S.currentChooser(st);
+      if (ch < 0 || !legal.length) break;
+      S.applyRole(st, S.heuristicPickRole(st, ch, legal));
+      for (const p of st.players) {
+        const derived = (p.unplacedNobles || 0)
+          + p.plantations.filter(pl => pl.manned && pl.noble).length
+          + p.buildings.reduce((a, b) => a + (b.nobles || 0), 0);
+        // 发放总数 = 初始池 - 剩余池（贵族只增不减）
+        checked++;
+        worst = Math.max(worst, Math.abs(derived - (p._issued === undefined ? derived : p._issued)));
+      }
+    }
+    const totalDerived = st.players.reduce((a, p) => a + (p.unplacedNobles || 0)
+      + p.plantations.filter(pl => pl.manned && pl.noble).length
+      + p.buildings.reduce((x, b) => x + (b.nobles || 0), 0), 0);
+    const issued = 12 - st.noblesLeft;
+    ok(totalDerived === issued,
+       `⑨ 贵族守恒失败（seed ${seed}）：派生总数 ${totalDerived} ≠ 发放 ${issued} —— 有贵族被吞掉或凭空产生`);
+  }
+  console.log(`⑨ 贵族守恒 OK（6 局，${checked} 次逐玩家检查）`);
+}
+
+// ---- ⑨ clone 必须复制 nobles / noble / unplacedNobles ----
+{
+  const st = S.newState(4, [5, 5, 5, 5]);
+  const p = st.players[0];
+  p.unplacedNobles = 3;
+  p.buildings.push({ bid: 39, men: 1, nobles: 1 });
+  p.plantations.push({ good: 'corn', manned: true, noble: true });
+  const c = S.clone(st);
+  ok(c.players[0].unplacedNobles === 3, '⑨ clone 丢了 unplacedNobles');
+  ok(c.players[0].buildings[0].nobles === 1, '⑨ clone 丢了 b.nobles → 分叉后贵族功能消失');
+  const idx = c.players[0].plantations.length - 1;   // newState 已给 1 块初始地，推入的在末尾
+  ok(c.players[0].plantations[idx].noble === true, '⑨ clone 丢了 pl.noble');
+  console.log('⑨ clone 贵族字段完整性 OK');
+}
+
+// ---- ⑨ 礼拜堂(39)：殖民者 +1金 / 贵族 +1VP，两支互斥 ----
+{
+  const mk = (nobles) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionNobles = true;
+    const p = st.players[0]; p.buildings.push({ bid: 39, men: 1, nobles });
+    return { st, p };
+  };
+  const col = mk(0), nob = mk(1);
+  const cm = col.p.money, cv = col.p.vp, nm = nob.p.money, nv = nob.p.vp;
+  S.doCraftsman(col.st, 0); S.doCraftsman(nob.st, 0);
+  ok(col.p.money === cm + 1 && col.p.vp === cv, `⑨ 礼拜堂殖民者支应 +1金不加VP（金 +${col.p.money - cm}，VP +${col.p.vp - cv}）`);
+  ok(nob.p.vp === nv + 1 && nob.p.money === nm, `⑨ 礼拜堂贵族支应 +1VP不加金（VP +${nob.p.vp - nv}，金 +${nob.p.money - nm}）`);
+  console.log('⑨ 礼拜堂(39) 两支互斥 OK');
+}
+
+// ---- ⑨ 狩猎小屋(40) 贵族支：空格严格唯一最多才 +2VP，并列不给 ----
+{
+  const mk = (tie) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionNobles = true;
+    const p = st.players[0]; p.buildings.push({ bid: 40, men: 1, nobles: 1 });
+    // 让对手把岛填满 → 玩家0 空格最多；tie 时让玩家1 与其相同
+    for (let i = 1; i < 4; i++) {
+      const need = (tie && i === 1) ? 0 : 5;
+      for (let k = 0; k < need; k++) st.players[i].plantations.push({ good: 'corn', manned: false });
+    }
+    // ⚠ 平局极易被 doSettler 自己打破：池里留牌 chooser 会拿地，
+    //   即使清空池，chooser 仍可拿采石场（实测 1→2 格）。两者都要关掉。
+    st.plantationPool = []; st.quarriesLeft = 0;
+    return { st, p };
+  };
+  const uniq = mk(false), tied = mk(true);
+  const u0 = uniq.p.vp, t0 = tied.p.vp;
+  S.doSettler(uniq.st, 1); S.doSettler(tied.st, 1);
+  ok(uniq.p.vp > u0, `⑨ 空格唯一最多应 +VP（实际 +${uniq.p.vp - u0}）`);
+  ok(tied.p.vp === t0, `⑨ 空格并列不得给 VP（实际 +${tied.p.vp - t0}）—— game.js 用的是严格 >`);
+  console.log(`⑨ 狩猎小屋(40) 贵族支 OK（唯一最多 +${uniq.p.vp - u0}，并列 +${tied.p.vp - t0}）`);
+}
+
+// ---- ⑨ 银行(52) 角色卡投资：需贵族驻守，且**无 8 枚上限** ----
+{
+  const mk = (nobles) => {
+    const st = S.newState(4, [5, 5, 5, 5]); st.expansionTibs = true; st.governor = 0;
+    const p = st.players[0]; p.buildings.push({ bid: 52, men: 1, nobles }); p.money = 20;
+    const ci = st.roleCards.findIndex(r => !r.taken);
+    st.roleCards[ci].money = 12;          // 卡上 12 金，超过建造时的 8 枚上限
+    return { st, p, ci };
+  };
+  const nob = mk(1), col = mk(0);
+  S.applyRole(nob.st, nob.ci); S.applyRole(col.st, col.ci);
+  ok((nob.p._invest || 0) > 8, `⑨ 角色卡渠道不应有 8 枚上限（实际投资 ${nob.p._invest || 0}）`);
+  ok((col.p._invest || 0) === 0, `⑨ 无贵族驻守不得投资（实际 ${col.p._invest || 0}）`);
+  console.log(`⑨ 银行(52) 角色卡投资 OK（贵族 ${nob.p._invest}，殖民者 ${col.p._invest || 0}）`);
 }
 
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');

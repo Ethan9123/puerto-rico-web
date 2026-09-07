@@ -49,6 +49,19 @@
   // ---------- 查询助手（纯，operate on player / state）----------
   function ownsBuilding(p, bid) { return p.buildings.find(b => b.bid === bid); }
   function isManned(p, bid) { const b = ownsBuilding(p, bid); return !!b && b.men >= BLD[bid].men; }
+  // 贵族扩展：b.men 是**总人数**(殖民者+贵族)，与 game.js 同口径(619/645/650)。
+  // 1 槽建筑非贵即民，故两个判定互斥。
+  function isNobleManned(p, bid) { const b = ownsBuilding(p, bid); return !!(b && (b.nobles || 0) >= 1); }
+  function isColonistManned(p, bid) { const b = ownsBuilding(p, bid); return !!(b && b.men - (b.nobles || 0) >= 1); }
+  // 贵族总数：**派生**而非独立计数器（与 game.js:638 同口径）。
+  // 派生化是为了根除"标量与实际安置漂移"——引入 b.nobles 后，
+  // 两处手工同步迟早会不一致，而派生值按定义不会。
+  function nobleCount(p) {
+    let n = p.unplacedNobles || 0;
+    for (const pl of p.plantations) if (pl.manned && pl.noble) n++;
+    for (const b of p.buildings) n += (b.nobles || 0);
+    return n;
+  }
   function buildingUsedSpaces(p) { let s = 0; for (const b of p.buildings) s += BLD[b.bid].size; return s; }
   function totalColonists(p) {
     let n = p.unplaced || 0;
@@ -87,8 +100,16 @@
     // 本表是 game.js TIER_BY_BID 的副本；缺项会让扩展建筑的成本偏高。测试里有逐 id 交叉校验防漂移。
     let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
     const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
+    // 贵族扩展 营建办公室(41)：殖民者驻守 → 1-3 列 -1 金；贵族驻守 → 第 4 列 -2 金。
+    // 两条件作用在互斥的列区间上，故至多命中一条（game.js:701-704）。
+    const colTier = maxQ >= 1 ? (({1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
+      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
+      38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 })[bld.id] || 1) : 1;
+    let zoning = 0;
+    if (colTier <= 3 && isColonistManned(p, 41)) zoning = 1;
+    if (colTier >= 4 && isNobleManned(p, 41)) zoning = 2;
     const baseCost = (bld.id === 53 && np) ? (7 + np) : bld.cost; // Tibs 大教堂(53)：官方造价 7 + 玩家数（非固定 10）
-    return Math.max(0, baseCost - Math.min(q, maxQ) - forest);
+    return Math.max(0, baseCost - Math.min(q, maxQ) - forest - zoning);
   }
   function effectiveCostBonus(p, bld, chooser, np) { let c = effectiveCost(p, bld, np); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
 
@@ -113,7 +134,7 @@
       v += [0, 1, 3, 6, 10][Math.min(sets, 4)];
     }
     // 贵族扩展(标量)：每名贵族终局 +1VP；皇家花园(45) 镇守时每名贵族再 +1VP
-    const nb = p.nobleCount || 0;
+    const nb = nobleCount(p);
     if (nb > 0) { v += nb; if (isManned(p, 45)) v += nb; }
     // Tibs 银行(52)：每枚投资 +1VP，**需终局仍镇守**（未镇守则投资作废，game.js:6476）。
     // 只有 Tibs 局才存在建筑 52，故无需再查模块标志。
@@ -141,7 +162,7 @@
         idx: i, money: 0, vp: 0, shippingVP: 0,
         plantations: [], buildings: [],
         goods: { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 },
-        unplaced: 0, wharfUsed: false, _invest: 0,
+        unplaced: 0, unplacedNobles: 0, wharfUsed: false, _invest: 0,
         aiLevel: levels ? levels[i % levels.length] : 5,
       });
     }
@@ -207,11 +228,10 @@
       picksThisTurn: st.picksThisTurn, rnd: st.rnd,
       players: st.players.map(p => ({
         idx: p.idx, money: p.money, vp: p.vp, shippingVP: p.shippingVP,
-        plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned })),
-        buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men })),
-        goods: Object.assign({}, p.goods), unplaced: p.unplaced, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
+        plantations: p.plantations.map(pl => ({ good: pl.good, manned: pl.manned, noble: pl.noble })),
+        buildings: p.buildings.map(b => ({ bid: b.bid, men: b.men, nobles: b.nobles })),
+        goods: Object.assign({}, p.goods), unplaced: p.unplaced, unplacedNobles: p.unplacedNobles, wharfUsed: p.wharfUsed, aiLevel: p.aiLevel,
         smallWharfUsed: p.smallWharfUsed,   // 小码头(31) 的每装船阶段一次性标记。漏拷 = MCTS 分叉后可再用一次（§14 同类的静默状态丢失）
-        nobleCount: p.nobleCount, // 贵族扩展(标量)
         _invest: p._invest,       // Tibs 银行(52) 已投资金额
         _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
       })),
@@ -266,7 +286,25 @@
   }
 
   function reallocate(p) {
-    let rem = p.unplaced || 0; if (rem <= 0) { p.unplaced = 0; return; }
+    // 贵族扩展：贵族优先驻守贵族功能建筑（皇家花园45/礼拜堂39/规划办41/狩猎小屋40），
+    // 顺序与 game.js aiReallocate(2685-2692) 一致。
+    let remNobles = p.unplacedNobles || 0;
+    if (remNobles > 0) {
+      for (const bid of [45, 39, 41, 40]) {
+        if (remNobles <= 0) break;
+        const b = ownsBuilding(p, bid);
+        if (b && b.men < BLD[bid].men) { b.men++; b.nobles = (b.nobles || 0) + 1; remNobles--; }
+      }
+    }
+    let rem = p.unplaced || 0;
+    if (rem + remNobles <= 0) { p.unplaced = 0; p.unplacedNobles = remNobles; return; }
+    // 放 1 人：**殖民者优先**，殖民者用尽后才放贵族并打标记（game.js placeOne 同）
+    const placeOne = (ref, kind) => {
+      const useNoble = rem <= 0;
+      if (kind === "p") { ref.manned = true; if (useNoble) ref.noble = true; }
+      else { ref.men++; if (useNoble) ref.nobles = (ref.nobles || 0) + 1; }
+      if (useNoble) remNobles--; else rem--;
+    };
     const prodUnit = g => 4 + PRICE[g] * 2;
     const violet = p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     const quarryGain = Math.min(11, 4 + violet * 2);
@@ -289,7 +327,7 @@
       // 未满员 → isManned 假 → towerActive 假 → 塔楼五支效果静默失效。
       49: 10, 50: 8, 51: 7, 47: 6, 48: 6, 52: 5, 46: 3 })[bd.id] || 5;
     };
-    while (rem > 0) {
+    while (rem + remNobles > 0) {
       const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fT = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
       for (const pl of p.plantations) { if (pl.good === "quarry") continue; fT[pl.good]++; if (pl.manned) fields[pl.good]++; }
       const fc = { indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fcT = { indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
@@ -314,15 +352,15 @@
       if (!best) {
         // 规则：只要面板上还有空位就必须放置，不能主动留在岸边（森林不可上工人）
         const pl = p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest");
-        if (pl) { pl.manned = true; rem--; continue; }
+        if (pl) { placeOne(pl, "p"); continue; }
         const bb = p.buildings.find(x => x.men < BLD[x.bid].men);
-        if (bb) { bb.men++; rem--; continue; }
+        if (bb) { placeOne(bb, "b"); continue; }
         break;
       }
-      if (best.k === "p") best.r.manned = true; else best.r.men++;
-      rem--;
+      placeOne(best.r, best.k);
     }
     p.unplaced = rem;
+    p.unplacedNobles = remNobles;
   }
 
   function estLVSpecial(p, id) {
@@ -420,6 +458,22 @@
   // 抽成共享函数供 doSettler 与因子化(az)层共用——两处各有一份 settler 实现，
   // 内联会漂移（craftsmanProduce 已是同样的处置）。
   // 寄宿屋与济贫院**非叠加**(!pl.manned 守卫)，且**对采石场同样生效**(game.js:2473 不排除 quarry)。
+  // 拓殖阶段收尾奖励。抽出供 doSettler 与因子化(az)层共用——两处各有一份收尾，内联会漂移
+  // （settleNewTile / captainStartBonuses 已是同样的处置）。
+  // 贵族扩展 狩猎小屋(40) 贵族支：岛上空格数**严格唯一最多**者 +2VP，并列不给
+  // （game.js:2143 用的是 > 而非 >=）。必须在剩余明牌被弃掉**之前**结算（game.js:2311）。
+  // 殖民者支是"弃地腾格"，game.js 的 AI 从不使用（2158 注释），故不实现。
+  function settlerEndBonuses(st) {
+    if (!st.expansionNobles) return;
+    for (const p of st.players) {
+      if (!isNobleManned(p, 40)) continue;
+      const myEmpty = 12 - p.plantations.length;
+      let maxOther = -Infinity;
+      for (const q of st.players) if (q !== p) maxOther = Math.max(maxOther, 12 - q.plantations.length);
+      if (myEmpty > maxOther && st.vpLeft > 0) { const got = Math.min(2, st.vpLeft); p.vp += got; st.vpLeft -= got; }
+    }
+  }
+
   function settleNewTile(st, p, pl) {
     if (isManned(p, 11)) {
       if (st.colonistsLeft > 0) { pl.manned = true; st.colonistsLeft--; }
@@ -460,6 +514,7 @@
         // 规则书：济贫院只对第一张地块给殖民者，图书馆的第二张地块不触发
       }
     }
+    settlerEndBonuses(st);   // 狩猎小屋(40) 贵族支：须在弃掉剩余明牌前结算
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
   }
 
@@ -488,7 +543,8 @@
     }
     // 贵族扩展(标量近似)：每市长阶段 1 名贵族给选择者(既是工人也是终局VP)；别墅(43) 额外 +1
     if (st.expansionNobles) {
-      const give = (pi) => { const p = st.players[pi]; p.unplaced = (p.unplaced || 0) + 1; p.nobleCount = (p.nobleCount || 0) + 1; };
+      // 贵族进**独立**待安置池（此前并入 unplaced 与殖民者混同，导致无法区分谁驻守了哪栋楼）
+      const give = (pi) => { const p = st.players[pi]; p.unplacedNobles = (p.unplacedNobles || 0) + 1; };
       if (st.noblesLeft > 0) { st.noblesLeft--; give(chooser); }
       for (const i of ord) if (isManned(st.players[i], 43) && st.noblesLeft > 0) { st.noblesLeft--; give(i); }
     }
@@ -590,7 +646,13 @@
       const p = st.players[i];
       if (isManned(p, 15)) { const bonus = fb[perKinds[i].size] || 0; if (bonus > 0) p.money += bonus; }
       // 贵族扩展(标量)：珠宝匠(44) 每名贵族 +1金（强金币引擎）
-      if (st.expansionNobles && isManned(p, 44)) p.money += (p.nobleCount || 0);
+      // 贵族扩展 礼拜堂(39)：殖民者驻守 +1 金；贵族驻守改为 +1VP（扣 vpLeft）。
+      // 两支**互斥**（1 槽建筑非贵即民），与 game.js:3105-3106 的 if/else if 同构。
+      if (st.expansionNobles) {
+        if (isColonistManned(p, 39)) p.money += 1;
+        else if (isNobleManned(p, 39) && st.vpLeft > 0) { p.vp += 1; st.vpLeft -= 1; }
+      }
+      if (st.expansionNobles && isManned(p, 44)) p.money += nobleCount(p);
     }
     // Tibs 塔楼(49)：非 chooser 且非 governor → +1 个自己本轮产出的最贵货
     if (st.expansionTibs) {
@@ -789,7 +851,7 @@
       for (const i of order(st, chooser)) {
         const p = st.players[i];
         if (!isManned(p, 42)) continue;
-        const limit = p.nobleCount || 0;
+        const limit = nobleCount(p);
         if (limit <= 0) continue;
         const cheap = GOODS_.filter(g => p.goods[g] > 0 && PRICE[g] <= (late ? 4 : 2));
         for (const g of cheap.slice(0, limit)) {
@@ -861,12 +923,21 @@
   }
 
   // ---------- 应用一次"选角色"决策（推进到下一个 chooser 或结束）----------
+  // Tibs 银行(52) 被**贵族**镇守时，取到带金币的角色卡可立即把卡上金币投入银行。
+  // 终局每枚 +1VP（需镇守）。**此渠道无 8 枚上限**——上限只针对建造时的初始投资。
+  // AI 规则照搬 game.js:2231：保留 >=8 金的建造缓冲，富余的换成确定终局 VP。
+  function bankNobleInvest(st, p, cardCoins) {
+    if (cardCoins <= 0 || !st.expansionTibs || !isNobleManned(p, 52)) return;
+    const inv = Math.max(0, Math.min(cardCoins, p.money - 8));
+    if (inv > 0) { p.money -= inv; p._invest = (p._invest || 0) + inv; }
+  }
+
   function applyRole(st, roleIdx) {
     const chooser = currentChooser(st);
     if (chooser < 0) return st;
     const card = st.roleCards[roleIdx];
     card.taken = true; card.takenBy = chooser;
-    st.players[chooser].money += card.money; card.money = 0;
+    { const coins = card.money; st.players[chooser].money += coins; card.money = 0; bankNobleInvest(st, st.players[chooser], coins); }
     switch (card.name) {
       case "Settler": doSettler(st, chooser); break;
       case "Mayor": doMayor(st, chooser); break;
@@ -1321,6 +1392,7 @@
     const az = st.az;
     while (az.oi < az.ord.length) { if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
     // 全部处理完 → 弃掉剩余明牌种植园(与 doSettler 末段一致)
+    settlerEndBonuses(st);   // 狩猎小屋(40) 贵族支：须在弃掉剩余明牌前结算
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
     return false;
   }
@@ -1514,7 +1586,7 @@
     const chooser = currentChooser(st);
     const card = st.roleCards[action];
     card.taken = true; card.takenBy = chooser;
-    st.players[chooser].money += card.money; card.money = 0;
+    { const coins = card.money; st.players[chooser].money += coins; card.money = 0; bankNobleInvest(st, st.players[chooser], coins); }
     if (card.name === "Builder") { az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
