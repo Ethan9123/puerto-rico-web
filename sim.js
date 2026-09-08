@@ -13,6 +13,13 @@
 
   const BUILDINGS_ = A.BUILDINGS, BLD = A.BLD_BY_ID, GOODS_ = A.GOODS, PRICE = A.GOOD_PRICE, ROLES_ = A.ROLE_LIST;
   const REFINE = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+  // 紫色建筑派工价值（game.js aiReallocate violetManValue，2718-2726）。提到模块级：
+  // reallocate 此前在每次调用里重建这个 ~30 键字面量，而它在安置循环内被反复调用。
+  // 缺项会落到 default 5：塔楼(49) 本该是 10，被低估后市长阶段不优先派人 →
+  // 未满员 → isManned 假 → towerActive 假 → 塔楼五支效果静默失效。
+  const VIOLET_MAN_VALUE = { 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4,
+    34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5,
+    49: 10, 50: 8, 51: 7, 47: 6, 48: 6, 52: 5, 46: 3 };
   // 建筑列号表：game.js TIER_BY_BID 的副本（缺项会让扩展建筑的成本偏高，测试里有逐 id 交叉校验防漂移）。
   // 提到模块级：此前 effectiveCost 每次调用都现场构造两份 53 项字面量，而它在每个 rollout 的每个
   // 建造阶段对每个（玩家 × 候选建筑）都被调一次——cpu-prof 里是 sim.js 最热的单点（~10% self）。
@@ -54,7 +61,10 @@
   }
 
   // ---------- 查询助手（纯，operate on player / state）----------
-  function ownsBuilding(p, bid) { return p.buildings.find(b => b.bid === bid); }
+  // 索引循环而非 .find：每次迭代调用 ~3900 次，.find 每次都要新建闭包并走
+  // megamorphic 回调路径。语义与 .find 逐项相同（未命中返回 undefined、命中取**首个**——
+  // totalProduction 依赖"同 bid 只计首个"）。
+  function ownsBuilding(p, bid) { const bs = p.buildings; for (let i = 0; i < bs.length; i++) if (bs[i].bid === bid) return bs[i]; }
   function isManned(p, bid) { const b = ownsBuilding(p, bid); return !!b && b.men >= BLD[bid].men; }
   // 贵族扩展：b.men 是**总人数**(殖民者+贵族)，与 game.js 同口径(619/645/650)。
   // 1 槽建筑非贵即民，故两个判定互斥。
@@ -131,6 +141,30 @@
     return Math.max(0, baseCost - Math.min(q, maxQ) - forest - zoning);
   }
   function effectiveCostBonus(p, bld, chooser, np) { let c = effectiveCost(p, bld, np); if (chooser) c = Math.max(0, c - (isManned(p, 33) ? 2 : 1)); return c; } // 图书馆建造翻倍
+
+  // 建造阶段成本上下文：effectiveCost/effectiveCostBonus 里**与候选建筑无关**的部分
+  // （采石场数、森林折扣、营建办公室41 两支、图书馆33 折扣）只依赖玩家与状态，
+  // 而建造阶段要对 23–53 个候选各算一次成本 → 此前每个候选都重扫一遍地块与建筑。
+  // 只有 maxQ 与 baseCost 依赖建筑，故拆成 costCtx（每玩家一次）+ ctxCost（每候选算术）。
+  // ⚠ 必须与 effectiveCostBonus 逐项等价，测试里有随机交叉校验钉住。
+  function costCtx(p, chooser, np) {
+    let q = 0, forests = 0;
+    for (const pl of p.plantations) { if (pl.good === "quarry") { if (pl.manned) q++; } else if (pl.good === "forest") forests++; }
+    return {
+      q, forest: Math.floor(forests / 2),
+      z1: isColonistManned(p, 41) ? 1 : 0,   // 1–3 列：殖民者驻守 −1
+      z2: isNobleManned(p, 41) ? 2 : 0,      // 第 4 列：贵族驻守 −2（与 z1 作用区间互斥）
+      chooser, disc: chooser ? (isManned(p, 33) ? 2 : 1) : 0, np,
+    };
+  }
+  function ctxCost(ctx, bld) {
+    const maxQ = TIER_BY_BID[bld.id] || 1;
+    const zoning = maxQ <= 3 ? ctx.z1 : ctx.z2;
+    const baseCost = (bld.id === 53 && ctx.np) ? (7 + ctx.np) : bld.cost;
+    let c = Math.max(0, baseCost - Math.min(ctx.q, maxQ) - ctx.forest - zoning);
+    if (ctx.chooser) c = Math.max(0, c - ctx.disc);
+    return c;
+  }
 
   // 第二参 st 可选。⚠ 多处工具以 players.map(finalScore) 调用，
   // 那样第二参收到的是**数组下标**（数字）。故这里显式校验形状，
@@ -338,13 +372,7 @@
     const violetVal = (b) => {
       const bd = BLD[b.bid];
       if (bd.type === "large_violet") return Math.max(8, estLV(bd.id) * 4);
-      return ({ 17: 12, 18: 10, 15: 10, 13: 8, 12: 7, 7: 6, 16: 6, 8: 5, 9: 5, 11: 5, 10: 4, 14: 4,
-        // 新建筑扩展先验
-        34: 12, 35: 11, 33: 11, 32: 10, 30: 9, 28: 9, 29: 8, 31: 8, 27: 6, 24: 6, 26: 6, 25: 5,
-      // Tibs 建筑派工价值（game.js aiReallocate violetManValue，2718-2726）。
-      // 缺项会落到 default 5：塔楼(49) 本该是 10，被低估后市长阶段不优先派人 →
-      // 未满员 → isManned 假 → towerActive 假 → 塔楼五支效果静默失效。
-      49: 10, 50: 8, 51: 7, 47: 6, 48: 6, 52: 5, 46: 3 })[bd.id] || 5;
+      return VIOLET_MAN_VALUE[bd.id] || 5;
     };
     while (rem + remNobles > 0) {
       const fields = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 }, fT = { corn: 0, indigo: 0, sugar: 0, tobacco: 0, coffee: 0 };
@@ -585,12 +613,13 @@
       const spaceLeft = 12 - used;
       const chooserLike = i === chooser || towerActive(st, p);
       const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
+      const ctx = costCtx(p, chooserLike, st.numPlayers);
       const opts = [];
       for (const b of BUILDINGS_) {
         if (st.buildingStock[b.id] <= 0) continue;
+        if (spaceLeft < b.size) continue;          // 先查便宜的尺寸门，再查要扫建筑表的 ownsBuilding
         if (ownsBuilding(p, b.id)) continue;
-        if (spaceLeft < b.size) continue;
-        const cost = effectiveCostBonus(p, b, chooserLike, st.numPlayers);
+        const cost = ctxCost(ctx, b);
         if (p.money + bm < cost) continue;
         opts.push({ b, cost });
       }
@@ -695,8 +724,7 @@
     // 扩展：招待所(28) — 工匠前把客工(gh.men)部署到能立刻提升生产的空位
     for (const p of st.players) {
       const gh = ownsBuilding(p, 28); if (!gh || gh.men <= 0) continue;
-      const ref = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
-      const fc = g => (ref[g] || []).reduce((s, fb) => { const bb = ownsBuilding(p, fb); return s + (bb ? bb.men : 0); }, 0);
+      const fc = g => (REFINE[g] || []).reduce((s, fb) => { const bb = ownsBuilding(p, fb); return s + (bb ? bb.men : 0); }, 0);
       const mp = g => p.plantations.filter(x => x.good === g && x.manned).length;
       let guard = 0;
       while (gh.men > 0 && guard++ < 12) {
@@ -801,7 +829,11 @@
       }
       return v;
     };
-    return cands.slice().sort((a, b) => score(b) - score(a));
+    // 两个调用点都只取 [0]（sim.js doCaptain 与 az 层）。稳定降序排序的 [0] =
+    // **首个**取到最大值的元素，故严格 > 的线性扫描等价，省掉一次数组拷贝与比较器闭包。
+    let best = cands[0], bestS = cands.length ? score(cands[0]) : 0;
+    for (let i = 1; i < cands.length; i++) { const sc = score(cands[i]); if (sc > bestS) { bestS = sc; best = cands[i]; } }
+    return [best];
   }
   // 对手(除 seat 外)各货总量 → 供 #2 denial 判"开新船会喂谁"。
   function oppGoodsOf(st, seat) {
@@ -1054,7 +1086,8 @@
         case "Trader":
           if (st.tradingHouse.length < 4) {
             let bestSell = 0;
-            for (const g of GOODS_) if (p.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) bestSell = Math.max(bestSell, PRICE[g] + 1 + (isManned(p, 7) ? 1 : 0) + (isManned(p, 13) ? 2 : 0));
+            const sellBonus = (isManned(p, 7) ? 1 : 0) + (isManned(p, 13) ? 2 : 0); // 与 g 无关，提出循环
+            for (const g of GOODS_) if (p.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) bestSell = Math.max(bestSell, PRICE[g] + 1 + sellBonus);
             s += bestSell * 1.2;                            // 基础:能卖多少
             for (const g of ["coffee", "tobacco"]) if (p.goods[g] > 0 && downstream.goods[g] > 0 && (office || !st.tradingHouse.includes(g))) { s += 5; break; }
             if (phase === "late" && !(p.money < 10 && p.money + bestSell >= 10)) s -= 9; // 终盘禁区
@@ -1427,12 +1460,13 @@
     if (used >= 12) return [];
     const spaceLeft = 12 - used;
     const chooserLike = i === st.az.chooser || towerActive(st, p);
+    const ctx = costCtx(p, chooserLike, st.numPlayers);
     const opts = [];
     for (const b of BUILDINGS_) {
       if (st.buildingStock[b.id] <= 0) continue;
-      if (ownsBuilding(p, b.id)) continue;
       if (spaceLeft < b.size) continue;
-      const cost = effectiveCostBonus(p, b, chooserLike, st.numPlayers);
+      if (ownsBuilding(p, b.id)) continue;
+      const cost = ctxCost(ctx, b);
       if (p.money < cost) continue;
       opts.push(b.id);
     }
@@ -1690,7 +1724,9 @@
     ismctsPickRoleIdx, selectRootRole, searchOptsForMode, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
-    _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation },
+    _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation,
+      // 供测试 ⑩ 交叉校验成本快路径与直算路径（性能改写不得改变成本）
+      costCtx, ctxCost, effectiveCost, effectiveCostBonus, BUILDINGS: BUILDINGS_ },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   root.PRSim = API;

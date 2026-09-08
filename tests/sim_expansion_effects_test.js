@@ -476,5 +476,36 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
   console.log(`⑨ 银行(52) 角色卡投资 OK（贵族 ${nob.p._invest}，殖民者 ${col.p._invest || 0}）`);
 }
 
+// ---- ⑩ costCtx/ctxCost 必须与 effectiveCostBonus 逐项等价 ----
+// 建造阶段把 effectiveCost 的玩家不变量提出候选循环（−9% 每迭代）。这是纯性能改写，
+// 但它复制了成本公式 → 有静默漂移的风险。故对随机局面 × 全部 53 个建筑 × chooser 两态
+// 交叉校验两条路径。**反向验证过**：把 ctxCost 的 zoning 分支改成恒取 z1 → 本用例变红。
+{
+  const rnd = (a => () => (a = (a * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)(42);
+  let checked = 0, bad = 0;
+  for (let trial = 0; trial < 60; trial++) {
+    const st = S.newState(4, [5, 5, 5, 5]);
+    st.expansionTibs = true; st.expansionNobles = true; st.expansion = true;
+    const p = st.players[0];
+    // 随机地块：采石场(可镇守/未镇守) + 森林 + 普通
+    const goods = ["quarry", "forest", "corn", "indigo"];
+    for (let k = 0; k < 8; k++) p.plantations.push({ good: goods[Math.floor(rnd() * 4)], manned: rnd() < 0.6, noble: false });
+    // 随机放置营建办公室(41) 与图书馆(33)，覆盖贵族支/殖民者支/未镇守三种
+    if (rnd() < 0.7) p.buildings.push({ bid: 41, men: rnd() < 0.5 ? 1 : 0, nobles: rnd() < 0.5 ? 1 : 0 });
+    if (rnd() < 0.5) p.buildings.push({ bid: 33, men: 1, nobles: 0 });
+    for (const chooser of [true, false]) {
+      const ctx = S._internal.costCtx(p, chooser, st.numPlayers);
+      for (const b of S._internal.BUILDINGS) {
+        const want = S._internal.effectiveCostBonus(p, b, chooser, st.numPlayers);
+        const got = S._internal.ctxCost(ctx, b);
+        checked++;
+        if (want !== got) { bad++; if (bad <= 3) console.log(`   不一致 bid=${b.id} chooser=${chooser}: ctx=${got} 直算=${want}`); }
+      }
+    }
+  }
+  ok(bad === 0, `⑩ costCtx/ctxCost 与 effectiveCostBonus 有 ${bad}/${checked} 处不一致`);
+  console.log(`⑩ 成本快路径与直算逐项一致（${checked} 组合）`);
+}
+
 console.log(fails ? `\nSIM EXPANSION EFFECTS TEST FAILED: ${fails}` : '\nSIM EXPANSION EFFECTS TEST OK');
 process.exit(fails ? 1 : 0);
