@@ -44,10 +44,11 @@ run_arm () {                       # $1=alphaIters  $2=输出 tag
 
 run_arm 100  "scale-i100-$SEEDBASE"
 run_arm 1600 "scale-i1600-$SEEDBASE"
+run_arm 6400 "scale-i6400-$SEEDBASE"   # 预注册比较：6400 vs 400（§17）
 
 echo; echo "===== 各臂 vs 现役 alphaIters=400（vnet1-A-lo5.jsonl 前 $GAMES 局），seed=$SEEDBASE ====="
 head -n "$GAMES" data/paired/vnet1-A-lo5.jsonl > "data/paired/scale-i400-$SEEDBASE-lo5.jsonl"
-for it in 100 1600; do
+for it in 100 1600 6400; do
   echo "--- alphaIters=$it vs 400 ---"
   node tools/paired_report.js "data/paired/scale-i${it}-$SEEDBASE-lo5.jsonl" "data/paired/scale-i400-$SEEDBASE-lo5.jsonl" "iters=$it" "iters=400"
 done
