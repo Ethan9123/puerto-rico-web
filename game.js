@@ -1643,6 +1643,8 @@ function startGame(netOpts) {
   const budgetMap = {
     fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800,  alphaIters: 100,  alphaMs: 600 },
     // ⚠ alphaIters/expertIters 抬到 60000：让【时间预算】成为唯一约束，与 extreme 同款写法。
+    // hardIters(L4) **故意保持封顶**：L4=困难档，弱是它的设计目标，跟着放开会压缩 L4↔L5 的差距。
+    // 即它现在是一个「有意的算力上限」，不再是 §16.2 那个「无意的时间浪费」——两者机制相同、意图不同。
     // 此前 deep 档 L6 是 alphaIters=800 封顶——按实测 ~1.0 ms/迭代只跑 ~0.82 s 就停，
     // 而它**被允许用 5 s**，即 80%+ 的已分配思考时间被白白扔掉（AI_STRENGTH §16.2）。
     // §16 实测搜索在这个区间未饱和（+3.5pp/翻倍），所以这些时间是真的有价值的。
