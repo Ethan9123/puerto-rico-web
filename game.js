@@ -1642,10 +1642,17 @@ function startGame(netOpts) {
   // L6(AlphaZero) 用 NN 制导 PUCT，每次 sim 跑一次 NN forward (~1ms)，所以 iters/ms 都比 L5 略低
   const budgetMap = {
     fast:    { L4: 50,    L5: 100,   hardIters: 60,  hardMs: 500,  expertIters: 200,  expertMs: 800,  alphaIters: 100,  alphaMs: 600 },
-    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 1000, expertMs: 3000, alphaIters: 400,  alphaMs: 2500 },
-    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 1800, expertMs: 6000, alphaIters: 800,  alphaMs: 5000 },
+    // ⚠ alphaIters/expertIters 抬到 60000：让【时间预算】成为唯一约束，与 extreme 同款写法。
+    // hardIters(L4) **故意保持封顶**：L4=困难档，弱是它的设计目标，跟着放开会压缩 L4↔L5 的差距。
+    // 即它现在是一个「有意的算力上限」，不再是 §16.2 那个「无意的时间浪费」——两者机制相同、意图不同。
+    // 此前 deep 档 L6 是 alphaIters=800 封顶——按实测 ~1.0 ms/迭代只跑 ~0.82 s 就停，
+    // 而它**被允许用 5 s**，即 80%+ 的已分配思考时间被白白扔掉（AI_STRENGTH §16.2）。
+    // §16 实测搜索在这个区间未饱和（+3.5pp/翻倍），所以这些时间是真的有价值的。
+    // 时长上限本身没动（normal 仍 2.5s / deep 仍 5s），改的只是「有没有把它用满」。
+    normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 60000, expertMs: 3000, alphaIters: 60000, alphaMs: 2500 },
+    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 60000, expertMs: 6000, alphaIters: 60000, alphaMs: 5000 },
     // 极限：迭代上限大幅抬高，让【时间预算】成为唯一约束 → AI 真的把整段时间用满、不停推演更多可能（L6 此前 1600 次常在 10s 前就停了）
-    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 40000, alphaMs: 12000 },
+    extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 60000, alphaMs: 12000 },
   };
   window._aiThinkBudget = budgetMap[budgetMode] || budgetMap.deep;
   // 联机：给 AI 思考时间设上限（2.5s），避免真人干等——强度仍是专家级 MCTS，只是不把整段长时间用满
@@ -4136,7 +4143,11 @@ const PRAIPool = {
   async _init() {
     if (!this.available()) return false;
     this._hookLifecycle();
-    const K = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    // 根并行 worker 数。上限从 4 放宽到 8（仍留 1 核给主线程，避免页面卡顿）。
+    // ⚠ 每个 worker 各自 fetch + JSON.parse 一份 ~5 MB 的 NN 权重并展平成 Float64Array
+    // （常驻 ~6–8 MB/worker），K 变大 = 内存变大，故给 window._aiWorkersK 便于回退/压低。
+    // 注意根并行的边际收益递减：K× 迭代弱于同等的单树 K× 迭代，所以它比抬 alphaIters 低效。
+    const K = Math.max(1, Math.min(window._aiWorkersK || 8, (navigator.hardwareConcurrency || 2) - 1));
     // 纯数据，可 structured-clone。BUILDINGS 用纯净基础 23 个（与主线程页面加载时 sim_features 看到的一致）；
     // 本局实际在场建筑/造价随每次 pick 由 _tables() 下发（见 pickRoleParallel）。NN 权重按需再加载（ensureNN）。
     const staticData = { BUILDINGS: BASE_BUILDINGS.slice(), BLD_BY_ID, GOODS, GOOD_PRICE, ROLE_LIST };
