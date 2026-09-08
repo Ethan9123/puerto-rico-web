@@ -13,6 +13,13 @@
 
   const BUILDINGS_ = A.BUILDINGS, BLD = A.BLD_BY_ID, GOODS_ = A.GOODS, PRICE = A.GOOD_PRICE, ROLES_ = A.ROLE_LIST;
   const REFINE = { indigo: [1, 3], sugar: [2, 4], tobacco: [5], coffee: [6] };
+  // 建筑列号表：game.js TIER_BY_BID 的副本（缺项会让扩展建筑的成本偏高，测试里有逐 id 交叉校验防漂移）。
+  // 提到模块级：此前 effectiveCost 每次调用都现场构造两份 53 项字面量，而它在每个 rollout 的每个
+  // 建造阶段对每个（玩家 × 候选建筑）都被调一次——cpu-prof 里是 sim.js 最热的单点（~10% self）。
+  const TIER_BY_BID = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
+    24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
+    38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,                 // 贵族建筑（game.js:161）
+    46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 };               // Tibs 建筑（game.js:212）
 
   // ---------- 建表 ----------
   const COL_TOTAL = { 1: 29, 2: 40, 3: 55, 4: 75, 5: 95 }; // 殖民者供应池(船上另置=玩家数, 不从池扣)
@@ -77,6 +84,24 @@
     for (const bid of (REFINE[good] || [])) { const bb = ownsBuilding(p, bid); if (bb) fac += bb.men; }
     return Math.min(plantsManned, fac);
   }
+  // Σ_g productionCapacity(p, g) 的单趟版本。rollout 的角色启发式对全部玩家各算一次这个和，
+  // 此前是 5 货 × 各自扫一遍田地 + 对每个精炼厂 bid 做一次 find（cpu-prof ~6.6% self）。
+  // 口径必须与 productionCapacity 逐项相同：玉米 = 已镇守玉米田数；其余 = min(已镇守该货田数, 对应精炼厂人数)；
+  // 精炼厂人数沿用 ownsBuilding 的 find 语义——同 bid 只计首个。
+  function totalProduction(p) {
+    let corn = 0, indigo = 0, sugar = 0, tobacco = 0, coffee = 0;
+    for (const pl of p.plantations) {
+      if (!pl.manned) continue;
+      switch (pl.good) { case "corn": corn++; break; case "indigo": indigo++; break; case "sugar": sugar++; break; case "tobacco": tobacco++; break; case "coffee": coffee++; break; }
+    }
+    let fI = 0, fS = 0, fT = 0, fC = 0, seen = 0;
+    for (const b of p.buildings) {
+      if (b.bid > 6) continue;                 // 精炼厂只有 1–6
+      const bit = 1 << b.bid; if (seen & bit) continue; seen |= bit;
+      switch (b.bid) { case 1: case 3: fI += b.men; break; case 2: case 4: fS += b.men; break; case 5: fT += b.men; break; case 6: fC += b.men; break; }
+    }
+    return corn + Math.min(indigo, fI) + Math.min(sugar, fS) + Math.min(tobacco, fT) + Math.min(coffee, fC);
+  }
   function storageKinds(p) { let k = 0; if (isManned(p, 10)) k += 1; if (isManned(p, 14)) k += 2; return k; }
   // 某玩家是否在做某货（用于垄断/撞货判断）
   function simProduces(pl, g) {
@@ -93,21 +118,15 @@
   function towerActive(st, p) { return !!st.expansionTibs && isManned(p, 49) && p.idx !== st.governor; }
 
   function effectiveCost(p, bld, np) {
-    const maxQ = { 1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
-      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
-      38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,                 // 贵族建筑（game.js:161）
-      46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 }[bld.id] || 1;  // Tibs 建筑（game.js:212）
-    // 本表是 game.js TIER_BY_BID 的副本；缺项会让扩展建筑的成本偏高。测试里有逐 id 交叉校验防漂移。
-    let q = 0; for (const pl of p.plantations) if (pl.good === "quarry" && pl.manned) q++;
-    const forest = Math.floor(p.plantations.filter(pl => pl.good === "forest").length / 2); // 扩展：森林屋折扣
+    const maxQ = TIER_BY_BID[bld.id] || 1;   // 采石场折扣上限 = 建筑列号
+    let q = 0, forests = 0;
+    for (const pl of p.plantations) { if (pl.good === "quarry") { if (pl.manned) q++; } else if (pl.good === "forest") forests++; }
+    const forest = Math.floor(forests / 2); // 扩展：森林屋折扣（森林不需镇守，与 game.js:699 一致）
     // 贵族扩展 营建办公室(41)：殖民者驻守 → 1-3 列 -1 金；贵族驻守 → 第 4 列 -2 金。
-    // 两条件作用在互斥的列区间上，故至多命中一条（game.js:701-704）。
-    const colTier = maxQ >= 1 ? (({1:1,2:1,3:2,4:2,5:3,6:3,7:1,8:1,9:1,10:1,11:2,12:2,13:2,14:2,15:3,16:3,17:3,18:3,19:4,20:4,21:4,22:4,23:4,
-      24:1,25:1,26:1,27:1,28:2,29:2,30:2,31:2,32:3,33:3,34:3,35:3,36:4,37:4,
-      38:1,39:1,40:2,41:2,42:2,43:3,44:3,45:4,46:1,47:2,48:2,49:2,50:3,51:3,52:4,53:4 })[bld.id] || 1) : 1;
+    // 两条件作用在互斥的列区间上，故至多命中一条（game.js:701-704）。列号与采石场上限是同一张表。
     let zoning = 0;
-    if (colTier <= 3 && isColonistManned(p, 41)) zoning = 1;
-    if (colTier >= 4 && isNobleManned(p, 41)) zoning = 2;
+    if (maxQ <= 3 && isColonistManned(p, 41)) zoning = 1;
+    if (maxQ >= 4 && isNobleManned(p, 41)) zoning = 2;
     const baseCost = (bld.id === 53 && np) ? (7 + np) : bld.cost; // Tibs 大教堂(53)：官方造价 7 + 玩家数（非固定 10）
     return Math.max(0, baseCost - Math.min(q, maxQ) - forest - zoning);
   }
@@ -380,8 +399,8 @@
     const id = b.id;
     if (b.type === "production") {
       const good = b.good;
-      const owned = p.plantations.filter(pl => pl.good === good).length;
-      const pool = st.plantationPool.filter(g => g === good).length;
+      let owned = 0; for (const pl of p.plantations) if (pl.good === good) owned++;
+      let pool = 0; for (const g of st.plantationPool) if (g === good) pool++;
       let ex = 0; for (const bb of p.buildings) { const bd = BLD[bb.bid]; if (bd.type === "production" && bd.good === good) ex += bd.men; }
       const now = Math.max(0, Math.min(owned - ex, b.men)), soon = Math.max(0, Math.min(owned + pool - ex, b.men));
       if (soon <= 0) return v - 30;
@@ -560,14 +579,18 @@
     const phase = phaseOf(st);
     for (const i of order(st, chooser)) {
       const p = st.players[i];
-      if (buildingUsedSpaces(p) >= 12) continue;
+      const used = buildingUsedSpaces(p);
+      if (used >= 12) continue;
+      // 循环不变量提到候选循环外：占地、chooser 待遇、黑市抵扣只依赖 p/st，与候选建筑无关
+      const spaceLeft = 12 - used;
+      const chooserLike = i === chooser || towerActive(st, p);
+      const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
       const opts = [];
       for (const b of BUILDINGS_) {
         if (st.buildingStock[b.id] <= 0) continue;
         if (ownsBuilding(p, b.id)) continue;
-        if (12 - buildingUsedSpaces(p) < b.size) continue;
-        const cost = effectiveCostBonus(p, b, i === chooser || towerActive(st, p), st.numPlayers);
-        const bm = isManned(p, 25) ? Math.min(3, (GOODS_.some(g => p.goods[g] > 0) ? 1 : 0) + ((p.unplaced || 0) > 0 ? 1 : 0)) : 0; // 黑市(AI不舍VP)
+        if (spaceLeft < b.size) continue;
+        const cost = effectiveCostBonus(p, b, chooserLike, st.numPlayers);
         if (p.money + bm < cost) continue;
         opts.push({ b, cost });
       }
@@ -976,8 +999,8 @@
     const goods = GOODS_.reduce((a, g) => a + p.goods[g], 0);
     let cap = 0; for (const s of st.ships) cap += (s.capacity - s.count);
     let myOpen = 0; for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
-    let myProd = 0; for (const g of GOODS_) myProd += productionCapacity(p, g);
-    const mannedCorn = p.plantations.filter(pl => pl.good === "corn" && pl.manned).length;
+    let myProd = totalProduction(p);
+    let mannedCorn = 0; for (const pl of p.plantations) if (pl.good === "corn" && pl.manned) mannedCorn++;
     const downstream = st.players[(chooser + 1) % st.numPlayers];
     const office = isManned(p, 12);
     // 对手聚合量(每次调用算一次)
@@ -985,7 +1008,7 @@
     let oppMaxProd = 0, oppOpenMax = 0, oppGoodsMax = 0, lead = 0, oppMature = false;
     for (const o of st.players) {
       if (o === p) continue;
-      let pr = 0; for (const g of GOODS_) pr += productionCapacity(o, g);
+      let pr = totalProduction(o);
       if (pr > oppMaxProd) oppMaxProd = pr;
       let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
       if (op > oppOpenMax) oppOpenMax = op;
@@ -1114,11 +1137,11 @@
     const myScore = finalScore(me, st);
     const oppCount = st.numPlayers - 1;
     let bestOpp = 0, sumOpp = 0, avgOppProd = 0, avgOppBuild = 0;
-    let myProd = 0; for (const g of GOODS_) myProd += productionCapacity(me, g);
+    let myProd = totalProduction(me);
     for (const p of st.players) {
       if (p === me) continue;
       const s = finalScore(p, st); if (s > bestOpp) bestOpp = s; sumOpp += s;
-      let pr = 0; for (const g of GOODS_) pr += productionCapacity(p, g);
+      let pr = totalProduction(p);
       avgOppProd += pr; avgOppBuild += p.buildings.length;
     }
     avgOppProd /= oppCount; avgOppBuild /= oppCount;
@@ -1400,13 +1423,16 @@
   // 列出某玩家在建造阶段的可建选项（与 doBuilder 同口径）
   function azBuildOptions(st, i) {
     const p = st.players[i];
-    if (buildingUsedSpaces(p) >= 12) return [];
+    const used = buildingUsedSpaces(p);
+    if (used >= 12) return [];
+    const spaceLeft = 12 - used;
+    const chooserLike = i === st.az.chooser || towerActive(st, p);
     const opts = [];
     for (const b of BUILDINGS_) {
       if (st.buildingStock[b.id] <= 0) continue;
       if (ownsBuilding(p, b.id)) continue;
-      if (12 - buildingUsedSpaces(p) < b.size) continue;
-      const cost = effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers);
+      if (spaceLeft < b.size) continue;
+      const cost = effectiveCostBonus(p, b, chooserLike, st.numPlayers);
       if (p.money < cost) continue;
       opts.push(b.id);
     }

@@ -263,8 +263,8 @@ const give = (p, bid, men) => p.buildings.push({ bid, men });
 // ---- ⑦ 结构性防漂移：sim 的采石场折扣上限表必须与 game.js TIER_BY_BID 一致 ----
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sim.js'), 'utf8');
-  const m = src.match(/const maxQ = \{([\s\S]*?)\}\[bld\.id\]/);
-  ok(!!m, '⑦ 找得到 sim.js 的 maxQ 表');
+  const m = src.match(/const TIER_BY_BID = \{([\s\S]*?)\};/);   // 表已提到模块级常量（effectiveCost 每次调用不再重建字面量）
+  ok(!!m, '⑦ 找得到 sim.js 的 TIER_BY_BID 表');
   const simTable = {};
   if (m) for (const mm of m[1].matchAll(/(\d+)\s*:\s*(\d+)/g)) simTable[+mm[1]] = +mm[2];
   const tier = run('JSON.stringify(TIER_BY_BID)');
