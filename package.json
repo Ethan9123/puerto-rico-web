@@ -1,0 +1,12 @@
+{
+  "//": "浏览器端不打包：vendor/supabase.js 是已提交的自托管副本，运行时不依赖 npm。",
+  "//vendor": "更新 supabase-js：npm i -D @supabase/supabase-js && cp node_modules/@supabase/supabase-js/dist/umd/supabase.js vendor/supabase.js",
+  "devDependencies": {
+    "playwright": "^1.63.0",
+    "@supabase/supabase-js": "^2.116.0"
+  },
+  "scripts": {
+    "vendor:supabase": "cp node_modules/@supabase/supabase-js/dist/umd/supabase.js vendor/supabase.js",
+    "test": "bash tools/run_tests.sh"
+  }
+}

@@ -92,12 +92,33 @@
       if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg);
     };
 
+    // 联机失败一律走这里：此前用原生 alert()，在手机上生硬、还会把 `[object Event]` 直接甩给用户。
+    // 项目本来就有 showToast（game.js:764），复用它；showToast 不可用时才退回 alert。
+    function netError(prefix, e) {
+      const msg = (e && e.message) || (typeof e === "string" ? e : "") || "未知错误";
+      if (typeof showToast === "function") {
+        showToast('<div class="t-title">⚠️ ' + prefix + '</div><div class="t-sub">' + msg + "</div>", { kind: "role", duration: 5000 });
+      } else { alert(prefix + "：" + msg); }
+    }
     const btnCreate = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["创建房间"]);
     const btnJoin = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["加入"]);
     btnCreate.onclick = async () => {
       btnCreate.disabled = true;
-      try { session = await PRNet.host({ name: myName(), onPresence, onMessage }); window.PR_SESSION = session; showRoom(panel, session.code, session.role); }
-      catch (e) { btnCreate.disabled = false; alert("创建房间失败：" + (e && e.message || e)); }
+      btnCreate.textContent = "创建中……";
+      try {
+        session = await PRNet.host({ name: myName(), onPresence, onMessage });
+        window.PR_SESSION = session;
+        setLocalStartEnabled(false);   // 联机会话期间禁掉单机「开始游戏」，见下
+        showRoom(panel, session.code, session.role);
+      } catch (e) {
+        netError("创建房间失败", e);
+      } finally {
+        // ⚠ 必须 finally：此前只在 catch 里恢复，一旦 host() 永不落定（订阅回调漏处理
+        //   CHANNEL_ERROR/TIMED_OUT/CLOSED），按钮就永久变灰且零提示。net.js 那边已加超时，
+        //   这里再兜一层，保证按钮状态不会与实际不符。
+        btnCreate.disabled = false;
+        btnCreate.textContent = "创建房间";
+      }
     };
     async function attemptJoin() {
       const code = (codeInput.value || "").toUpperCase().trim();
@@ -110,9 +131,10 @@
         try { sessionStorage.setItem("prnet_room", session.code); sessionStorage.setItem("prnet_name", myName()); } catch (e) {}
         if (typeof PRSpectate !== "undefined") PRSpectate.startSpectating(session, {});
         showRoom(panel, session.code, session.role);
-      } catch (e) { btnJoin.disabled = false; throw e; }
+        setLocalStartEnabled(false);
+      } finally { btnJoin.disabled = false; }
     }
-    btnJoin.onclick = () => attemptJoin().catch((e) => alert("加入房间失败：" + (e && e.message || e)));
+    btnJoin.onclick = () => attemptJoin().catch((e) => netError("加入房间失败", e));
     // 房主：开始对战 —— 座位 0=房主本地；在场客人按加入顺序占座位 1..k；其余=AI。
     const btnHostStart = el("button", { class: "qs-btn lobby-btn lobby-start-btn", type: "button" }, ["▶ 开始对战（房主）"]);
     btnHostStart.onclick = () => {
@@ -134,6 +156,7 @@
       if (session) { session.close(); session = null; } window.PR_SESSION = null;
       panel.querySelector(".lobby-room").classList.add("hidden"); panel.querySelector(".lobby-actions").classList.remove("hidden");
       btnCreate.disabled = false; btnJoin.disabled = false;
+      setLocalStartEnabled(true);   // 离开房间 → 单机「开始游戏」恢复可用（否则会把人锁死在联机态）
     };
 
     const panel = el("fieldset", { class: "module-select", id: "lobby-panel" }, [
@@ -162,6 +185,14 @@
     // 放在「开始游戏」按钮之前
     const startBtn = document.getElementById("btn-start");
     box.insertBefore(panel, startBtn || null);
+    // 在房间里时禁用单机「开始游戏」：面板就插在它上方，很容易误点；而客人一旦开了本地局，
+    // 房主的下一帧 state 广播会经 applyState → setGlobalGame 把 G 整个换掉，本地局凭空消失。
+    function setLocalStartEnabled(on) {
+      if (!startBtn) return;
+      startBtn.disabled = !on;
+      startBtn.title = on ? "" : "正在联机房间中——离开房间后才能开始单机对局";
+      startBtn.style.opacity = on ? "" : "0.5";
+    }
     window.addEventListener("pagehide", () => { if (session) session.close(); });
 
     const hint = panel.querySelector(".lobby-actions .lobby-hint");
