@@ -51,9 +51,10 @@
     _online = !!opts.online;
     _takenOver = {};
     clearPending();
+    clearLossTimers(); _lastTokens = presentTokens();
     _guestBusy = false;
   }
-  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; removeOverlay(); removeReclaimUI(); clearPending(); }
+  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; removeOverlay(); removeReclaimUI(); clearPending(); clearLossTimers(); }
 
   function presentTokens() {
     try { return (_session && _session.presence ? _session.presence() : []).map((m) => m && m.token).filter(Boolean); }
@@ -81,6 +82,26 @@
   // 闲置/掉线 → 专家 AI 接管的阈值（可用 window._netIdleMs 覆盖，便于测试）
   function idleMs() { return (typeof root._netIdleMs === "number" && root._netIdleMs > 0) ? root._netIdleMs : 180000; } // 默认 3 分钟
 
+  // presence 掉线 → AI 接管前的【宽限期】（可用 window._netGraceMs 覆盖，便于测试；0 = 立即接管，即旧行为）。
+  // 此前 presence 一抖就立刻接管：iOS Safari 切后台会冻结标签、掉 presence（net.js 自己就为此写了
+  // visibilitychange 重新 track 的 workaround）→ 手机锁个屏、看一眼消息，回来座位已被 AI 顶替、
+  // 还替你做了一轮决策。现在先记为「疑似掉线」，宽限期内回来则什么都不发生。
+  function graceMs() { return (typeof root._netGraceMs === "number" && root._netGraceMs >= 0) ? root._netGraceMs : 20000; } // 默认 20 秒
+  const _lossTimers = {};   // seat -> timer（疑似掉线计时）
+  let _lastTokens = [];     // 最近一次 presence 里的令牌（计时器到期时据此判断，而非再查一次可能滞后的 presence）
+  function armLoss(seat, reason) {
+    if (_lossTimers[seat] || _takenOver[seat]) return;
+    const ms = graceMs();
+    if (ms === 0) { aiTakeover(seat, reason); return; }
+    _lossTimers[seat] = setTimeout(() => {
+      delete _lossTimers[seat];
+      const owner = _seatOwners[seat];
+      if (owner && _lastTokens.indexOf(owner) < 0) aiTakeover(seat, reason);
+    }, ms);
+  }
+  function disarmLoss(seat) { if (_lossTimers[seat]) { clearTimeout(_lossTimers[seat]); delete _lossTimers[seat]; } }
+  function clearLossTimers() { for (const s in _lossTimers) disarmLoss(s); }
+
   // 引擎里的 3 个输入原语在入口调用：返回 Promise 则走网络，返回 null 则走本地。
   function maybeRoute(kind, payload) {
     if (_role !== "host" || !_online) return null;
@@ -91,8 +112,13 @@
     if (!owner) return null;                                   // 本地座位（房主自己 / AI）
     // 已被接管的座位：本地直接给「专家 AI / 安全默认」作答，不弹房主 UI、不再走网络
     if (_takenOver[seat]) return Promise.resolve(aiDefaultFor(kind, payload, g.players[seat]));
-    // 客人此刻不在场（掉线）：立即转专家 AI 接管
-    if (!ownerConnected(owner)) { aiTakeover(seat, "掉线"); return Promise.resolve(aiDefaultFor(kind, payload, g.players[seat])); }
+    // 客人此刻不在场：以前是立即转 AI 接管。现在先进宽限期并照常把请求发出去——
+    // 他很可能只是切了下后台，回来就能作答；宽限期到期（或 3 分钟无操作）才接管，
+    // 接管时 aiTakeover 会替这次挂起的请求作答，不会卡死。
+    if (!ownerConnected(owner)) {
+      armLoss(seat, "掉线");
+      if (_takenOver[seat]) return Promise.resolve(aiDefaultFor(kind, payload, g.players[seat])); // graceMs()==0 时已当场接管
+    }
     return request(seat, kind, payload);
   }
 
@@ -122,6 +148,7 @@
   // 某座位长时间未操作 / 掉线 → 由房主的专家级(L5) AI 接管：把该座位转为 AI，
   // 当前挂起的输入用 AI/安全默认作答，之后所有决策走引擎原生 AI 分支（p.isHuman=false）。
   function aiTakeover(seat, reason) {
+    disarmLoss(seat);
     const g = game(); if (!g) return;
     const p = g.players[seat]; if (!p) return;
     if (_takenOver[seat]) return;        // 幂等：已接管
@@ -175,9 +202,11 @@
         if (origTok && tokens.indexOf(origTok) >= 0) autoReclaim(seat, origTok); // 原主回来了
       }
     }
+    _lastTokens = tokens;
     for (const s in _seatOwners) {
       const owner = _seatOwners[s];
-      if (owner && tokens.indexOf(owner) < 0) aiTakeover(+s, "掉线");
+      if (owner && tokens.indexOf(owner) < 0) armLoss(+s, "掉线");   // 疑似掉线 → 宽限期，不再立即接管
+      else disarmLoss(+s);                                            // 回来了 → 取消
     }
   }
 
@@ -358,6 +387,6 @@
     seatOwners: () => _seatOwners,
     guestBusy: () => _guestBusy,
     takenOver: () => Object.assign({}, _takenOver),
-    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending) }),
+    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending), lossPending: Object.keys(_lossTimers) }),
   };
 })(typeof window !== "undefined" ? window : this);

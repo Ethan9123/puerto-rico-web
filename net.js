@@ -133,6 +133,13 @@
           const finish = (fn, arg) => { if (done) return; done = true; clearTimeout(timer); fn(arg); };
           const timer = setTimeout(() => finish(rej, new Error("连接实时服务超时（网络不稳定或被拦截）")), SUBSCRIBE_TIMEOUT_MS);
           ch.subscribe((status, err) => {
+            if (done) {
+              // 首次落定之后，supabase-js 在 socket 断开/重连时会再次回调：把它上报给会话层
+              //（客人横幅 / 房主 toast），重连成功时重新 track，否则别人的 presence 里会没有我。
+              if (status === "SUBSCRIBED") { try { ch.track(meta); } catch (e) {} }
+              if (cb.onStatus) { try { cb.onStatus(status, err && err.message); } catch (e) {} }
+              return;
+            }
             if (status === "SUBSCRIBED") { try { ch.track(meta); } catch (e) {} finish(res); }
             else if (status === "CHANNEL_ERROR") finish(rej, new Error("实时频道错误：" + ((err && err.message) || "未知原因")));
             else if (status === "TIMED_OUT") finish(rej, new Error("连接实时服务超时"));
@@ -176,9 +183,17 @@
     const transport = makeTransport(code, clientId);
     let presence = [];
     const meta = { clientId, token, name: (opts && opts.name) || "玩家", role, joinedAt: Date.now() };
+    // 本端连接状态上报（此前完全没有：客人断了网，横幅照旧「联机中」，只是棋盘不动）。
+    // 两个来源：传输层（Supabase 频道 CLOSED/CHANNEL_ERROR/TIMED_OUT/重新 SUBSCRIBED）
+    // 与浏览器 offline/online 事件（传输无关，LocalTransport 也能触发，便于测试）。
+    const report = (status, detail) => { if (opts && opts.onStatus) { try { opts.onStatus(status, detail); } catch (e) {} } };
+    const onOffline = () => report("OFFLINE", "浏览器离线");
+    const onOnline = () => report("ONLINE");
+    if (typeof window !== "undefined" && window.addEventListener) { window.addEventListener("offline", onOffline); window.addEventListener("online", onOnline); }
     await transport.open(meta, {
       onMessage: (msg) => { if (opts && opts.onMessage) opts.onMessage(msg); },
       onPresence: (list) => { presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
+      onStatus: report,
     });
     if (role === "guest") {
       // 此前固定 3500 ms，且超时一律报「房间不存在」。但这段时间要覆盖 WebSocket 连接 +
@@ -198,7 +213,10 @@
       send: (obj) => transport.send(obj),
       presence: () => transport.presence ? transport.presence() : presence,
       updateMeta: (m) => transport.updateMeta && transport.updateMeta(Object.assign(meta, m)),
-      close: () => transport.close(),
+      close: () => {
+        if (typeof window !== "undefined" && window.removeEventListener) { window.removeEventListener("offline", onOffline); window.removeEventListener("online", onOnline); }
+        transport.close();
+      },
     };
   }
 

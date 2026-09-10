@@ -40,10 +40,21 @@ const CHROME = findChrome();
 if (!CHROME) { console.log('skipped: 找不到预装 Chromium（/opt/pw-browsers）'); process.exit(2); }
 
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css' };
+const KV = new Map(); // 内存版 KV：与 worker/index.js 的 /game-save /game-load 同契约
 function serve(port) {
   return new Promise((res, rej) => {
     const s = http.createServer((req, rq) => {
-      const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';
+      const u = new URL(req.url, 'http://x');
+      if (u.pathname === '/game-save' && req.method === 'POST') {
+        let body = ''; req.on('data', c => body += c); req.on('end', () => {
+          try { const b = JSON.parse(body); if (!b.snap) KV.delete(b.id); else KV.set(b.id, b.snap); rq.writeHead(200, { 'Content-Type': 'application/json' }); rq.end('{"ok":true}'); }
+          catch (e) { rq.writeHead(400); rq.end('{"ok":false}'); }
+        }); return;
+      }
+      if (u.pathname === '/game-load' && req.method === 'GET') {
+        rq.writeHead(200, { 'Content-Type': 'application/json' }); return rq.end(JSON.stringify({ ok: true, snap: KV.get(u.searchParams.get('id')) || null }));
+      }
+      const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
       const f = path.join(ROOT, rel);
       if (!f.startsWith(ROOT) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { rq.writeHead(404); return rq.end('nf'); }
       rq.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' });
@@ -119,6 +130,74 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     ok(/座位|观战/.test(banner), '⑤ 客人被告知自己的角色（参战座位或观战）');
 
     ok(errs.length === 0, `⑥ 全程无 pageerror / 弹窗${errs.length ? '：' + errs.slice(0, 3).join(' ; ') : ''}`);
+
+    // ---- ⑨ 客人自己掉线要有感（此前横幅照旧「联机中」，棋盘只是不动）----
+    const bannerOf = async (p) => (await p.locator('#spectate-banner').count()) ? await p.locator('#spectate-banner').innerText() : '';
+    await ctx.setOffline(true);            // 触发 window 'offline'（LocalTransport 本身不受影响）
+    await guest.waitForTimeout(600);
+    const offB = await bannerOf(guest);
+    ok(/掉线/.test(offB), `⑨ 断网后横幅变红并说明（${offB.slice(0, 50) || '无变化'}）`);
+    await ctx.setOffline(false);
+    await guest.waitForTimeout(600);
+    const onB = await bannerOf(guest);
+    ok(/联机中|重新连上/.test(onB) && !/掉线/.test(onB), `⑨ 恢复后横幅复原（${onB.slice(0, 50)}）`);
+
+    // ---- ⑩ 房主刷新不再整局死：同码重开 + 取回存档 + 以房主身份续跑 ----
+    // 此前：saveGame 对联机早退、建房不记 prnet_room、重连恒以 guest 身份 join → 引擎状态全没，
+    // 客人永远卡在「房主已断线，等待重连」。
+    const slotKey = await host.evaluate(() => Object.keys(localStorage).find(k => /:room:/.test(k)) || '');
+    ok(!!slotKey, `⑩ 房主对局已写入按房间码的独立存档槽（${slotKey || '无'}）`);
+    await host.reload({ waitUntil: 'load' });
+    let backAsHost = false;
+    for (let i = 0; i < 40; i++) {
+      await host.waitForTimeout(500);
+      backAsHost = await host.evaluate(() =>
+        typeof PRNetPlay !== 'undefined' && PRNetPlay.role() === 'host' && PRNetPlay.isOnline() &&
+        !!window.PR_SESSION && !document.getElementById('game-screen').classList.contains('hidden')).catch(() => false);
+      if (backAsHost) break;
+    }
+    ok(backAsHost, '⑩ 刷新后以房主身份回到对局（引擎状态取回、远程出手层已接上）');
+    ok(await host.evaluate(() => window.PR_SESSION && window.PR_SESSION.code) === code, '⑩ 重开的是同一个房间码');
+    ok(await host.evaluate(() => !!(G && G._resumed && G._online && !G._spectator)), '⑩ G 来自存档且仍是联机房主局');
+    await guest.waitForTimeout(8000);      // 等客人 presence 看到房主回来 + 收到新一帧
+    const gB = await bannerOf(guest);
+    ok(/联机中/.test(gB) && !/已断线/.test(gB), `⑩ 客人横幅不再卡在「房主已断线」（${gB.slice(0, 60)}）`);
+    ok(await guest.evaluate(() => !document.getElementById('game-screen').classList.contains('hidden')), '⑩ 客人仍在对局画面');
+
+    // ---- ⑧ presence 掉线有宽限期，不再一抖就被 AI 顶替；真掉线到期后才接管 ----
+    // 用真实路径：关掉客人页 → LocalTransport 的 presence 条目 9s 后过期 → 房主 onPresence 少了该令牌
+    // → 进宽限期（本测试设 6s）→ 到期仍不在 → aiTakeover。轮询记录中间态，断言「先宽限、后接管」。
+    await host.evaluate(() => { window._netGraceMs = 6000; });
+    const guestSeat = await host.evaluate(() => Object.keys(PRNetPlay.seatOwners())[0]);
+    await guest.close();
+    let sawGrace = false, taken = false;
+    for (let i = 0; i < 90 && !taken; i++) {
+      await host.waitForTimeout(500);
+      const st = await host.evaluate((seat) => ({ pending: PRNetPlay._debug().lossPending, taken: !!PRNetPlay.takenOver()[seat] }), guestSeat);
+      if (st.pending.length && !st.taken) sawGrace = true;
+      taken = st.taken;
+    }
+    ok(sawGrace, '⑧ presence 丢失后先进入宽限期（未立即接管）');
+    ok(taken, '⑧ 宽限期到期仍不在 → 专家 AI 接管该座位');
+
+    // ---- ⑪ 单机存档路径不受联机改动影响（saveSlot 重构的回归护栏）----
+    // 联机房主改用按房间码的独立槽后，单机仍必须写原来的 pr_save_v1、且设置页能给出「继续上一局」。
+    // 同时断言单机局**不会**写出 :room: 槽——否则说明 saveSlot 把单机误判成联机。
+    {
+      const solo = await ctx.newPage(); wire(solo, 'solo');
+      await solo.goto(BASE, { waitUntil: 'load' });
+      await solo.waitForTimeout(800);
+      await solo.evaluate(() => { try { sessionStorage.clear(); localStorage.removeItem('pr_save_v1'); } catch (e) {} });
+      await solo.locator('#btn-start').click();
+      await solo.waitForTimeout(3500);
+      const keys = await solo.evaluate(() => Object.keys(localStorage));
+      ok(keys.includes('pr_save_v1'), '⑪ 单机局写入原存档槽 pr_save_v1');
+      ok(!keys.some(k => /^pr_save_v1:room:/.test(k) && k !== slotKey), '⑪ 单机局没有写出 :room: 槽（未被误判为联机）');
+      await solo.reload({ waitUntil: 'load' });
+      await solo.waitForTimeout(2500);
+      ok(await solo.locator('#btn-resume').count() === 1, '⑪ 刷新后设置页出现「继续上一局」');
+      await solo.close();
+    }
 
     // ---- ⑦ 订阅失败必须有界（本轮修掉的头号 bug）----
     // 旧写法 `ch.subscribe(s => { if (s==="SUBSCRIBED") res(); })` 只处理成功一种状态，
