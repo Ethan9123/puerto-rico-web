@@ -60,6 +60,7 @@
   function stopHosting() { hostSession = null; if (timer) { clearTimeout(timer); timer = null; } }
   function onHostGameOver(title, body) {
     if (!hostSession) return;
+    try { sessionStorage.removeItem("prnet_room"); sessionStorage.removeItem("prnet_role"); } catch (e) {} // 结束的局不再自动重开
     if (timer) { clearTimeout(timer); timer = null; }
     const snap = snapshot();
     try { hostSession.send({ type: "gameover", snap, title: title || "", body: body || "" }); } catch (e) {}
@@ -67,8 +68,11 @@
 
   // ============ 客人侧：重放 ============
   let guestSession = null, hostName = "", _hostGone = false;
+  let _lastBanner = "";   // 最近一条正常横幅，掉线恢复后原样放回
+  let _connLost = false;
 
   function banner(text, warn) {
+    if (!warn) _lastBanner = text;
     let b = document.getElementById("spectate-banner");
     if (!b) {
       b = document.createElement("div");
@@ -90,6 +94,19 @@
     _hostGone = false;
     hostName = name || hostName;
     banner(`🔄 房主正在重连（${esc(hostName)}），等待下一帧……`);
+  }
+  // 客人【自己】的连接状态（net.js 经 lobby 转发）。此前完全无感：WebSocket 断了、手机断网了，
+  // 横幅照旧写着「🌐 联机中」，棋盘只是静静不动——分不清是对手在想还是自己早就掉了。
+  function onConnStatus(status, detail) {
+    if (!guestSession) return;
+    if (status === "SUBSCRIBED" || status === "ONLINE") {
+      if (_connLost) { _connLost = false; banner(_lastBanner || "🌐 已重新连上，等待下一帧……"); }
+      return;
+    }
+    if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "OFFLINE") {
+      _connLost = true;
+      banner(`⚠️ 你已掉线（${esc(detail || status)}），正在重连……房主会先等你一会儿，超时才交给 AI 代打；回来会自动收回座位`, true);
+    }
   }
 
   function applyState(snap) {
@@ -155,7 +172,7 @@
     snapshot,
     startHosting, stopHosting, onHostRender, onHostGameOver, pushNow,
     startSpectating, stopSpectating, handleMessage,
-    onHostLeft, onHostBack,
+    onHostLeft, onHostBack, onConnStatus,
     isHosting: () => !!hostSession,
     isSpectating: () => !!guestSession,
   };

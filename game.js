@@ -1833,6 +1833,21 @@ function prDeviceId() {
     return id;
   } catch (e) { return "anon000000"; }
 }
+// 存档槽位。单机：原来的 SAVE_KEY / deviceId（路径完全不变）。
+// 联机【房主】：按房间码独立一槽——本地 key 带 :room:，KV id 用 "room"+房间码小写（8 位，
+// 恰好满足 worker 的 /^[a-z0-9]{8,40}$/ 校验，worker 无需改动）。不能与单机共用一槽，否则
+// 一局联机会把你的单机进度顶掉、或在设置页冒出「继续上一局」把联机局当单机续。
+// 联机【客人】：G 是房主快照的只读副本（_spectator），不存。
+// 这是「房主刷新/关标签 = 整局死」的根：此前 saveGame 对联机一律早退，房主重开页面就什么都不剩。
+function saveSlot() {
+  if (G && G._online) {
+    if (G._spectator) return null;
+    const code = (typeof window !== "undefined" && window.PR_SESSION && window.PR_SESSION.code) || G._roomCode || "";
+    if (!code) return null;
+    return { key: SAVE_KEY + ":room:" + code, id: ("room" + String(code).toLowerCase()).replace(/[^a-z0-9]/g, "").slice(0, 40) };
+  }
+  return { key: SAVE_KEY, id: prDeviceId() };
+}
 function serializeGame() {
   if (!G || G.gameOver) return null;
   // 丢弃：_dna(可由 _dnaMeta 重建)、_lastCraftKinds(Set 不可序列化且仅瞬时)、_persona(只存 key)
@@ -1866,42 +1881,61 @@ function restoreGame(str) {
 }
 // 同设备即时存档（每步）
 function saveGame() {
-  if (G && G._online) return; // 联机对局不走单机存档/续局
+  const slot = saveSlot(); if (!slot) return; // 联机客人不存
   try {
     const snap = serializeGame();
     if (!snap) { clearSave(); return; }
-    localStorage.setItem(SAVE_KEY, JSON.stringify(snap));
+    if (G && G._online) snap._roomCode = slot.key.slice((SAVE_KEY + ":room:").length); // 恢复时可能没有 PR_SESSION
+    localStorage.setItem(slot.key, JSON.stringify(snap));
   } catch (e) { /* localStorage 满/禁用：忽略，不影响游戏 */ }
 }
 function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  const slot = saveSlot(); if (!slot) return;
+  try { localStorage.removeItem(slot.key); } catch (e) {}
   kvDelete();
 }
 // 跨设备：同步到 Cloudflare KV（worker /game-save；本地无 worker 时静默失败）
 function kvSync() {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const slot = saveSlot(); if (!slot) return;
+    const raw = localStorage.getItem(slot.key);
     if (!raw) return;
-    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: raw }) }).catch(() => {});
+    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, ts: Date.now(), snap: raw }) }).catch(() => {});
   } catch (e) {}
 }
 function kvDelete() {
-  try { fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: "" }) }).catch(() => {}); } catch (e) {}
+  try {
+    const slot = saveSlot(); if (!slot) return;
+    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, ts: Date.now(), snap: "" }) }).catch(() => {});
+  } catch (e) {}
 }
 function kvSyncBeacon() { // 离开页面时最后一次同步（fetch 不可靠，用 sendBeacon）
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const slot = saveSlot(); if (!slot) return;
+    const raw = localStorage.getItem(slot.key);
     if (!raw || !navigator.sendBeacon) return;
-    navigator.sendBeacon("/game-save", new Blob([JSON.stringify({ id: prDeviceId(), ts: Date.now(), snap: raw })], { type: "application/json" }));
+    navigator.sendBeacon("/game-save", new Blob([JSON.stringify({ id: slot.id, ts: Date.now(), snap: raw })], { type: "application/json" }));
   } catch (e) {}
 }
-async function kvLoad() {
+async function kvLoadId(id) {
   try {
-    const r = await fetch("/game-load?id=" + encodeURIComponent(prDeviceId()));
+    const r = await fetch("/game-load?id=" + encodeURIComponent(id));
     if (!r.ok) return null;
     const d = await r.json();
     return d && d.snap ? d.snap : null;
   } catch (e) { return null; }
+}
+async function kvLoad() { return kvLoadId(prDeviceId()); }
+// 联机房主重连：取该房间最新的一份存档（本地 vs KV，按 _savedAt 新者为准）。供 lobby.js 的重连路径使用。
+async function getBestRoomSave(code) {
+  if (!code) return null;
+  const key = SAVE_KEY + ":room:" + code, id = ("room" + String(code).toLowerCase()).replace(/[^a-z0-9]/g, "").slice(0, 40);
+  let local = null, localTs = 0;
+  try { local = localStorage.getItem(key); if (local) localTs = JSON.parse(local)._savedAt || 0; } catch (e) { local = null; }
+  let remote = await kvLoadId(id), remoteTs = 0;
+  try { if (remote) remoteTs = JSON.parse(remote)._savedAt || 0; } catch (e) { remote = null; }
+  if (remote && remoteTs > localTs) { try { localStorage.setItem(key, remote); } catch (e) {} return remote; }
+  return local;
 }
 // 取“最新”存档：比较本地与 KV 的 _savedAt，新的为准（同设备多为本地新，换设备时取 KV）
 async function getBestSave() {
@@ -1912,8 +1946,8 @@ async function getBestSave() {
   if (remote && remoteTs > localTs) { try { localStorage.setItem(SAVE_KEY, remote); } catch (e) {} return remote; }
   return local;
 }
-function resumeGame(str) {
-  if (!restoreGame(str)) { showToast(`<div class="t-title">存档已失效</div><div class="t-sub">将重新开始</div>`, { kind: "warn" }); clearSave(); return; }
+function resumeGame(str, alreadyRestored) {
+  if (!alreadyRestored && !restoreGame(str)) { showToast(`<div class="t-title">存档已失效</div><div class="t-sub">将重新开始</div>`, { kind: "warn" }); clearSave(); return; }
   document.getElementById("setup-screen").classList.add("hidden");
   document.getElementById("game-screen").classList.remove("hidden");
   const cbox = document.getElementById("commentary-box"); if (cbox) { cbox.className = "hidden"; cbox.innerHTML = ""; }

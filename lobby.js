@@ -86,33 +86,85 @@
         }
       }
     };
+    // 本端连接状态（net.js 上报：频道 CLOSED/CHANNEL_ERROR/TIMED_OUT/重新 SUBSCRIBED，及浏览器 OFFLINE/ONLINE）
+    const onStatus = (status, detail) => {
+      const bad = (status === "OFFLINE" || status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT");
+      if (session && session.role === "guest" && typeof PRSpectate !== "undefined" && PRSpectate.onConnStatus) PRSpectate.onConnStatus(status, detail);
+      else if (session && session.role === "host" && typeof showToast === "function") {
+        if (bad) showToast('<div class="t-title">⚠️ 你（房主）的连接断了</div><div class="t-sub">正在重连……客人那边会看到提示</div>', { kind: "warn", duration: 4000 });
+        else if (status === "SUBSCRIBED" || status === "ONLINE") showToast('<div class="t-title">✅ 已重新连上</div>', { kind: "role" });
+      }
+    };
     // 收到广播：input-request/response（远程出手）→ PRNetPlay；state/gameover（观战）→ PRSpectate
     const onMessage = (msg) => {
       if (typeof PRNetPlay !== "undefined") PRNetPlay.handleMessage(msg);
       if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg);
     };
 
+    // 联机失败一律走这里：此前用原生 alert()，在手机上生硬、还会把 `[object Event]` 直接甩给用户。
+    // 项目本来就有 showToast（game.js:764），复用它；showToast 不可用时才退回 alert。
+    function netError(prefix, e) {
+      const msg = (e && e.message) || (typeof e === "string" ? e : "") || "未知错误";
+      if (typeof showToast === "function") {
+        showToast('<div class="t-title">⚠️ ' + prefix + '</div><div class="t-sub">' + msg + "</div>", { kind: "role", duration: 5000 });
+      } else { alert(prefix + "：" + msg); }
+    }
     const btnCreate = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["创建房间"]);
     const btnJoin = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["加入"]);
     btnCreate.onclick = async () => {
       btnCreate.disabled = true;
-      try { session = await PRNet.host({ name: myName(), onPresence, onMessage }); window.PR_SESSION = session; showRoom(panel, session.code, session.role); }
-      catch (e) { btnCreate.disabled = false; alert("创建房间失败：" + (e && e.message || e)); }
+      btnCreate.textContent = "创建中……";
+      try {
+        session = await PRNet.host({ name: myName(), onPresence, onMessage, onStatus });
+        window.PR_SESSION = session;
+        // 此前只有客人记 prnet_room，房主什么都不记 → 房主一刷新就以 guest 身份重连进自己的房间，
+        // 引擎状态全没了，客人永远卡在「等待重连」。现在记下角色，重连走 attemptRehost。
+        try { sessionStorage.setItem("prnet_room", session.code); sessionStorage.setItem("prnet_role", "host"); sessionStorage.setItem("prnet_name", myName()); } catch (e) {}
+        setLocalStartEnabled(false);   // 联机会话期间禁掉单机「开始游戏」，见下
+        showRoom(panel, session.code, session.role);
+      } catch (e) {
+        netError("创建房间失败", e);
+      } finally {
+        // ⚠ 必须 finally：此前只在 catch 里恢复，一旦 host() 永不落定（订阅回调漏处理
+        //   CHANNEL_ERROR/TIMED_OUT/CLOSED），按钮就永久变灰且零提示。net.js 那边已加超时，
+        //   这里再兜一层，保证按钮状态不会与实际不符。
+        btnCreate.disabled = false;
+        btnCreate.textContent = "创建房间";
+      }
     };
     async function attemptJoin() {
       const code = (codeInput.value || "").toUpperCase().trim();
       if (code.length < 4) throw new Error("请输入房间码");
       btnJoin.disabled = true;
       try {
-        session = await PRNet.join(code, { name: myName(), onPresence, onMessage });
+        session = await PRNet.join(code, { name: myName(), onPresence, onMessage, onStatus });
         window.PR_SESSION = session;
         // 记住本标签所在房间 + 名字 → 刷新/断线后自动重连（sessionStorage 仅本标签、刷新存活）
-        try { sessionStorage.setItem("prnet_room", session.code); sessionStorage.setItem("prnet_name", myName()); } catch (e) {}
+        try { sessionStorage.setItem("prnet_room", session.code); sessionStorage.setItem("prnet_role", "guest"); sessionStorage.setItem("prnet_name", myName()); } catch (e) {}
         if (typeof PRSpectate !== "undefined") PRSpectate.startSpectating(session, {});
         showRoom(panel, session.code, session.role);
-      } catch (e) { btnJoin.disabled = false; throw e; }
+        setLocalStartEnabled(false);
+      } finally { btnJoin.disabled = false; }
     }
-    btnJoin.onclick = () => attemptJoin().catch((e) => alert("加入房间失败：" + (e && e.message || e)));
+    btnJoin.onclick = () => attemptJoin().catch((e) => netError("加入房间失败", e));
+    // 房主刷新/断线后回来：用【同一个房间码】重开房间（客人的 presence 会看到房主回来），
+    // 再取回该房间的对局存档（本地 / KV 取新），以房主身份接着跑。
+    // 顺序有讲究：restoreGame → PRNetPlay.setup（要 G._seatOwners）→ startHosting → 再起主循环；
+    // 若先起主循环，第一个远程座位的输入会在 setup 之前被当成本地输入弹给房主。
+    async function attemptRehost(code) {
+      session = await PRNet.host({ code, name: myName(), onPresence, onMessage, onStatus });
+      window.PR_SESSION = session;
+      setLocalStartEnabled(false);
+      showRoom(panel, session.code, session.role);
+      const saved = (typeof getBestRoomSave === "function") ? await getBestRoomSave(session.code) : null;
+      if (!saved) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>（没有可续的对局，可直接开新局）。"; return; }
+      if (typeof restoreGame !== "function" || !restoreGame(saved)) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>；上一局存档已失效。"; return; }
+      const seatOwners = (typeof G !== "undefined" && G && G._seatOwners) || {};
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, myToken: session.token, myId: session.clientId, online: true });
+      if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
+      if (typeof resumeGame === "function") resumeGame(saved, true);
+      try { if (typeof G !== "undefined" && G && G.logEvent) G.logEvent("🔄 房主重连，对局从存档继续", "role"); } catch (e) {}
+    }
     // 房主：开始对战 —— 座位 0=房主本地；在场客人按加入顺序占座位 1..k；其余=AI。
     const btnHostStart = el("button", { class: "qs-btn lobby-btn lobby-start-btn", type: "button" }, ["▶ 开始对战（房主）"]);
     btnHostStart.onclick = () => {
@@ -134,6 +186,7 @@
       if (session) { session.close(); session = null; } window.PR_SESSION = null;
       panel.querySelector(".lobby-room").classList.add("hidden"); panel.querySelector(".lobby-actions").classList.remove("hidden");
       btnCreate.disabled = false; btnJoin.disabled = false;
+      setLocalStartEnabled(true);   // 离开房间 → 单机「开始游戏」恢复可用（否则会把人锁死在联机态）
     };
 
     const panel = el("fieldset", { class: "module-select", id: "lobby-panel" }, [
@@ -162,13 +215,29 @@
     // 放在「开始游戏」按钮之前
     const startBtn = document.getElementById("btn-start");
     box.insertBefore(panel, startBtn || null);
+    // 在房间里时禁用单机「开始游戏」：面板就插在它上方，很容易误点；而客人一旦开了本地局，
+    // 房主的下一帧 state 广播会经 applyState → setGlobalGame 把 G 整个换掉，本地局凭空消失。
+    function setLocalStartEnabled(on) {
+      if (!startBtn) return;
+      startBtn.disabled = !on;
+      startBtn.title = on ? "" : "正在联机房间中——离开房间后才能开始单机对局";
+      startBtn.style.opacity = on ? "" : "0.5";
+    }
     window.addEventListener("pagehide", () => { if (session) session.close(); });
 
     const hint = panel.querySelector(".lobby-actions .lobby-hint");
     let invited = null, reconnectRoom = null;
     try { invited = new URLSearchParams(location.search).get("room"); } catch (e) {}
     try { reconnectRoom = sessionStorage.getItem("prnet_room"); } catch (e) {}
-    if (reconnectRoom && !invited) {
+    let reconnectRole = null; try { reconnectRole = sessionStorage.getItem("prnet_role"); } catch (e) {}
+    if (reconnectRoom && !invited && reconnectRole === "host") {
+      codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 6);
+      if (hint) hint.innerHTML = "🔄 正在以房主身份重开房间 <b style='color:#f3c969'>" + codeInput.value + "</b>……";
+      attemptRehost(codeInput.value).catch((e) => {
+        try { sessionStorage.removeItem("prnet_room"); sessionStorage.removeItem("prnet_role"); } catch (e2) {}
+        if (hint) hint.innerHTML = "房主重连失败：" + ((e && e.message) || e) + "。可重新创建房间。";
+      });
+    } else if (reconnectRoom && !invited) {
       // 断线/刷新重连：本标签刷新前在某房间里 → 自动回去（无需重输房间码；房主据 token 自动还座位）
       try { const nm = sessionStorage.getItem("prnet_name"); const ni = document.getElementById("player-name"); if (nm && ni) ni.value = nm; } catch (e) {}
       codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 6);
