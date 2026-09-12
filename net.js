@@ -11,12 +11,13 @@
 // 对外 API：
 //   await PRNet.host({name, onMessage, onPresence})            -> session（自动生成房间码）
 //   await PRNet.join(code, {name, onMessage, onPresence})      -> session
-//   session = { code, role:'host'|'guest', clientId, send(obj), presence():[...], close() }
+//   session = { code, role:'host'|'guest', clientId, send(obj)->Promise<'ok'|'error'|'timed out'>, presence():[...], close() }
 // ============================================================
 (function (root) {
   "use strict";
   const SUBSCRIBE_TIMEOUT_MS = 12000; // 订阅实时频道的上限（含 WebSocket 建连）
   const JOIN_WAIT_MS = 10000;         // 等房主出现在 presence 里的上限（弱网下 3.5s 太短）
+  const SEND_ACK_TIMEOUT_MS = 5000;   // 广播送达确认（ack）的等待上限；超时按发送失败处理，由上层决定重试
   const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // 去掉易混的 0/O/1/I/L
   function makeCode(n) { let s = ""; for (let i = 0; i < (n || 4); i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]; return s; }
   function makeId() { return (Date.now().toString(36) + Math.random().toString(36).slice(2, 8)); }
@@ -77,7 +78,7 @@
         gcTimer = setInterval(() => onPres && onPres(listPresence()), 4000);
         setTimeout(() => onPres && onPres(listPresence()), 50);
       },
-      send(msg) { try { localStorage.setItem(MSG, JSON.stringify({ from: clientId, t: Date.now(), msg })); } catch (e) {} },
+      send(msg) { try { localStorage.setItem(MSG, JSON.stringify({ from: clientId, t: Date.now(), msg })); return Promise.resolve("ok"); } catch (e) { return Promise.resolve("error"); } },
       presence() { return listPresence(); },
       updateMeta(meta) { self.meta = meta; beat(); },
       close() { window.removeEventListener("storage", onStorage); clearInterval(hbTimer); clearInterval(gcTimer); try { localStorage.removeItem(presKey(clientId)); } catch (e) {} },
@@ -122,7 +123,9 @@
       async open(meta, cb) {
         onMsg = cb.onMessage; onPres = cb.onPresence;
         const client = await supa();
-        ch = client.channel("pr:" + room, { config: { broadcast: { self: false, ack: false }, presence: { key: clientId } } });
+        // ack:true → ch.send() 等服务端确认后才落定为 'ok'（ack:false 时 supabase-js 会**立刻** resolve 'ok'，发没发出去无从得知）。
+        // 此前 ack:false + 上层 catch(e){} 把所有发送失败吞掉：客人出手可能根本没送达，UI 却已关闭，3 分钟后被 AI 顶替。
+        ch = client.channel("pr:" + room, { config: { broadcast: { self: false, ack: true }, presence: { key: clientId } } });
         ch.on("broadcast", { event: "msg" }, (e) => onMsg && onMsg(e.payload));
         ch.on("presence", { event: "sync" }, () => onPres && onPres(presList()));
         // ⚠ 曾经这里只处理 SUBSCRIBED。Supabase 同样会回调 CHANNEL_ERROR / TIMED_OUT / CLOSED，
@@ -150,7 +153,13 @@
         _onVisible = () => { if (document.visibilityState === "visible" && ch) ch.track(meta); };
         document.addEventListener("visibilitychange", _onVisible);
       },
-      send(msg) { if (ch) ch.send({ type: "broadcast", event: "msg", payload: msg }); },
+      send(msg) {
+        if (!ch) return Promise.resolve("error");
+        // supabase-js v2 的 send() 返回 Promise<'ok'|'error'|'timed out'>（vendor/supabase.js 实读：频道已加入走 push + ack，
+        // 未加入则退回 HTTP POST /realtime/v1/api/broadcast；两条路返回值形态相同）。
+        try { return Promise.resolve(ch.send({ type: "broadcast", event: "msg", payload: msg }, { timeout: SEND_ACK_TIMEOUT_MS })).then((s) => s || "ok", () => "error"); }
+        catch (e) { return Promise.resolve("error"); }
+      },
       presence() { return presList(); },
       updateMeta(meta) { if (ch) ch.track(meta); },
       close() {
@@ -210,7 +219,8 @@
     return {
       code, role, clientId, token,
       transport: hasSupabase() ? "supabase" : "local",
-      send: (obj) => transport.send(obj),
+      // 统一返回 Promise<'ok'|'error'|'timed out'>，永不 reject：调用方按返回值决定重试 / 提示
+      send: (obj) => { let r; try { r = transport.send(obj); } catch (e) { return Promise.resolve("error"); } return Promise.resolve(r).then((s) => (s == null ? "ok" : s), () => "error"); },
       presence: () => transport.presence ? transport.presence() : presence,
       updateMeta: (m) => transport.updateMeta && transport.updateMeta(Object.assign(meta, m)),
       close: () => {

@@ -8,6 +8,8 @@
 //   ② LocalTransport 全流程：建房 → 客人加入 → 双方在场列表互见 → 开局 → 客人拿到座位
 //   ③ 联机会话中单机「开始游戏」被禁用（否则客人开的本地局会被房主广播覆盖）
 //   ④ 频道订阅失败必须**有界地**失败（不是永久挂起）——这是本轮修掉的头号 bug
+//   ⑭⑮ 房主只接受座位主人的应答，且非法值不打崩引擎；⑯ 帧号：旧帧不回退棋盘；
+//   ⑱ 房间码 4 位统一；⑲ Supabase 频道 ack:true 且 send() 结果透传；⑳ 发送失败重试 / 明确提示 / 房主广播失败提示
 //
 // 环境要求：playwright（devDependency）+ 预装 Chromium。缺任一 → 按项目约定
 // `exit(2)` 且输出含 "skipped"（tools/run_tests.sh 只在两者同时满足时才算跳过）。
@@ -137,7 +139,9 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     // 房主自动应答一步：优先确认弹窗 → 角色卡（偏好探矿者：无人决策、阶段即刻结束）→ 任意可点选项。
     // 页内 el.click()：不依赖视口坐标（手机布局下角色卡在折叠区也能点），返回是否有动作。
     const hostStep = (p) => p.evaluate(() => {
-      const btn = [...document.querySelectorAll('.modal-box button')].find(b => !/撤销/.test(b.textContent));
+      // ⚠ hideModal() 只给 #modal 加 .hidden，按钮仍在 DOM 里：必须只看**可见**的弹窗，否则会一直点已隐藏的旧按钮（no-op）而永远到不了角色卡 / 棋盘分支
+      const modal = document.getElementById('modal');
+      const btn = (modal && !modal.classList.contains('hidden')) ? [...modal.querySelectorAll('.modal-box button')].find(b => !/撤销/.test(b.textContent)) : null;
       if (btn) { btn.click(); return 'modal:' + btn.textContent.trim().slice(0, 8); }
       const cards = [...document.querySelectorAll('.role-card')].filter(c => c.onclick);
       if (cards.length) { const c = cards.find(x => /role-Prospector/.test(x.className)) || cards[0]; c.click(); return 'role:' + c.className.replace('role-card', '').trim(); }
@@ -190,6 +194,30 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     const gB = await bannerOf(guest);
     ok(/联机中/.test(gB) && !/已断线/.test(gB), `⑩ 客人横幅不再卡在「房主已断线」（${gB.slice(0, 60)}）`);
     ok(await guest.evaluate(() => !document.getElementById('game-screen').classList.contains('hidden')), '⑩ 客人仍在对局画面');
+
+    // ---- ⑯ 帧号：比已收到的旧的 state 帧被丢弃，客人棋盘不回退 ----
+    // 此前 snap._specVer 是常量 1，广播没有任何序号：乱序 / 重复投递会把客人的棋盘静默退回旧帧。
+    // guestBusy 打桩成 false，保证「若无帧号守卫，这一帧本会被套上」（正向对照）——否则断言结构上无法变红。
+    {
+      const r16 = await guest.evaluate(() => {
+        const origBusy = PRNetPlay.guestBusy; PRNetPlay.guestBusy = () => false;
+        try {
+          const d0 = PRSpectate._debug(); const S = d0.lastSeq;
+          const mk = (seq, money) => { const c = JSON.parse(JSON.stringify(G)); c._seq = seq; c.players[0].money = money; return c; };
+          const before = G.players[0].money;
+          PRSpectate.handleMessage({ type: 'state', snap: mk(S - 1, 999) }); const afterStale = G.players[0].money;
+          PRSpectate.handleMessage({ type: 'state', snap: mk(S, 998) });     const afterSame = G.players[0].money;
+          PRSpectate.handleMessage({ type: 'state', snap: mk(S + 1, 997) }); const afterFresh = G.players[0].money;
+          const d1 = PRSpectate._debug();
+          return { S, before, afterStale, afterSame, afterFresh, dropped: d1.staleDropped - d0.staleDropped, lastSeq: d1.lastSeq };
+        } finally { PRNetPlay.guestBusy = origBusy; }
+      });
+      ok(r16.S > 0, `⑯ 客人已收到带帧号的状态（lastSeq=${r16.S}）`);
+      ok(r16.afterStale === r16.before && r16.afterSame === r16.before && r16.dropped === 2,
+        `⑯ 旧帧 / 同号帧被丢弃，棋盘不回退（money ${r16.before} → ${r16.afterStale}/${r16.afterSame}，丢弃 ${r16.dropped}）`);
+      ok(r16.afterFresh === 997 && r16.lastSeq === r16.S + 1,
+        `⑯ 新帧照常套上（money → ${r16.afterFresh}，lastSeq → ${r16.lastSeq}）——证明丢弃是帧号所致，不是没在套帧`);
+    }
 
     // ---- ⑫ 客人看到的「轮到谁」与提示文字 == 快照的 _actingSeat ----
     // 此前两处叠加：① _currentPlayer 只在选角色时更新，阶段内子决策只设 _actingSeat → 客人整个阶段都高亮着选角色的人；
@@ -254,6 +282,87 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     await host.waitForTimeout(1200);
     const hostCd = await host.evaluate(() => (document.getElementById('np-countdown') || {}).textContent || '');
     ok(/^\d+$/.test(hostCd) && +hostCd > 0 && +hostCd <= 90, `⑬ 房主浮层倒计时跟随请求的 90s deadline（显示 ${hostCd}）`);
+
+    // ---- ⑭ 冒名应答被忽略 ----
+    // 此前 input-response 只凭 reqId 就 resolvePending：任何能往频道发消息的人都能替任何座位出手。
+    const reqA = await host.evaluate(() => PRNetPlay._debug().pending[0]);
+    ok(!!reqA, `⑭ 房主有挂起的请求（${reqA}）`);
+    const hostErrs0 = errs.filter(e => e.startsWith('[host]')).length;
+    await guest.evaluate((id) => PR_SESSION.send({ type: 'input-response', reqId: id, value: 0, token: 'tok-forged' }), reqA);
+    await host.waitForTimeout(800);
+    const d14 = await host.evaluate(() => PRNetPlay._debug());
+    ok(d14.pending.includes(reqA), '⑭ 错误 token 的应答被忽略：请求仍挂起');
+    ok(d14.rejected >= 1 && !!d14.lastResponse && d14.lastResponse.rejected === true, `⑭ 房主记下一次拒绝（rejected=${d14.rejected}）`);
+
+    // ---- ⑮ 越界 / 非法值不打崩房主：按 AI 默认处理 ----
+    // 此前值不经校验直接进引擎：pickRole 越界下标在 game.js `available[chosenIdx].name` 处 TypeError → 整局死。
+    const kind15 = (d14.pendingKinds[0] || '').split('@')[0];
+    const bad15 = kind15 === 'boardSelect' ? 'E2E-BAD-KEY' : 99;
+    await guest.evaluate(({ id, bad }) => PR_SESSION.send({ type: 'input-response', reqId: id, value: bad, token: PR_SESSION.token }), { id: reqA, bad: bad15 });
+    await host.waitForTimeout(1200);
+    const d15 = await host.evaluate(() => PRNetPlay._debug());
+    ok(!d15.pending.includes(reqA), `⑮ 正确 token + 非法值：请求被结算而非卡住（kind=${kind15}）`);
+    ok(!!d15.lastResponse && d15.lastResponse.reqId === reqA && d15.lastResponse.sanitized === true && d15.lastResponse.used !== bad15,
+      `⑮ 非法值被替换为默认（raw=${JSON.stringify(d15.lastResponse && d15.lastResponse.raw)} → used=${JSON.stringify(d15.lastResponse && d15.lastResponse.used)}）`);
+    ok(errs.filter(e => e.startsWith('[host]')).length === hostErrs0, '⑮ 房主无 pageerror（引擎没被越界值打崩）');
+
+    // ---- ⑳ 发送不再静默：客人出手失败自动重试；仍失败明确提示；房主广播连续失败有提示 ----
+    // 此前 net.js ack:false + 所有 send 在 catch(e){} 里：客人出手可能根本没送达，UI 却已关闭，3 分钟后被 AI 顶替。
+    // 把客人当前的决策 UI 答完（可能要点两下：角色卡 + 确认）；#np-guest-turn 消失即答完。
+    const answerGuestFully = async (gp) => {
+      const acts = [];
+      for (let i = 0; i < 8; i++) { const a = await hostStep(gp); if (a) acts.push(a); await gp.waitForTimeout(250); if (!(await gp.locator('#np-guest-turn').count())) break; }
+      return acts;
+    };
+    await answerGuestFully(guest); await guest.waitForTimeout(800);   // 清掉 ⑮ 留下的陈旧 UI（房主已按默认结算，这次应答会被忽略）
+    ok(await guest.evaluate(async () => (await PR_SESSION.send({ type: 'e2e-noop' })) === 'ok'), '⑳ session.send() 返回可判定的状态（LocalTransport → "ok"）');
+    // (a) 首次失败 → 自动重试成功
+    await guest.evaluate(() => {
+      const orig = PR_SESSION.send; const failed = new Set(); window.__sent = []; window.__origSend = orig;
+      PR_SESSION.send = (m) => { if (m && m.type === 'input-response') { window.__sent.push(m); if (!failed.has(m.reqId)) { failed.add(m.reqId); return Promise.resolve('error'); } } return orig(m); };
+    });
+    const tr20 = await advanceUntil(host, guest, guestOnClock, { ticks: 80 });
+    const reqB = await host.evaluate(() => PRNetPlay._debug().pending[0]);
+    ok(await guestOnClock(guest) && !!reqB, `⑳ 客人再次上钟（${reqB}）；轨迹：${tr20.slice(-4).join(' ')}`);
+    const acts20 = await answerGuestFully(guest);
+    let sawRetry = false, retryText = '';
+    for (let i = 0; i < 12; i++) { retryText = await guest.evaluate(() => (document.getElementById('np-send-status') || {}).textContent || ''); if (/重试/.test(retryText)) { sawRetry = true; break; } await guest.waitForTimeout(120); }
+    ok(sawRetry, `⑳ 首次发送失败后状态条显示「正在重试」（"${retryText.slice(0, 30)}"；答题动作 ${acts20.join(' ')}）`);
+    let resolvedB = false;
+    for (let i = 0; i < 20 && !resolvedB; i++) { await host.waitForTimeout(300); resolvedB = await host.evaluate((id) => !PRNetPlay._debug().pending.includes(id), reqB); }
+    ok(!!reqB && resolvedB, '⑳ 重试后应答送达房主，请求被结算');
+    const g20 = await guest.evaluate(() => PRNetPlay._debug());
+    ok(g20.sendFails >= 1 && g20.lastSendStatus === 'ok', `⑳ 客人记录 sendFails=${g20.sendFails}、最终状态 ${g20.lastSendStatus}`);
+    await guest.waitForTimeout(300);
+    ok(!!reqB && await guest.evaluate(() => !document.getElementById('np-send-status')), '⑳ 送达后状态条收起');
+    // (b) 重试仍失败 → 明确「网络不通」，房主侧请求保持挂起（没有被假装送达）
+    await guest.evaluate(() => { PR_SESSION.send = (m) => (m && m.type === 'input-response') ? (window.__sent.push(m), Promise.resolve('timed out')) : window.__origSend(m); });
+    const tr20b = await advanceUntil(host, guest, guestOnClock, { ticks: 80 });
+    const reqC = await host.evaluate(() => PRNetPlay._debug().pending[0]);
+    ok(await guestOnClock(guest) && !!reqC, `⑳ 客人第三次上钟（${reqC}）；轨迹：${tr20b.slice(-4).join(' ')}`);
+    await answerGuestFully(guest);
+    let sawFail = false, failText = '';
+    for (let i = 0; i < 30; i++) { await guest.waitForTimeout(200); failText = await guest.evaluate(() => (document.getElementById('np-send-status') || {}).textContent || ''); if (/网络不通/.test(failText)) { sawFail = true; break; } }
+    ok(sawFail, `⑳ 两次都失败 → 状态条明确「网络不通」（"${failText.slice(0, 40)}"）`);
+    ok(await guest.evaluate(() => [...document.querySelectorAll('.toast')].some(t => /未送达/.test(t.textContent))), '⑳ 并弹出「操作未送达房主」提示');
+    ok(await host.evaluate((id) => PRNetPlay._debug().pending.includes(id), reqC), '⑳ 房主侧请求仍挂起（没有被假装送达）');
+    await guest.evaluate(() => { PR_SESSION.send = window.__origSend; const last = window.__sent[window.__sent.length - 1]; return PR_SESSION.send(last); });
+    await host.waitForTimeout(800);
+    ok(!!reqC && await host.evaluate((id) => !PRNetPlay._debug().pending.includes(id), reqC), '⑳ 恢复网络后补发同一应答 → 房主结算（重复送达幂等）');
+    // (c) 房主广播连续失败 → toast「广播不稳定」（此前 spectate.js flush 的 send 在 catch(e){} 里）
+    const c20 = await host.evaluate(async () => {
+      const orig = PR_SESSION.send;
+      PR_SESSION.send = (m) => (m && m.type === 'state') ? Promise.resolve('error') : orig(m);
+      let fails = 0;
+      try { for (let i = 0; i < 3; i++) { PRSpectate.pushNow(); await new Promise(r => setTimeout(r, 20)); } fails = PRSpectate._debug().stateFails; }
+      finally { PR_SESSION.send = orig; }
+      const toast = [...document.querySelectorAll('.toast')].map(t => t.textContent).join(' | ');
+      PRSpectate.pushNow(); await new Promise(r => setTimeout(r, 60));
+      return { fails, toast, after: PRSpectate._debug().stateFails };
+    });
+    ok(c20.fails >= 3, `⑳ 房主记录连续 ${c20.fails} 帧发送失败`);
+    ok(/广播不稳定/.test(c20.toast), `⑳ 连续失败 ≥3 → 房主 toast「广播不稳定」（${c20.toast.replace(/\s+/g, ' ').slice(0, 40)}）`);
+    ok(c20.after === 0, `⑳ 下一帧送达后失败计数归零（${c20.after}）`);
 
     // ---- ⑧ presence 掉线有宽限期，不再一抖就被 AI 顶替；真掉线到期后才接管 ----
     // 用真实路径：关掉客人页 → LocalTransport 的 presence 条目 9s 后过期 → 房主 onPresence 少了该令牌
@@ -320,6 +429,47 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
       const nrH = await mg.evaluate(() => { const d = document.createElement('div'); d.id = 'netplay-reclaim'; d.innerHTML = '<button class="nr-btn">认领座位</button>'; document.body.appendChild(d); const h = d.querySelector('.nr-btn').getBoundingClientRect().height; d.remove(); return h; });
       ok(nrH >= 44, `⑰ 「认领座位」按钮触控高度 ≥ 44px（实际 ${nrH.toFixed(0)}）`);
       await mctx.close();
+    }
+
+    // ---- ⑱ 房间码统一 4 位（此前：生成 4 / 输入框 maxlength 6 / 校验 <4 / 邀请链接与重连截断 6）----
+    {
+      const rc = await ctx.newPage(); wire(rc, 'roomcode');
+      await rc.goto(BASE + '?room=abcdefg', { waitUntil: 'load' }); await rc.waitForTimeout(800);
+      const inp = rc.locator('#lobby-panel input.lobby-join-code');
+      ok(await inp.getAttribute('maxlength') === '4', '⑱ 房间码输入框 maxlength=4');
+      ok(await inp.inputValue() === 'ABCD', `⑱ 邀请链接里的超长码截为 4 位（${await inp.inputValue()}）`);
+      await inp.fill(''); await inp.pressSequentially('wxyz23');
+      ok((await inp.inputValue()).toUpperCase() === 'WXYZ', `⑱ 手输超过 4 位被截断（${await inp.inputValue()}）`);
+      await inp.fill('AB');
+      await rc.locator('#lobby-panel button', { hasText: '加入' }).first().click(); await rc.waitForTimeout(600);
+      const tt = await rc.evaluate(() => [...document.querySelectorAll('.toast')].map(t => t.textContent).join(' | '));
+      ok(/4 位/.test(tt), `⑱ 3 位码被拒且提示可读（"${tt.replace(/\s+/g, ' ').slice(0, 50)}"）`);
+      await rc.close();
+    }
+
+    // ---- ⑲ Supabase 传输：频道 ack:true，且 send() 的结果透传到 session.send()（假 supabase 客户端，不出网）----
+    // 此前 ack:false：supabase-js 对 broadcast 会**立刻** resolve 'ok'，上层永远不知道有没有送达。
+    {
+      const p19 = await ctx.newPage(); wire(p19, 'ack');
+      await p19.route('**/supabase-config.js', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: 'window.PR_SUPABASE={url:"https://127.0.0.1:9",key:"sb_publishable_e2e_dummy"};' }));
+      await p19.addInitScript(() => {
+        // 假 supabase-js：记录频道配置；subscribe 立刻 SUBSCRIBED；send 固定返回 'timed out'（模拟服务端没 ack）
+        const fake = { on() { return fake; }, subscribe(cb) { setTimeout(() => cb('SUBSCRIBED'), 0); return fake; }, track() {}, presenceState() { return {}; },
+          send(_m, opts) { window.__sendOpts = opts; return Promise.resolve('timed out'); }, unsubscribe() {} };
+        window.supabase = { createClient: () => ({ channel: (name, cfg) => { window.__chCfg = cfg; return fake; } }) };
+      });
+      await p19.goto(BASE, { waitUntil: 'load' }); await p19.waitForTimeout(800);
+      const r19 = await p19.evaluate(async () => {
+        const s = await PRNet.host({ name: 'ack', onPresence() {}, onMessage() {} });
+        const st = await s.send({ type: 'e2e' });
+        const cfg = window.__chCfg && window.__chCfg.config && window.__chCfg.config.broadcast;
+        const out = { transport: s.transport, ack: !!(cfg && cfg.ack), st, timeout: window.__sendOpts && window.__sendOpts.timeout };
+        s.close(); return out;
+      });
+      ok(r19.transport === 'supabase' && r19.ack === true, '⑲ Supabase 频道以 ack:true 建立（此前 ack:false → send 永远立刻 "ok"）');
+      ok(r19.st === 'timed out', `⑲ 频道 send() 的结果透传到 session.send()（${r19.st}）——上层据此重试 / 提示`);
+      ok(typeof r19.timeout === 'number' && r19.timeout > 0, `⑲ send 带 ack 超时（${r19.timeout}ms），不会无限等`);
+      await p19.close();
     }
 
     // ---- ⑦ 订阅失败必须有界（本轮修掉的头号 bug）----

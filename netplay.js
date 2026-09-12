@@ -122,6 +122,34 @@
     return request(seat, kind, payload);
   }
 
+  // ---------- 发送可靠性（P3）----------
+  // net.js 的 session.send() 现在返回 Promise<'ok'|'error'|'timed out'>。此前所有发送都在 catch(e){} 里静默：
+  // 客人出手可能没送达，UI 却已关闭，3 分钟后被 AI 顶替；房主的 input-request 丢了则客人根本不知道轮到自己。
+  let _sendFails = 0;            // 累计发送失败次数（调试 / 统计）
+  let _lastSendStatus = null;    // 最近一次 sendReliable 的最终状态
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 发一条消息，失败则按 delays 逐次重试；返回最终状态。onFail(i, status, willRetry) 供 UI 反馈。
+  async function sendReliable(msg, opts) {
+    const delays = (opts && opts.delays) || [1500];
+    let status = "error";
+    for (let i = 0; i <= delays.length; i++) {
+      if (i > 0) await sleep(delays[i - 1]);
+      try { status = await _session.send(msg); } catch (e) { status = "error"; }
+      if (status === "ok") break;
+      _sendFails++;
+      if (opts && opts.onFail) { try { opts.onFail(i, status, i < delays.length); } catch (e) {} }
+    }
+    _lastSendStatus = status;
+    return status;
+  }
+  let _lastWarnAt = 0;
+  function hostSendWarn(detail) {   // 房主侧「广播不稳定」提示，15 秒内只提示一次
+    const now = Date.now();
+    if (now - _lastWarnAt < 15000) return;
+    _lastWarnAt = now;
+    try { if (typeof showToast === "function") showToast('<div class="t-title">⚠️ 广播不稳定</div><div class="t-sub">' + esc(detail) + '</div>', { kind: "warn", duration: 5000 }); } catch (e) {}
+  }
+
   function request(seat, kind, payload) {
     const reqId = (_myId || "h") + ":" + (++_reqSeq);
     const snap = (typeof PRSpectate !== "undefined" && PRSpectate.snapshot) ? PRSpectate.snapshot() : null;
@@ -132,7 +160,11 @@
     _pending[reqId].timer = setTimeout(() => aiTakeover(seat, "3 分钟未操作"), ms);
     _pending[reqId].deadline = Date.now() + ms;
     // deadline 随请求下发：被计时的是客人，此前倒计时却只在房主的浮层里，客人对「3 分钟后被 AI 顶替」毫不知情
-    try { _session.send({ type: "input-request", reqId, seat, kind, payload, snap, deadline: _pending[reqId].deadline }); } catch (e) {}
+    // 发送失败重试一次；仍失败不再静默——房主 toast 说明（客人这段时间收不到请求，宽限 / 超时机制照常兜底）
+    sendReliable({ type: "input-request", reqId, seat, kind, payload, snap, deadline: _pending[reqId].deadline }, {
+      delays: [1500],
+      onFail: (i, st, willRetry) => { if (!willRetry) hostSendWarn("向客人发送决策请求失败（" + st + "）"); },
+    });
     return p;
   }
 
@@ -145,6 +177,49 @@
     pend.resolve(value);
   }
   function hasPending() { for (const k in _pending) return true; return false; }
+
+  // 房主侧收到应答（P5-1）。此前只凭 reqId 就 resolvePending：任何客人都能替任何人应答，
+  // 且值不经校验直接进引擎——越界下标会在 game.js `available[chosenIdx].name` 处打崩房主引擎（整局死）。
+  let _rejected = 0, _lastResponse = null;
+  function onInputResponse(msg) {
+    const pend = _pending[msg.reqId];
+    if (!pend) return;                                      // 过期 / 重复：忽略（重试造成的重复送达在这里被吸收）
+    const owner = _seatOwners[pend.seat];
+    if (!msg.token || msg.token !== owner) {                // 冒名 / 串座：忽略，pending 保留，继续等真正的主人
+      _rejected++;
+      _lastResponse = { reqId: msg.reqId, kind: pend.kind, seat: pend.seat, rejected: true };
+      return;
+    }
+    const g = game();
+    const p = g && g.players[pend.seat];
+    const legal = sanitizeValue(pend.kind, pend.payload, msg.value);
+    const used = legal.ok ? (msg.value === undefined ? null : msg.value) : aiDefaultFor(pend.kind, pend.payload, p);
+    _lastResponse = { reqId: msg.reqId, kind: pend.kind, seat: pend.seat, raw: msg.value, used, sanitized: !legal.ok };
+    if (!legal.ok) { try { if (g && g.logEvent) g.logEvent(`⚠️ 座位 ${pend.seat + 1} 回传了非法选择（${legal.why}），已按默认处理`, "role"); } catch (e) {} }
+    resolvePending(msg.reqId, used);
+  }
+  // 按 kind 校验应答值是否落在本次请求给出的合法域内（与三个输入原语的返回契约一致）：
+  //   pickRole     → 0..availableNames.length-1 的整数
+  //   boardSelect  → choices[].key 之一；allowSkip 时允许 null
+  //   pickFromList → 0..labels.length-1 的整数；allowCancel 时允许 null
+  function sanitizeValue(kind, payload, v) {
+    const isInt = (x, n) => Number.isInteger(x) && x >= 0 && x < n;
+    if (kind === "pickRole") {
+      const n = (payload.availableNames || []).length;
+      return isInt(v, n) ? { ok: true } : { ok: false, why: "角色下标越界 " + v + "/" + n };
+    }
+    if (kind === "boardSelect") {
+      if (v === null || v === undefined) return payload.allowSkip ? { ok: true } : { ok: false, why: "不可跳过却回传空" };
+      const keys = (payload.choices || []).map((c) => c && c.key);
+      return keys.some((k) => k === v) ? { ok: true } : { ok: false, why: "选项键不在候选内 " + JSON.stringify(v) };
+    }
+    if (kind === "pickFromList") {
+      if (v === null || v === undefined) return payload.allowCancel ? { ok: true } : { ok: false, why: "不可取消却回传空" };
+      const n = (payload.labels || []).length;
+      return isInt(v, n) ? { ok: true } : { ok: false, why: "列表下标越界 " + v + "/" + n };
+    }
+    return { ok: false, why: "未知 kind " + kind };
+  }
 
   // 某座位长时间未操作 / 掉线 → 由房主的专家级(L5) AI 接管：把该座位转为 AI，
   // 当前挂起的输入用 AI/安全默认作答，之后所有决策走引擎原生 AI 分支（p.isHuman=false）。
@@ -257,7 +332,26 @@
     let value = null;
     try { value = await localRun(msg.kind, Object.assign({ seat: msg.seat }, msg.payload)); }
     finally { _guestBusy = false; guestTurnEnd(); }
-    try { _session.send({ type: "input-response", reqId: msg.reqId, value }); } catch (e) {}
+    // 回传带 token：房主据此校验「应答者就是该座位的主人」（P5-1）。重复送达是幂等的（房主对未知 reqId 忽略），
+    // 所以「其实送到了但 ack 丢了」的重试不会造成双重应答。
+    sendStatus("📤 正在把你的操作发给房主……");
+    const st = await sendReliable({ type: "input-response", reqId: msg.reqId, value, token: _myToken }, {
+      delays: [1500],
+      onFail: (i, s, willRetry) => { if (willRetry) sendStatus("⚠️ 发送失败（" + s + "），正在重试……", true); },
+    });
+    if (st === "ok") { sendStatus(null); return; }
+    // 重试仍失败：明确告诉玩家「没送到」，而不是让他以为已经走完了这步
+    sendStatus("❌ 网络不通：你的操作没有送达房主（" + st + "）。请检查网络；房主侧会先等你，超时才交给 AI 代打。", true);
+    try { if (typeof showToast === "function") showToast('<div class="t-title">❌ 操作未送达房主</div><div class="t-sub">网络不通（' + esc(st) + '）。恢复网络后可刷新页面重连。</div>', { kind: "warn", duration: 6000 }); } catch (e) {}
+    setTimeout(() => sendStatus(null), 8000);
+  }
+  // 客人侧发送状态条（独立于 #np-guest-turn：新一轮请求到来时不互相覆盖）
+  function sendStatus(text, warn) {
+    let el = document.getElementById("np-send-status");
+    if (!text) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement("div"); el.id = "np-send-status"; document.body.appendChild(el); }
+    el.textContent = text;
+    el.classList.toggle("warn", !!warn);
   }
 
   // ---------- 客人侧：轮到你了 ----------
@@ -289,7 +383,7 @@
   function handleMessage(msg) {
     if (!msg) return;
     if (msg.type === "input-request") onInputRequest(msg);
-    else if (msg.type === "input-response" && _role === "host") resolvePending(msg.reqId, msg.value);
+    else if (msg.type === "input-response" && _role === "host") onInputResponse(msg);
     else if (msg.type === "takeover" && _role === "guest") onTakenOver(msg);
     else if (msg.type === "reclaim" && _role === "host") onReclaim(msg);
     else if (msg.type === "reclaimed" && _role === "guest") onReclaimed(msg);
@@ -415,6 +509,6 @@
     seatOwners: () => _seatOwners,
     guestBusy: () => _guestBusy,
     takenOver: () => Object.assign({}, _takenOver),
-    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending), pendingKinds: Object.values(_pending).map((x) => x.kind + "@" + x.seat), lossPending: Object.keys(_lossTimers) }),
+    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending), pendingKinds: Object.values(_pending).map((x) => x.kind + "@" + x.seat), lossPending: Object.keys(_lossTimers), sendFails: _sendFails, lastSendStatus: _lastSendStatus, rejected: _rejected, lastResponse: _lastResponse }),
   };
 })(typeof window !== "undefined" ? window : this);
