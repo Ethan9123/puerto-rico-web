@@ -712,6 +712,13 @@ body:has(#spectate-banner) #game-screen { padding-top: calc(var(--spectate-banne
   padding: 8px 14px; font-size: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.5); white-space: nowrap;
 }
 #np-guest-turn.urgent { background: #7b2d2d; color: #fff; border-color: #ff8a80; }
+/* 客人侧发送状态条（P3）：出手后「发送中 / 重试中 / 未送达」——此前发送失败是静默的 */
+#np-send-status {
+  position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 9400;
+  background: #1f2a36; color: #c6d2db; border: 1px solid rgba(198,210,219,.5); border-radius: 10px;
+  padding: 6px 12px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.5); max-width: min(92vw, 520px); text-align: center;
+}
+#np-send-status.warn { background: #7b2d2d; color: #fff; border-color: #ff8a80; }
 
 /* 联机对战 Phase 3：远程出手——房主等待浮层 */
 #netplay-overlay {
@@ -774,6 +781,7 @@ body:has(#spectate-banner) #game-screen { padding-top: calc(var(--spectate-banne
   #netplay-overlay .np-card { min-width: 0; width: 92vw; padding: 18px 14px; }
   #netplay-reclaim { font-size: 12px; padding: 6px 8px; }
   #np-guest-turn { left: 8px; right: 8px; transform: none; white-space: normal; text-align: center; }
+  #np-send-status { left: 8px; right: 8px; transform: none; max-width: none; }
 }
 
 /* 减少布局重绘 */

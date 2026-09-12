@@ -65,7 +65,8 @@
     const myName = () => (document.getElementById("player-name") || {}).value || "玩家";
 
     const playersList = el("div", { class: "lobby-players" });
-    const codeInput = el("input", { class: "lobby-join-code", maxlength: "6", placeholder: "房间码", style: "text-transform:uppercase;width:120px" });
+    // 房间码统一 4 位（net.js makeCode(4)）。此前生成 4 / 输入框 maxlength 6 / 校验 <4 / 截断 6 三处不一致。
+    const codeInput = el("input", { class: "lobby-join-code", maxlength: "4", placeholder: "房间码", autocapitalize: "characters", autocomplete: "off", style: "text-transform:uppercase;width:120px" });
 
     let _prevPresence = 0;
     const onPresence = (list) => {
@@ -134,7 +135,8 @@
     };
     async function attemptJoin() {
       const code = (codeInput.value || "").toUpperCase().trim();
-      if (code.length < 4) throw new Error("请输入房间码");
+      if (!code) throw new Error("请输入房间码");
+      if (code.length !== 4) throw new Error("房间码是 4 位（不含易混的 0/O/1/I/L），请核对后重试");
       btnJoin.disabled = true;
       try {
         session = await PRNet.join(code, { name: myName(), onPresence, onMessage, onStatus });
@@ -231,7 +233,7 @@
     try { reconnectRoom = sessionStorage.getItem("prnet_room"); } catch (e) {}
     let reconnectRole = null; try { reconnectRole = sessionStorage.getItem("prnet_role"); } catch (e) {}
     if (reconnectRoom && !invited && reconnectRole === "host") {
-      codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 6);
+      codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 4);
       if (hint) hint.innerHTML = "🔄 正在以房主身份重开房间 <b style='color:#f3c969'>" + codeInput.value + "</b>……";
       attemptRehost(codeInput.value).catch((e) => {
         try { sessionStorage.removeItem("prnet_room"); sessionStorage.removeItem("prnet_role"); } catch (e2) {}
@@ -240,12 +242,12 @@
     } else if (reconnectRoom && !invited) {
       // 断线/刷新重连：本标签刷新前在某房间里 → 自动回去（无需重输房间码；房主据 token 自动还座位）
       try { const nm = sessionStorage.getItem("prnet_name"); const ni = document.getElementById("player-name"); if (nm && ni) ni.value = nm; } catch (e) {}
-      codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 6);
+      codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 4);
       if (hint) hint.innerHTML = "🔄 正在重连房间 <b style='color:#f3c969'>" + codeInput.value + "</b>……";
       attemptJoin().catch(() => { try { sessionStorage.removeItem("prnet_room"); } catch (e) {} if (hint) hint.innerHTML = "重连失败（房主可能已离开）。需要的话可手动重新加入。"; });
     } else if (invited) {
       // 邀请链接：?room=CODE 打开时，自动填好房间码并提示加入（房主需先建好房间）
-      codeInput.value = invited.toUpperCase().trim().slice(0, 6);
+      codeInput.value = invited.toUpperCase().trim().slice(0, 4);
       if (hint) hint.innerHTML = "🎟 你被邀请加入房间 <b style='color:#f3c969'>" + codeInput.value + "</b> —— 填好名字点「加入」即可（需房主已建好房间）。";
       codeInput.scrollIntoView({ block: "center" });
       btnJoin.classList.add("lobby-pulse");
