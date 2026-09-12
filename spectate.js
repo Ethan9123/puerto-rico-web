@@ -81,7 +81,16 @@
     }
     b.innerHTML = text;
     b.style.background = warn ? "linear-gradient(90deg,#7b2d2d,#9b3030)" : "";
+    syncBannerHeight();
   }
+  // 横幅是 position:fixed 的，不占文档流；#game-screen 要按它的**实际**高度让位（手机上会换行到 2–3 行）。
+  // 写成 CSS 变量 --spectate-banner-h，styles.css 用 calc() 读它。
+  function syncBannerHeight() {
+    const b = document.getElementById("spectate-banner");
+    const h = b ? b.offsetHeight : 0;
+    document.documentElement.style.setProperty("--spectate-banner-h", h + "px");
+  }
+  if (typeof window !== "undefined") window.addEventListener("resize", syncBannerHeight);
   function removeBanner() { const b = document.getElementById("spectate-banner"); if (b) b.remove(); }
 
   function onHostLeft() {
@@ -138,7 +147,15 @@
       } else {
         roleTag = " · 你看到的是房主的实时对局";
       }
-      banner(`🌐 联机中${hostName ? "（房主：" + esc(hostName) + "）" : ""}${roleTag}`);
+      // 在等谁：按快照的 _actingSeat（阶段内子决策的实际行动座位），不是只在选角色时才更新的 _currentPlayer
+      let waitTag = "";
+      const act = (g._actingSeat != null && g.players && g.players[g._actingSeat]) ? g.players[g._actingSeat] : null;
+      if (act && !g.gameOver) {
+        const mine = (typeof PRNetPlay !== "undefined" && PRNetPlay.isOnline()) ? PRNetPlay.mySeat() : -1;
+        waitTag = (mine >= 0 && mine === g._actingSeat) ? " · 🔔 <b>轮到你了</b>"
+                : ` · ⏳ 等待 ${esc(act.name)}${act.isHuman ? "" : "（AI）"} 出手……`;
+      }
+      banner(`🌐 联机中${hostName ? "（房主：" + esc(hostName) + "）" : ""}${roleTag}${waitTag}`);
       if (typeof render === "function") render();
       // 刷新「认领座位」栏：若我无座位且有被 AI 接管的座位，显示认领按钮
       if (typeof PRNetPlay !== "undefined" && PRNetPlay.refreshReclaimUI) PRNetPlay.refreshReclaimUI();
@@ -169,6 +186,10 @@
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
   root.PRSpectate = {
+    // ⚠ applyState 此前**没有导出**。netplay.js onInputRequest 以 `PRSpectate.applyState &&` 守卫后调用它，
+    //   守卫恒假 → 「先把随请求附带的最新状态套进来再开决策 UI」这一步从未执行：客人在旧棋盘上做决策，
+    //   房主重连后横幅还卡在「房主正在重连…等待下一帧」（_guestBusy 又挡住了后续帧）。E2E ⑫ 抓出来的。
+    applyState,
     snapshot,
     startHosting, stopHosting, onHostRender, onHostGameOver, pushNow,
     startSpectating, stopSpectating, handleMessage,
