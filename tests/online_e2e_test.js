@@ -90,6 +90,7 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
 
     // ---- ① 加载 + 大厅 ----
     const host = await ctx.newPage(); wire(host, 'host');
+    await host.addInitScript(() => { window._netIdleMs = 90000; });   // ⑬：让请求带非默认的 deadline；reload 后仍生效
     await host.goto(BASE, { waitUntil: 'load' });
     await host.waitForTimeout(800);
     ok(await host.locator('#lobby-panel').count() === 1, '① 大厅面板已渲染');
@@ -133,6 +134,32 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
 
     // ---- ⑨ 客人自己掉线要有感（此前横幅照旧「联机中」，棋盘只是不动）----
     const bannerOf = async (p) => (await p.locator('#spectate-banner').count()) ? await p.locator('#spectate-banner').innerText() : '';
+    // 房主自动应答一步：优先确认弹窗 → 角色卡（偏好探矿者：无人决策、阶段即刻结束）→ 任意可点选项。
+    // 页内 el.click()：不依赖视口坐标（手机布局下角色卡在折叠区也能点），返回是否有动作。
+    const hostStep = (p) => p.evaluate(() => {
+      const btn = [...document.querySelectorAll('.modal-box button')].find(b => !/撤销/.test(b.textContent));
+      if (btn) { btn.click(); return 'modal:' + btn.textContent.trim().slice(0, 8); }
+      const cards = [...document.querySelectorAll('.role-card')].filter(c => c.onclick);
+      if (cards.length) { const c = cards.find(x => /role-Prospector/.test(x.className)) || cards[0]; c.click(); return 'role:' + c.className.replace('role-card', '').trim(); }
+      // 棋盘上可选项统一带 .selectable + onclick（种植园池/采石场/建筑卡…）；只在对局页内找，
+      // 绝不碰 topbar（规则/教程/**重开**）与隐藏的设置页/大厅按钮。
+      const sel = document.querySelector('#game-screen .selectable');
+      if (sel && sel.onclick) { sel.click(); return 'choice:' + String(sel.className).slice(0, 24); }
+      const skip = document.querySelector('#game-screen #action-bar .skip-btn, #game-screen .skip-btn');
+      if (skip && skip.onclick) { skip.click(); return 'skip'; }
+      return null;
+    });
+    // 推进直到 cond(guestPage) 为真；房主有决策就答，客人若也在钟上（旧请求）则由 answerGuest 决定要不要答。
+    const advanceUntil = async (hostP, guestP, cond, { answerGuest = false, ticks = 80 } = {}) => {
+      const trace = [];
+      for (let i = 0; i < ticks; i++) {
+        if (await cond(guestP)) return trace;
+        const a = await hostStep(hostP); if (a) trace.push('H:' + a);
+        if (answerGuest) { const b = await hostStep(guestP); if (b) trace.push('G:' + b); }
+        await hostP.waitForTimeout(500);
+      }
+      return trace;
+    };
     await ctx.setOffline(true);            // 触发 window 'offline'（LocalTransport 本身不受影响）
     await guest.waitForTimeout(600);
     const offB = await bannerOf(guest);
@@ -163,6 +190,70 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     const gB = await bannerOf(guest);
     ok(/联机中/.test(gB) && !/已断线/.test(gB), `⑩ 客人横幅不再卡在「房主已断线」（${gB.slice(0, 60)}）`);
     ok(await guest.evaluate(() => !document.getElementById('game-screen').classList.contains('hidden')), '⑩ 客人仍在对局画面');
+
+    // ---- ⑫ 客人看到的「轮到谁」与提示文字 == 快照的 _actingSeat ----
+    // 此前两处叠加：① _currentPlayer 只在选角色时更新，阶段内子决策只设 _actingSeat → 客人整个阶段都高亮着选角色的人；
+    // ② PRSpectate.applyState **没有导出**，netplay 的「先套最新状态再开 UI」从未执行 → 客人在旧棋盘上做决策，
+    //    房主重连后横幅还卡在「房主正在重连…」。总督随机（game.js:427），这里不假设谁先手。
+    // 需要一个在 _netIdleMs=90s 之下发出的请求：host 页 addInitScript 已在每次导航前设好（⑩ 的 reload 也保住）。
+    const guestOnClock = async (gp) => (await gp.locator('#np-guest-turn').count()) > 0
+      && (await gp.evaluate(() => parseInt((document.querySelector('.np-guest-cd') || {}).textContent || '999'))) <= 90;
+    const tr12 = await advanceUntil(host, guest, guestOnClock, { answerGuest: true });
+    ok(await guestOnClock(guest), `⑫ 推进到客人上钟（新请求，倒计时 ≤ 90s）；驱动轨迹：${tr12.slice(-6).join(' ')}`);
+    const gSeat = await guest.evaluate(() => PRNetPlay.mySeat());
+    const snapAct = await guest.evaluate(() => G._actingSeat);
+    ok(snapAct === gSeat, `⑫ 客人 G 的行动座位就是自己的座位（${snapAct} == ${gSeat}）——请求附带的快照真的被套进来了`);
+    const hiIdx = await guest.evaluate(() => [...document.querySelectorAll('.player-board')].findIndex(d => d.classList.contains('current')));
+    ok(hiIdx === gSeat, `⑫ 客人棋盘高亮的是行动座位（高亮 ${hiIdx}，行动 ${gSeat}）`);
+    const gB12 = await bannerOf(guest);
+    ok(/轮到你了/.test(gB12), `⑫ 客人横幅写明轮到自己（…${gB12.slice(-24)}）`);
+    ok(!/正在重连|已断线/.test(gB12), `⑫ 房主重连后客人横幅不再卡在「正在重连」（…${gB12.slice(-30)}）`);
+    // 提示文字：客人本地 UI 会盖上自己的提示，所以看**房主快照**里路由前写入的那条。
+    const hs = await host.evaluate(() => { const s = PRSpectate.snapshot(); return { act: s._actingSeat, prompt: s._currentPrompt, kinds: PRNetPlay._debug().pendingKinds }; });
+    ok(hs.act === gSeat && !!hs.prompt, `⑫ 房主快照：行动座位 ${hs.act}、提示「${hs.prompt}」（路由前已写入，不再是上一条）`);
+    if (/pickRole/.test(String(hs.kinds))) ok(/选择角色/.test(hs.prompt) && !/点击角色卡/.test(hs.prompt), `⑫ 选角路由时提示是「<名> 选择角色」而非房主自己那条（"${hs.prompt}"）`);
+    // ⑫-b 提示前置（确定性）：把 maybeRoute 打桩成「路由出去」，直接调三个输入原语，
+    // 断言 _currentPrompt 在路由**之前**就写好了。流程里路由到的决策与房主上一条提示可能同文，判别不了，故单测。
+    const hoist = await host.evaluate(async () => {
+      const orig = PRNetPlay.maybeRoute, out = {};
+      PRNetPlay.maybeRoute = () => Promise.resolve(0);           // 假装该座位是远程客人
+      try {
+        humanBoardSelect({ type: 'plantation', choices: [], promptText: 'E2E-PROMPT-BS', allowSkip: false }); out.bs = G._currentPrompt;
+        humanPickFromList('E2E-PROMPT-PL', ['a', 'b'], false);   out.pl = G._currentPrompt;
+        humanPickRole([G.roleCards[0]], G.players[0]);           out.pr = G._currentPrompt;
+      } finally { PRNetPlay.maybeRoute = orig; }
+      return out;
+    });
+    ok(hoist.bs === 'E2E-PROMPT-BS', `⑫-b boardSelect：路由前已写入提示（"${hoist.bs}"）`);
+    ok(hoist.pl === 'E2E-PROMPT-PL', `⑫-b pickFromList：路由前已写入提示（"${hoist.pl}"）`);
+    ok(/选择角色/.test(hoist.pr || '') && !/点击角色卡/.test(hoist.pr || ''), `⑫-b pickRole：路由前已写入「<名> 选择角色」（"${hoist.pr}"）`);
+    // 判别用例：高亮规则本身——_actingSeat ≠ _currentPlayer 时须按 _actingSeat；单机路径不受影响
+    const rule = await guest.evaluate(() => {
+      const idx = () => [...document.querySelectorAll('.player-board')].findIndex(d => d.classList.contains('current'));
+      const s0 = { on: G._online, act: G._actingSeat, cur: G._currentPlayer };
+      G._online = true; G._actingSeat = 2; G._currentPlayer = 0; render(); const online = idx();
+      G._online = false; render(); const solo = idx();
+      G._online = s0.on; G._actingSeat = s0.act; G._currentPlayer = s0.cur; render();
+      return { online, solo };
+    });
+    ok(rule.online === 2, `⑫ 联机：_actingSeat(2) ≠ _currentPlayer(0) 时高亮行动座位（实际 ${rule.online}）`);
+    ok(rule.solo === 0, `⑫ 单机：仍按 _currentPlayer 高亮（实际 ${rule.solo}）——渲染规则以 G._online 为门`);
+
+    // ---- ⑬ 被计时的人看得到计时；轮到你有通知 ----
+    // 此前 deadline 只存在房主的 _pending 里；客人零通知，切到后台就在 3 分钟引信上。
+    const turnEl = (await guest.locator('#np-guest-turn').count()) ? await guest.locator('#np-guest-turn').innerText() : '';
+    ok(/秒内出手/.test(turnEl), `⑬ 提示条带倒计时（请求随附 deadline）："${turnEl.slice(0, 44)}"`);
+    const cd = await guest.evaluate(() => parseInt((document.querySelector('.np-guest-cd') || {}).textContent || '0'));
+    ok(cd > 0 && cd <= 90, `⑬ 倒计时来自 deadline 且 ≤ idleMs（${cd}s）`);
+    let flashed = false;
+    for (let i = 0; i < 6; i++) { await guest.waitForTimeout(400); if (/轮到你了/.test(await guest.title())) { flashed = true; break; } }
+    ok(flashed, '⑬ 标题栏闪烁「轮到你了」（切到后台也看得见）');
+    // 房主侧倒计时跟随请求的 deadline（_netIdleMs=90s）。注：浮层标记里的初始数字在 showOverlay 的同一同步调用里
+    // 就被 _updateCountdown 覆盖（pending 尚未建立时写「—」），从未渲染——所以「写死 180」改成 idleMs() 只是一致性整理，
+    // 没有可观察行为，这里不为它立断言（反向验证 R6 因此不成立，见 PR 说明）。
+    await host.waitForTimeout(1200);
+    const hostCd = await host.evaluate(() => (document.getElementById('np-countdown') || {}).textContent || '');
+    ok(/^\d+$/.test(hostCd) && +hostCd > 0 && +hostCd <= 90, `⑬ 房主浮层倒计时跟随请求的 90s deadline（显示 ${hostCd}）`);
 
     // ---- ⑧ presence 掉线有宽限期，不再一抖就被 AI 顶替；真掉线到期后才接管 ----
     // 用真实路径：关掉客人页 → LocalTransport 的 presence 条目 9s 后过期 → 房主 onPresence 少了该令牌
@@ -197,6 +288,38 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
       await solo.waitForTimeout(2500);
       ok(await solo.locator('#btn-resume').count() === 1, '⑪ 刷新后设置页出现「继续上一局」');
       await solo.close();
+    }
+
+    // ---- ⑰ 手机视口：横幅不盖 topbar；触控目标 ≥ 44px ----
+    // 此前 `#spectate-banner + #app` 永不匹配（横幅 append 在 #app 之后），幸存的 :has 规则把 padding 从 16 减到 4
+    // → 横幅盖住整个 topbar；认领/接管按钮只有 ~25–28px 高，不在触控块里。
+    {
+      const mctx = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+      await mctx.route('**/supabase-config.js', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e */' }));
+      const mh = await mctx.newPage(); wire(mh, 'm-host');
+      await mh.goto(BASE, { waitUntil: 'load' }); await mh.waitForTimeout(800);
+      ok(await mh.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches), '⑰ 触控媒体查询在移动端仿真下生效（否则下面测的不是那条规则）');
+      await mh.locator('#lobby-panel button', { hasText: '创建房间' }).first().click(); await mh.waitForTimeout(1500);
+      const mcode = ((await mh.locator('#lobby-panel').innerText()).match(/\b([A-HJ-NP-Z2-9]{4})\b/) || [])[1];
+      const mg = await mctx.newPage(); wire(mg, 'm-guest');
+      await mg.goto(BASE, { waitUntil: 'load' }); await mg.waitForTimeout(800);
+      await mg.locator('#lobby-panel input').first().fill(mcode);
+      await mg.locator('#lobby-panel button', { hasText: '加入' }).first().click(); await mg.waitForTimeout(2500);
+      await mh.locator('#lobby-panel button', { hasText: '开始对战' }).first().click(); await mh.waitForTimeout(3500);
+      await mg.waitForTimeout(2500);
+      const boxes = await mg.evaluate(() => {
+        const r = s => { const e = document.querySelector(s); return e ? e.getBoundingClientRect() : null; };
+        return { banner: r('#spectate-banner'), topbar: r('#topbar'), pad: getComputedStyle(document.getElementById('game-screen')).paddingTop };
+      });
+      ok(!!boxes.banner && !!boxes.topbar, '⑰ 手机视口下横幅与 topbar 都已渲染');
+      ok(!!boxes.banner && !!boxes.topbar && boxes.banner.bottom <= boxes.topbar.top + 0.5,
+        `⑰ 横幅不盖 topbar（banner.bottom=${boxes.banner ? boxes.banner.bottom.toFixed(0) : '?'} ≤ topbar.top=${boxes.topbar ? boxes.topbar.top.toFixed(0) : '?'}；#game-screen padding-top=${boxes.pad}）`);
+      await advanceUntil(mh, mg, async (gp) => (await gp.locator('#np-guest-turn').count()) > 0, { ticks: 60 });
+      const ovH = await mh.evaluate(() => { const b = document.querySelector('#netplay-overlay.show .np-takeover'); return b ? b.getBoundingClientRect().height : 0; });
+      ok(ovH >= 44, `⑰ 房主「立即让 AI 接管」按钮触控高度 ≥ 44px（实际 ${ovH.toFixed(0)}）`);
+      const nrH = await mg.evaluate(() => { const d = document.createElement('div'); d.id = 'netplay-reclaim'; d.innerHTML = '<button class="nr-btn">认领座位</button>'; document.body.appendChild(d); const h = d.querySelector('.nr-btn').getBoundingClientRect().height; d.remove(); return h; });
+      ok(nrH >= 44, `⑰ 「认领座位」按钮触控高度 ≥ 44px（实际 ${nrH.toFixed(0)}）`);
+      await mctx.close();
     }
 
     // ---- ⑦ 订阅失败必须有界（本轮修掉的头号 bug）----

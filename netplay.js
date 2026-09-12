@@ -131,7 +131,8 @@
     // 3 分钟无响应 → 专家 AI 接管该座位（含本次挂起请求）
     _pending[reqId].timer = setTimeout(() => aiTakeover(seat, "3 分钟未操作"), ms);
     _pending[reqId].deadline = Date.now() + ms;
-    try { _session.send({ type: "input-request", reqId, seat, kind, payload, snap }); } catch (e) {}
+    // deadline 随请求下发：被计时的是客人，此前倒计时却只在房主的浮层里，客人对「3 分钟后被 AI 顶替」毫不知情
+    try { _session.send({ type: "input-request", reqId, seat, kind, payload, snap, deadline: _pending[reqId].deadline }); } catch (e) {}
     return p;
   }
 
@@ -252,10 +253,37 @@
       _guestBusy = false; PRSpectate.applyState(msg.snap);
     }
     _guestBusy = true;                              // 其间屏蔽 state 广播，避免打断输入 UI
+    guestTurnStart(msg.deadline);                   // 通知 + 倒计时（P2）
     let value = null;
     try { value = await localRun(msg.kind, Object.assign({ seat: msg.seat }, msg.payload)); }
-    finally { _guestBusy = false; }
+    finally { _guestBusy = false; guestTurnEnd(); }
     try { _session.send({ type: "input-response", reqId: msg.reqId, value }); } catch (e) {}
+  }
+
+  // ---------- 客人侧：轮到你了 ----------
+  let _turnTitleTimer = null, _turnCdTimer = null, _origTitle = null;
+  function guestTurnStart(deadline) {
+    try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
+    if (_origTitle == null) _origTitle = document.title;
+    let flip = false;
+    clearInterval(_turnTitleTimer);
+    _turnTitleTimer = setInterval(() => { flip = !flip; document.title = flip ? "🔔 轮到你了！" : _origTitle; }, 900);
+    let el = document.getElementById("np-guest-turn");
+    if (!el) { el = document.createElement("div"); el.id = "np-guest-turn"; document.body.appendChild(el); }
+    const paint = () => {
+      const left = deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : null;
+      el.innerHTML = '🔔 <b>轮到你了</b>' + (left != null ? ' · <span class="np-guest-cd">' + left + '</span> 秒内出手，超时由专家 AI 代打' : '');
+      el.classList.toggle("urgent", left != null && left <= 30);
+    };
+    paint();
+    clearInterval(_turnCdTimer);
+    _turnCdTimer = setInterval(paint, 1000);
+  }
+  function guestTurnEnd() {
+    clearInterval(_turnTitleTimer); _turnTitleTimer = null;
+    clearInterval(_turnCdTimer); _turnCdTimer = null;
+    if (_origTitle != null) { document.title = _origTitle; }
+    const el = document.getElementById("np-guest-turn"); if (el) el.remove();
   }
 
   function handleMessage(msg) {
@@ -360,7 +388,7 @@
       ov = document.createElement("div");
       ov.id = "netplay-overlay";
       ov.innerHTML = '<div class="np-card"><div class="np-spin"></div><div class="np-msg"></div>' +
-        '<div class="np-sub">将在 <span id="np-countdown">180</span> 秒后由专家 AI 接管</div>' +
+        '<div class="np-sub">将在 <span id="np-countdown">' + Math.round(idleMs() / 1000) + '</span> 秒后由专家 AI 接管</div>' +
         '<button type="button" class="np-takeover">🤖 立即让 AI 接管</button></div>';
       document.body.appendChild(ov);
       ov.querySelector(".np-takeover").onclick = manualTakeover;
@@ -387,6 +415,6 @@
     seatOwners: () => _seatOwners,
     guestBusy: () => _guestBusy,
     takenOver: () => Object.assign({}, _takenOver),
-    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending), lossPending: Object.keys(_lossTimers) }),
+    _debug: () => ({ _role, _online, _seatOwners, _seatTokens, _takenOver, _myToken, pending: Object.keys(_pending), pendingKinds: Object.values(_pending).map((x) => x.kind + "@" + x.seat), lossPending: Object.keys(_lossTimers) }),
   };
 })(typeof window !== "undefined" ? window : this);

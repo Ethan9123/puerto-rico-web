@@ -5955,6 +5955,9 @@ function humanBoardSelect({ type, choices, promptText, allowSkip }) {
   // type: 'role' | 'plantation' | 'building' | 'good' | 'slot'
   // choices: 数组，每项含 {key, ...具体数据}
   // 联机：当前行动座位属于远程客人时，把这次选择外包给客人（返回 Promise 走网络）
+  // ⚠ 提示文字必须在路由**之前**写入：否则远程分支早退，_currentPrompt 停在上一条，
+  //   广播快照里客人看到的就是错的提示（AI_STRENGTH/联机第二轮 P2-2）。
+  if (G) G._currentPrompt = promptText;
   if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("boardSelect", { type, choices, promptText, allowSkip }); if (r) return r; }
   return new Promise(resolve => {
     pendingSelect = { type, choices, resolve, allowSkip, promptText };
@@ -6046,6 +6049,7 @@ function buildRolePreview(p, roleName) {
 
 function humanPickRole(available, p) {
   // 联机：远程客人的选角整步（选+确认）在客人端进行，只回传下标
+  if (G) G._currentPrompt = `${p && p.name ? p.name + " " : ""}选择角色`;   // 路由前写入，见 humanBoardSelect
   if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("pickRole", { availableNames: available.map(x => x.name), seat: (p && p.idx) }); if (r) return r; }
   return new Promise(outerResolve => {
     const attemptPick = () => {
@@ -6078,6 +6082,7 @@ function humanPickRole(available, p) {
 
 function humanPickFromList(title, labels, allowCancel, bodyHtml = "") {
   // 联机：远程客人座位 → 外包给客人（payload 全是字符串，天然可序列化）
+  if (G) G._currentPrompt = title;   // 路由前写入，见 humanBoardSelect
   if (typeof PRNetPlay !== "undefined") { const r = PRNetPlay.maybeRoute("pickFromList", { title, labels, allowCancel: !!allowCancel, bodyHtml }); if (r) return r; }
   return new Promise(resolve => {
     const buttons = labels.map((label, i) => ({
@@ -6317,7 +6322,8 @@ function render() {
     div.className = "player-board";
     div.dataset.player = i;
     if (i === G.governor) div.classList.add("governor");
-    if (i === G._currentPlayer) div.classList.add("current");
+    const hiSeat = (G._online && G._actingSeat != null) ? G._actingSeat : G._currentPlayer; // 联机：按实际行动座位高亮
+    if (i === hiSeat) div.classList.add("current");
     const totalVP = p.vp + G.getDisplayVPs(p);
     div.innerHTML = `
       <div class="player-header">

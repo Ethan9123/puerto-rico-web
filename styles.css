@@ -702,7 +702,16 @@ body.final-round::after {
   padding: 7px 12px; box-shadow: 0 2px 10px rgba(0,0,0,.45);
   border-bottom: 1px solid rgba(243,201,105,.5);
 }
-#spectate-banner + #app, body:has(#spectate-banner) #game-screen { padding-top: 4px; }
+/* 横幅是 fixed 的：#game-screen 顶部按横幅**实际高度**（--spectate-banner-h，spectate.js 写入）让位。
+   曾经这里是 `#spectate-banner + #app`（横幅 append 在 #app 之后，相邻选择器永不匹配）加一条把 padding
+   减到 4px 的 :has 规则——净效果是横幅盖住整个 topbar，手机上换行后盖得更多。 */
+body:has(#spectate-banner) #game-screen { padding-top: calc(var(--spectate-banner-h, 34px) + 16px); }
+#np-guest-turn {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 9400;
+  background: #1f2a36; color: #f3c969; border: 1px solid rgba(243,201,105,.6); border-radius: 10px;
+  padding: 8px 14px; font-size: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.5); white-space: nowrap;
+}
+#np-guest-turn.urgent { background: #7b2d2d; color: #fff; border-color: #ff8a80; }
 
 /* 联机对战 Phase 3：远程出手——房主等待浮层 */
 #netplay-overlay {
@@ -733,7 +742,7 @@ body.final-round::after {
 
 /* 联机：重连交还——「认领座位」栏 */
 #netplay-reclaim {
-  position: fixed; left: 0; right: 0; top: 34px; z-index: 8999;
+  position: fixed; left: 0; right: 0; top: var(--spectate-banner-h, 34px); z-index: 8999;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
   background: rgba(40, 30, 12, 0.94); color: #f3c969;
   padding: 6px 12px; font-size: 13px; border-bottom: 1px solid rgba(243,201,105,.4);
@@ -752,7 +761,19 @@ body.final-round::after {
 
 /* 移动端触控目标 */
 @media (hover: none) and (pointer: coarse) {
-  .qs-btn, .skip-btn, .small { min-height: 44px; min-width: 44px; padding: 10px 14px; }
+  .qs-btn, .skip-btn, .small,
+  #netplay-reclaim .nr-btn, #netplay-overlay .np-takeover { min-height: 44px; min-width: 44px; padding: 10px 14px; }
+}
+
+/* P4-2：联机 UI 的窄屏布局（此前 762 行样式表里没有一条联机相关的宽度媒体查询） */
+@media (max-width: 480px) {
+  #lobby-panel .lobby-row { flex-direction: column; align-items: stretch; }
+  #lobby-panel .lobby-join-code { width: 100% !important; box-sizing: border-box; }
+  #lobby-panel .lobby-btn { width: 100%; }
+  #spectate-banner { font-size: 12px; padding: 6px 8px; letter-spacing: 0; }
+  #netplay-overlay .np-card { min-width: 0; width: 92vw; padding: 18px 14px; }
+  #netplay-reclaim { font-size: 12px; padding: 6px 8px; }
+  #np-guest-turn { left: 8px; right: 8px; transform: none; white-space: normal; text-align: center; }
 }
 
 /* 减少布局重绘 */
