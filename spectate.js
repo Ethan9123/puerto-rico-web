@@ -22,6 +22,7 @@
   "use strict";
 
   // ---- 状态快照（与 serializeGame 同源，但允许 gameOver） ----
+  let _seq = 0;   // 房主侧单调帧号（P5-2）
   function snapshot() {
     if (typeof G === "undefined" || !G) return null;
     try {
@@ -33,6 +34,10 @@
         if (src && src._persona) p._personaKey = src._persona.key;
       });
       snap._specVer = 1;
+      // 单调帧号（P5-2）：此前 _specVer 是常量，广播没有任何序号，乱序 / 重复投递会让客人棋盘静默回退。
+      // 取 max(now, 上一帧+1)：房主刷新重开后计数器归零也不会比刷新前的帧小（客人不会把新帧当旧帧丢掉）。
+      _seq = Math.max(Date.now(), _seq + 1);
+      snap._seq = _seq;
       return snap;
     } catch (e) { return null; }
   }
@@ -45,7 +50,20 @@
     timer = null; lastSent = Date.now();
     if (!hostSession) return;
     const snap = snapshot();
-    if (snap) try { hostSession.send({ type: "state", snap }); } catch (e) {}
+    if (!snap) return;
+    // 发送结果不再静默（P3-3）：连续 ≥3 帧失败 → 房主 toast「广播不稳定」（客人那边棋盘会停在旧帧）
+    let pr; try { pr = hostSession.send({ type: "state", snap }); } catch (e) { pr = Promise.resolve("error"); }
+    Promise.resolve(pr).then((st) => onSendResult(st == null ? "ok" : st), () => onSendResult("error"));
+  }
+  let _stateFails = 0, _stateFailWarnAt = 0;
+  function onSendResult(st) {
+    if (st === "ok") { _stateFails = 0; return; }
+    _stateFails++;
+    if (_stateFails < 3) return;
+    const now = Date.now();
+    if (now - _stateFailWarnAt < 15000) return;   // 节流：15 秒内只提示一次
+    _stateFailWarnAt = now;
+    try { if (typeof showToast === "function") showToast('<div class="t-title">⚠️ 广播不稳定</div><div class="t-sub">连续 ' + _stateFails + ' 帧没送达（' + esc(st) + '），客人可能停在旧棋盘；请检查网络</div>', { kind: "warn", duration: 5000 }); } catch (e) {}
   }
   function onHostRender() {
     if (!hostSession) return;
@@ -118,8 +136,14 @@
     }
   }
 
+  let _lastSeq = 0, _staleDropped = 0;
   function applyState(snap) {
     if (!snap || typeof Game === "undefined") return;
+    // 帧号（P5-2）：比已收到的旧 / 相同 → 丢弃，棋盘不回退。没有帧号的（旧版房主）照旧接受。
+    if (typeof snap._seq === "number") {
+      if (snap._seq <= _lastSeq) { _staleDropped++; return; }
+      _lastSeq = snap._seq;
+    }
     // 远程出手进行中：客人正盯着自己的决策 UI，别被房主的 state 广播刷掉
     if (typeof PRNetPlay !== "undefined" && PRNetPlay.guestBusy()) return;
     // 联机对局：首次拿到带座位归属的状态时，把客人接入远程出手层
@@ -178,6 +202,7 @@
   }
 
   function startSpectating(session, info) {
+    if (session !== guestSession) _lastSeq = 0;   // 换了房间 / 会话：帧号基准重置（不同房主的时钟不可比）
     guestSession = session;
     hostName = (info && info.hostName) || "";
   }
@@ -196,5 +221,6 @@
     onHostLeft, onHostBack, onConnStatus,
     isHosting: () => !!hostSession,
     isSpectating: () => !!guestSession,
+    _debug: () => ({ lastSeq: _lastSeq, staleDropped: _staleDropped, stateFails: _stateFails }),
   };
 })(typeof window !== "undefined" ? window : this);
