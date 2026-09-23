@@ -3069,6 +3069,12 @@ function deployGuests(p) {
   }
 }
 
+// AI 工匠特权选货（从 doCraftsman 原样抽出，逐字节不变；Stage 4 对照钩子用）：最贵者，同价取在前。
+// ownKinds（选择者本回合产出的种类）不参与选择，只供对照钩子重建 az 'craftbonus' 决策点。
+function aiPickCraftBonus(chooser, available, ownKinds) {
+  return available.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
+}
+
 async function doCraftsman(chooserIdx, order) {
   G._actingSeat = chooserIdx; // 联机：工匠的「额外拿 1 个货」决策归属选择者
   // 生产阶段：每人按生产能力生产货物（受供应限制）
@@ -3179,7 +3185,7 @@ async function doCraftsman(chooserIdx, order) {
       else g = available[idx];
     } else {
       // AI 选最贵的（仍只能从 available 选）
-      g = available.reduce((a, b) => GOOD_PRICE[a] >= GOOD_PRICE[b] ? a : b);
+      g = aiPickCraftBonus(chooser, available, ownKinds);
     }
     // 防御性双重检查：g 必须是自己产出过的且供应 > 0
     if (g && ownKinds.has(g) && G.supply[g] > 0) {
@@ -3262,6 +3268,12 @@ async function doCraftsman(chooserIdx, order) {
   }
 }
 
+// AI 卖货选择（从 doTrader 原样抽出，逐字节不变；第三轮 Stage 4 供 tools/heur_parity.js 在调用点对照 sim）：
+// 按售价降序的稳定排序取首元 = 同价时取 opts 在前者（贸易站在前、驿站在后，各自按 GOODS 顺序）。
+function aiPickTrade(p, opts, chooserBonus, mkBonus) {
+  return opts.map(o => ({ o, earn: GOOD_PRICE[o.g] + chooserBonus + mkBonus(o.dest) })).sort((a, b) => b.earn - a.earn)[0].o;
+}
+
 async function doTrader(playerIdx, isChooser) {
   const p = G.players[playerIdx];
   G._actingSeat = playerIdx; // 联机：商人卖货决策归属本座位
@@ -3285,7 +3297,7 @@ async function doTrader(playerIdx, isChooser) {
     if (idx === null) return;
     pick = opts[idx];
   } else {
-    pick = opts.map(o => ({ o, earn: GOOD_PRICE[o.g] + chooserBonus + mkBonus(o.dest) })).sort((a, b) => b.earn - a.earn)[0].o;
+    pick = aiPickTrade(p, opts, chooserBonus, mkBonus);
   }
   p.goods[pick.g]--;
   let earn = GOOD_PRICE[pick.g] + chooserBonus + mkBonus(pick.dest);
@@ -3832,7 +3844,25 @@ function buildSimState(G) {
       unplaced: p._unplacedMen || 0, wharfUsed: p._wharfUsedThisRound || false, aiLevel: p._aiLevel || 5,
     })),
   };
+  // 保真模式（第三轮 Stage 4，opt-in，默认关）：sim 子决策启发式对齐 game.js（见 sim.js fidOn）。
+  // 只在为真时写字段 → 默认路径的状态对象、以及评测 CRN 的 JSON 局面指纹都与旧版逐字节相同。
+  // ⚠ 本函数是所有搜索的入口：打开 window._l6Fid 会让**所有**经此的角色搜索（含 L5 对手）都用保真模型；
+  //   本轮角色搜索保持关闭（AI_STRENGTH §18：角色搜索保真臂的效应远低于可检测下限，未测量）。
+  //   子决策搜索（Stage 5）在 simStateAtSubDecision 返回的状态上自行置 st._fid——置之前同样先问 l6FidAllowed()。
+  if (window._l6Fid && l6FidAllowed()) st._fid = true;
   return st;
+}
+
+// fid 模型可用的前提：基础局（扩展里 game.js 还有大量 sim 未建模的分支），且 L6 私有启发式参数取默认值——
+// sim.js 的 fid 路径把 L6_HEUR_DEFAULTS 写成字面常数（fidPickBuild 的 16/30/4/20、成本系数 3、chooser +5，
+// pickPlantation 的 moneyLean 7 等），window._l6Heur（eval_paired_worker 的 HEUR 参数 / 调参产物）一旦改了
+// 其中任一键，game.js 的 L6 座位就换了一套启发式，fid 模型会**静默**不再镜像它 → 此时不开 fid。
+// 与默认值相同的覆盖不算改动（逐键比较，而非「_l6Heur 存在即关」），免得无害的注入把 fid 关掉。
+function l6FidAllowed() {
+  if (aiUnmodeledMods()) return false;
+  const h = typeof window !== "undefined" && window._l6Heur;
+  if (h) for (const k in L6_HEUR_DEFAULTS) if (h[k] != null && h[k] !== L6_HEUR_DEFAULTS[k]) return false;
+  return true;
 }
 
 // 终局精确求解器接入 L6 *建造*子决策（opt-in: window._l6SolverBuild，默认关闭；AI_STRENGTH §9）。
@@ -3854,6 +3884,11 @@ function aiUnmodeledMods() {
 // 返回 { st, dec }（dec = az 在该点的决策，且已通过安全闸）或 null（不适用 → 调用方回退启发式）。
 //   kind 'build'  ctx = { options }                                              （doBuilder 的 options）
 //   kind 'captain' ctx = { candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet, cphase? }
+//   kind 'settle'  ctx = { options, isChooser }       （doSettler 的 options；**庄园已在调用前抽过** → az.hac = oi）
+//   kind 'trade'   ctx = { opts, isChooser }          （doTrader 的 opts：{g, dest:'house'|'post'}）
+//   kind 'craftbonus' ctx = { available, ownKinds }   （doCraftsman：选择者本回合产出种类 ownKinds，可选货 available）
+// 每一类的安全闸同一风格：az 在该点的动作集合必须与 game.js 的选项集合逐项一致（去掉 az 独有的 PASS），
+// 且决策者/选择者身份一致；否则返回 null（调用方回退启发式、对照工具记为闸拒）。
 // ⚠ 修掉一个长期存在的 off-by-one：buildSimState 在【角色边界】是对的（picksThisTurn = 已选卡数）；
 //   但子决策发生在某角色阶段**中途**，该角色卡已 taken，而 az 层只在 azFinishRole 才 picksThisTurn++
 //   （sim.js azApply 角色分支不加）。不减 1 → 阶段结束后「下一个选角者」错位一格、本轮少一次选角。
@@ -3894,6 +3929,48 @@ function simStateAtSubDecision(kind, p, ctx) {
     const gameCodes = (ctx.candidates || []).filter(c => c.ship !== "smallwharf").map(captainCandCode).sort((a, b) => a - b);
     const azCodes = dec.actions.slice().sort((a, b) => a - b);
     if (gameCodes.length !== azCodes.length || gameCodes.some((c, i) => c !== azCodes[i])) return null;
+    return { st, dec };
+  }
+  // 以下三类（Stage 4）：角色卡的 takenBy 即本阶段选择者；顺序 = 选择者起顺时针
+  const phaseCursor = (roleName) => {
+    const card = st.roleCards.find(r => r.name === roleName);
+    const chooser = card ? card.takenBy : null;
+    if (chooser == null) return null;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    return oi < 0 ? null : { chooser, ord, oi };
+  };
+  const sameSet = (a, b) => { a = a.slice().sort((x, y) => x - y); b = b.slice().sort((x, y) => x - y); return a.length === b.length && a.every((x, i) => x === b[i]); };
+  if (kind === "settle") {
+    const c = phaseCursor("Settler");
+    if (!c || (p.idx === c.chooser) !== !!ctx.isChooser) return null;   // 图书馆第二张（isChooser=false 的选择者）等非本阶段主决策 → 拒
+    st.az = { phase: "settler", chooser: c.chooser, ord: c.ord, oi: c.oi, hac: c.oi };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "settle" || dec.chooser !== p.idx) return null;
+    // game.js options 按明牌下标列（同货可重复）；az 按货种去重 → 比较去重后的编码集合（采石场 = AZ_QUARRY）
+    const gameCodes = [...new Set((ctx.options || []).map(o => o.kind === "quarry" ? PRSim.AZ_QUARRY : GOODS.indexOf(o.good)))];
+    if ((ctx.options || []).some(o => o.kind !== "quarry" && o.kind !== "plant")) return null;
+    if (!sameSet(gameCodes, dec.actions)) return null;
+    return { st, dec };
+  }
+  if (kind === "trade") {
+    const c = phaseCursor("Trader");
+    if (!c || (p.idx === c.chooser) !== !!ctx.isChooser) return null;
+    st.az = { phase: "trader", chooser: c.chooser, ord: c.ord, oi: c.oi };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "trade" || dec.chooser !== p.idx) return null;
+    // 编码同 az：卖给贸易站 = GOODS 下标；卖给自己的贸易驿站(29) = 10 + 下标
+    const gameCodes = (ctx.opts || []).map(o => (o.dest === "post" ? 10 : 0) + GOODS.indexOf(o.g));
+    if (!sameSet(gameCodes, dec.actions.filter(a => a !== PRSim.AZ_PASS))) return null;
+    return { st, dec };
+  }
+  if (kind === "craftbonus") {
+    const c = phaseCursor("Craftsman");
+    if (!c || c.chooser !== p.idx || !ctx.ownKinds) return null;
+    st.az = { phase: "craftbonus", chooser: c.chooser, produced: [...ctx.ownKinds] };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "craftbonus" || dec.chooser !== p.idx) return null;
+    if (!sameSet((ctx.available || []).map(g => GOODS.indexOf(g)), dec.actions)) return null;
     return { st, dec };
   }
   return null;

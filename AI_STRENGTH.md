@@ -1630,3 +1630,76 @@ NO-GO → census 本身即结果，第 5c–5e 阶段不做。
 
 **第 7 阶段（部署）**：deep 档 L6 `alphaMs` 5000→6000（与标签「6s」及 L5 一致；用户决定）；推断收益 ≈ +0.9pp（+0.26 翻倍 × §17 斜率），**未测量**。
 子决策搜索若通过：每次子决策上限 fast 关 / normal 300 ms / deep 600 ms / extreme 1200 ms / 联机 ≤300 ms，rollout 分摊到 worker；无 worker 池时直接用启发式（不在主线程搜）。
+
+### 18.4 第 4 阶段结果：子决策模型保真（`st._fid`，仅基础局）
+
+**做了什么**（sim.js，全部挂在 `fidOn(st) = st._fid && 非扩展局` 之下；标志关闭时逐位不变）：
+
+| game.js 行为 | 旧 sim | fid 下 | 两路 |
+|---|---|---|---|
+| 建造：`aiPickBuilding` 取稳定降序排序的首元，**不因负分 PASS** | 最高分 ≤0 → PASS | `fidPickBuild` 逐行镜像 | `doBuilder` + `azHeuristicAction` |
+| 建造：心仪大紫（特殊分 ≥3、中后期）抢卡 +16/+30；买不起但差 ≤4 且最佳 <20 → 攒钱不建 | 无 | 同上 | 同上 |
+| 建造估值：`_specBuyPen`（手上 0 块可喂田就买厂 −3/−10） | 无 | `evalBuilding` 内 | 同上 |
+| 建造阶段：每位玩家现算 `gamePhase()` | 阶段开头固定 | 现算 | 同上 |
+| 选田：非建筑流采石场上限 早期 2 / 中后期 1 | 恒 2 | 对齐 | `pickPlantation`（两路共用） |
+| 庄园(8)：在**选明牌之前**抽，且无选项也抽，抽满 12 格则不再选 | 选完之后、且仅有选项时 | `doSettler` 前置；az 在 `azSettlerSkipToDecision` 里按 `az.hac`（已处理的 oi）幂等地抽 | 两路 |
+| 市长：`CHAIN_DONE`（立即增产的空位 +5）与兜底顺序（首个非森林空地，含采石场） | 无 / 先非采石场 | `reallocate(p, fid)` | `doMayor`（两路共用） |
+| 装船：每次装船现算 `gamePhase()` | 阶段开头固定（`az.cphase`） | 现算 | `doCaptain` + `azHeuristicAction` |
+
+`clone` 只在标志为真时写 `_fid`；worker 传输是 `Object.assign` + structuredClone，保留该字段（单测 ⑧）。
+`buildSimState` 仅在 `window._l6Fid && l6FidAllowed()` 时置位（opt-in，默认关；**本轮角色搜索保持关闭、未测量**）；
+`l6FidAllowed()` = 基础局（`!aiUnmodeledMods()`）且 `window._l6Heur` 没有把 `L6_HEUR_DEFAULTS` 的任一键改成非默认值——fid 路径把这些默认参数写成字面常数，调过参的 L6 它镜像不了。
+⚠ `buildSimState` 是所有搜索的入口：打开 `_l6Fid` 时 L5 对手的角色搜索也会用保真模型——若将来要跑角色搜索保真臂，须改成只在 L6 调用点置位。
+`simStateAtSubDecision` 新增 `settle` / `trade` / `craftbonus` 三类重建（同一安全闸风格：az 动作集合 ≡ game.js 选项集合，否则 null）；
+`aiPickTrade` / `aiPickCraftBonus` 从 `doTrader` / `doCraftsman` 原样抽出（逐字节不变，字节门见下）。
+
+**对照测量**（`tools/heur_parity.js`，40 局，seedBase 20261201，DEPLOY，1×L6 + 3×L5，角色搜索 400 次迭代；在每个 AI 子决策调用点重建 sim 状态，
+fid 关/开各跑一次 sim 启发式，与 game.js 实际走的一手比较；fid 关的建造/装船按阶段起点的 `gamePhase()` 建模、拓殖把庄园暗牌退回牌堆顶——即旧 sim 在该时刻真正看到的局面）：
+
+| 类 | 座位 | n | 闸拒 | 分歧 fid 关 | 分歧 fid 开 | fid 关分歧的构成 |
+|---|---|---|---|---|---|---|
+| build | L6 | 350 | 0 | 105 = 30.00% | **0** | game 攒钱不建/sim 建 47 · 建了不同的楼 41 · game 建/sim PASS 17 |
+| build | L5 | 1002 | 0 | 246 = 24.55% | **0** | 不同的楼 108 · game 攒钱/sim 建 91 · game 建/sim PASS 47 |
+| settle | L6 | 337 | 0 | 3 = 0.89% | **0** | 庄园时序 3 |
+| settle | L5 | 1012 | 0 | 14 = 1.38% | **0** | 庄园时序 9 · 采石场上限 5 |
+| captain | L6 | 298 | 0 | 0 | **0** | — |
+| captain | L5 | 879 | 0 | 0 | **0** | — |
+| mayor | L6 | 380 | 0 | 40 = 10.53% | **0** | 田+楼 36 · 楼 4 |
+| mayor | L5 | 1140 | 0 | 123 = 10.79% | **0** | 田+楼 109 · 楼 14 |
+| trade | L6 / L5 | 104 / 357 | 0 | 0 | **0** | — |
+| craftbonus | L6 / L5 | 63 / 201 | 0 | 0 | **0** | — |
+
+- fid 开：6 类 × 2 座位类全部 **0 残差**（门槛 ≤1%）；闸拒 0/5723（门槛 ≤2%）。纯 AI 基础局里无群友人格（0 席），L5 与 L6 走同一套默认启发式（DNA 只作用于 L2/L3），故两类座位结果一致。
+- 旧模型最大的失真在**建造**（约 1/4 的建造决策与真实 AI 不同：旧 sim 既会在真实 AI 攒钱抢大紫时乱建，也会在真实 AI 照建时 PASS），其次是**市长派工**（~10.7%）。
+  装船的「每次现算阶段」在 1177 次装船里**一次也没改变决策**——保留对齐是为了模型等价，不是因为它在数据里重要。
+- 钩子不扰动对局：钩子只在原函数返回后运行、钩子期间 Math.random 切到隔离流（40 局内调用 0 次）；
+  带钩子的 40 局对局行与独立跑的 `eval_paired_worker.js DEPLOY 5 {0,20} {20,40} … 20261201`（无任何钩子）的输出 **cmp 一致（40/40 行）**。
+
+**测试**：`tests/fid_unit_test.js`（同一构造局面同时喂给 game.js 与 sim fid：evalBuilding 20700 次、建造 3827、选田 3660、派工 3000、装船 598 次比较全部一致；
+fid 关时相应有 1140/619/48/212/224 处不一致 → 对照有区分力；庄园前置/幂等/无选项也抽/抽满不选；fid 下 applyRole ≡ azPlayHeuristic 30 局；扩展局 fid 失效 900 次；标志搬运；
+新增三类重建的安全闸：一致选项放行、篡改选项或身份不符返回 null）。
+反向验证（均已做，各自变红）：采石场 fid 上限改回 2 → ③；去掉攒钱规则 → ②；`FID_CHAIN_DONE=0` → ④；去掉 `az.hac` 幂等判断 → ⑥ 两条；
+去掉 `_specBuyPen` → ① ②；去掉抢大紫加分 → ②；az 装船改回 `az.cphase` → ⑤ ⑥；clone 不拷 `_fid` → ⑧；去掉 settle 重建的集合比对 → ⑨。
+`tests/heur_parity_test.js`（6 局、角色搜索 30 次迭代、<1 分钟）：每类每座位残差 ≤1%、闸拒 ≤2%、带/不带钩子对局行一致，外加「固定种子集上残差恰为 0」的漂移哨兵。
+**实测：只有 1% 门槛时，把采石场上限改回 2 在 6 局里只造成 1/160 = 0.63% 的 L5 settle 残差 → 1% 断言全绿抓不到**；漂移哨兵 ⑤ 变红。
+把钩子改成消耗环境随机流 → ④ 变红。
+
+**字节门**：golden 搜索统计逐位一致；基础局 `DEPLOY 5 0 6` 与 `vnet1-A-lo5.jsonl` 前 6 行 cmp 无输出；扩展局 `MODS=tibsBuildings+nobles DEPLOY 5 0 2` 与 Stage 1 参考 cmp 无输出。
+
+**评审修复（Stage 4 第二轮）**：
+- **人数相关的阶段分母**：game.js `gamePhase()` 的殖民者分母是手调常数 `{1:30, 2:42, 3:55, 4:75, 5:95}`，sim `phaseOf` 用真实供应池 `COL_TOTAL {1:29, 2:40, …}`——
+  3-5 人相同（上面 4 人对照因此是盲的），1/2 人局错档（2 人局 colonistsLeft 27-28：game mid / sim early；14：game late / sim mid）。
+  修复：fid 路径（选田上限与玉米加分、`fidPickBuild`、`doBuilder`/az 建造、`doCaptain`/az 装船）改用镜像 `gamePhase` 的 `fidPhase`；`phaseOf` 不动（字节门）。
+  2 人局实测（`heur_parity.js --players 2`，10 局，角色搜索 30 次迭代）：修复前 fid 开 build L6 **6/94 = 6.38%**、L5 2/89 = 2.25%、settle L5 1/83 = 1.20%；修复后全部 0。
+  修复后 2 人局全量（40 局，seedBase 20261201，DEPLOY，1×L6 + 1×L5，400 次迭代，3320 个子决策）：6 类 × 2 座位类 fid 开**全部 0 残差**、闸拒 0；fid 关 build L6 25.73% / L5 18.80%、mayor 5.54% / 10.03%。
+  其它人数（30 次迭代）：3 人 8 局、5 人 8 局、1 人 4 局，fid 开全部 0 残差、闸拒 0。
+- **重建拓殖局面以 fid 关续跑会重复抽庄园**：`simStateAtSubDecision('settle')` 置 `az.hac = oi`（真实对局里庄园已抽），但原先只有 fid 路径读它 → fid 关续跑一次选田多出 2 块田。
+  修复：az 拓殖的选后抽庄园同时要求 `az.hac !== az.oi`（标志关的正常流程从不写 `az.hac` → 默认路径逐位不变）。
+- **heur_parity_test 的闸拒只断言合计**：改为逐类 × 座位类 ≤2%，且 ① 要求 m = n − 闸拒 > 0；新增 2 人局 6 局（①②⑤ 同断言）。
+  ① 的 1% 是验收线，回归保护靠 ⑤（已写进测试头注释）。
+- **`_l6Heur` 调参时 fid 静默失真**：见上 `l6FidAllowed()`。
+
+反向验证（每条在工作树的临时副本里改坏、跑测试、确认变红）：`FID_COL_TOTAL` 改回 `{1:29, 2:40}` → `fid_unit_test` ⑩ 三条红（阶段全扫 7 处不一致、2 人局选田 45、建造 840），
+`heur_parity_test` 2p ①（build L6 5/56 = 8.93%、L5 1/53）与 ⑤（残差 6）红，4 人局全绿；az 拓殖去掉 `az.hac !== az.oi` → ⑪ 红；`l6FidAllowed` 去掉 `_l6Heur` 检查 → ⑧ 红；
+`simStateAtSubDecision('trade')` 对 L6 座位一律返回 null → 4p/2p 的 trade L6 ①（0/0）与 ②（100%）红，而 4p 合计闸拒 8/853 = 0.94% 仍 ≤2%——即旧的合计断言抓不到。
+

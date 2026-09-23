@@ -289,6 +289,8 @@
         _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
       })),
     };
+    // 保真标志（Stage 4）：只在为真时写 → 标志关闭时 clone 出的对象形状与旧版逐字段相同
+    if (st._fid) c._fid = true;
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
     if (st.az) c.az = Object.assign({}, st.az, {
       ord: st.az.ord ? st.az.ord.slice() : undefined,
@@ -315,17 +317,34 @@
     return false;
   }
 
+  // ---------- 保真模式 st._fid（第三轮 Stage 4）----------
+  // sim 的子决策启发式（rollout 里所有玩家的建造/选田/派工/装船都靠它）此前与 game.js 的真实 AI
+  // 有几处逐行可见的分歧（AI_STRENGTH §18.1 #6）。子决策搜索（Stage 5）要在 sim 里「预演真实对手」，
+  // 模型必须忠实 → 在状态标志 st._fid 下对齐 game.js；标志关闭时每一行都与旧实现逐位相同
+  // （tests/search_golden_test.js + 基础/扩展局字节门钉住）。
+  // **只对基础局生效**：扩展模块下 game.js 的 AI 还有大量 sim 未建模的分支（森林屋、黑市、贵族……），
+  // 此时对齐一半反而制造新的不一致 → 任一扩展开关打开，fid 行为全部失效（等同标志关闭）。
+  // 标志只在为真时才写到状态上（clone / buildSimState 同此约定）→ 关闭时对象形状、JSON 指纹都不变。
+  // **只镜像默认启发式参数**：fid 路径把 game.js L6_HEUR_DEFAULTS（pl_* / bd_*：抢卡 16/30、攒钱 4/20、
+  // 成本系数 3、chooser +5、moneyLean 7……）写成字面常数。window._l6Heur 覆盖这些键时 game.js 的 L6 座位
+  // 不再走默认值，sim 无从得知 → game.js l6FidAllowed() 此时不置 _fid（子决策搜索的调用方同样应先问它）。
+  // 阶段：fid 路径用 fidPhase（game.js gamePhase 的分母），不用 phaseOf——见 fidPhase 处注释。
+  function fidOn(st) { return !!st._fid && !st.expansion && !st.expansionNobles && !st.expansionTibs; }
+  const FID_CHAIN_DONE = 5;      // game.js aiReallocate CHAIN_DONE 默认值（p._chainDone 只是 A/B 钩子，sim 不建模）
+
   // ---------- 启发式子策略 ----------
   function pickPlantation(st, p, options, isChooser) {
     // 采石场：建筑流权重高
     let qCount = 0; for (const pl of p.plantations) if (pl.good === "quarry") qCount++;
     const violet = p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     const lean = violet >= 1 || p.money >= 7;
-    const cap = lean ? 4 : 2;
+    // 非建筑流上限：旧 sim 恒为 2；game.js aiPickPlantation 是「早期 2、中后期 1」（fid 对齐）。
+    // 分歧点只在中后期、非建筑流、恰好已有 1 个采石场的 chooser 身上——但正是这类玩家在 rollout 里被高估了建造折扣。
+    const cap = lean ? 4 : (fidOn(st) ? (fidPhase(st) === "early" ? 2 : 1) : 2);
     if (isChooser && qCount < cap && st.quarriesLeft > 0) { const qi = options.findIndex(o => o.kind === "quarry"); if (qi >= 0) return qi; }
     // 在 plant 选项里打分：补产业链 > 垄断 > 避免撞右手高价货 > 多样化
     const upstream = st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers];
-    const ph = phaseOf(st);
+    const ph = fidOn(st) ? fidPhase(st) : phaseOf(st);   // fid：game.js 的 gamePhase 分母（玉米加分分档）
     let bestI = -1, bestS = -Infinity;
     for (let i = 0; i < options.length; i++) {
       const o = options[i]; if (o.kind !== "plant") continue;
@@ -344,7 +363,11 @@
     return bestI >= 0 ? bestI : 0;
   }
 
-  function reallocate(p) {
+  // fid（第二参，调用方已按 fidOn(st) 求值）：对齐 game.js aiReallocate 的两处差异——
+  //   ① CHAIN_DONE：放下这一枚就「立即增产」（对侧已有【有人】的厂槽/田）的空位 +5，抬到紫建激活之上；
+  //      仅有空厂槽（未上人）的起链投资保持原值。旧 sim 只看厂槽总数，不区分有人没人。
+  //   ② 兜底放置顺序：game.js 取第一个非森林空地（**含采石场**，按面板顺序）；旧 sim 先挑非采石场。
+  function reallocate(p, fid) {
     // 贵族扩展：贵族优先驻守贵族功能建筑（皇家花园45/礼拜堂39/规划办41/狩猎小屋40），
     // 顺序与 game.js aiReallocate(2685-2692) 一致。
     let remNobles = p.unplacedNobles || 0;
@@ -391,20 +414,25 @@
         let gain;
         if (pl.good === "quarry") gain = quarryGain;
         else if (pl.good === "corn") gain = prodUnit("corn");
+        else if (fid) gain = fields[pl.good] < fc[pl.good] ? prodUnit(pl.good) + FID_CHAIN_DONE : fields[pl.good] < fcT[pl.good] ? prodUnit(pl.good) : 0;
         else gain = (fields[pl.good] < fcT[pl.good]) ? prodUnit(pl.good) : 0;
         if (gain > bestGain) { bestGain = gain; best = { k: "p", r: pl }; }
       }
       for (const b of p.buildings) {
         const bd = BLD[b.bid]; if (b.men >= bd.men) continue;
         let gain;
-        if (bd.type === "production" && bd.good && bd.good !== "corn") gain = (fc[bd.good] < fT[bd.good]) ? prodUnit(bd.good) : 0;
+        if (bd.type === "production" && bd.good && bd.good !== "corn") {
+          if (fid) gain = fc[bd.good] < fields[bd.good] ? prodUnit(bd.good) + FID_CHAIN_DONE : fc[bd.good] < fT[bd.good] ? prodUnit(bd.good) : 0;
+          else gain = (fc[bd.good] < fT[bd.good]) ? prodUnit(bd.good) : 0;
+        }
         else if (bd.type === "production") gain = prodUnit("corn");
         else gain = (b.men === 0) ? violetVal(b) : 0;
         if (gain > bestGain) { bestGain = gain; best = { k: "b", r: b }; }
       }
       if (!best) {
         // 规则：只要面板上还有空位就必须放置，不能主动留在岸边（森林不可上工人）
-        const pl = p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest");
+        const pl = fid ? p.plantations.find(x => !x.manned && x.good !== "forest")
+          : (p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest"));
         if (pl) { placeOne(pl, "p"); continue; }
         const bb = p.buildings.find(x => x.men < BLD[x.bid].men);
         if (bb) { placeOne(bb, "b"); continue; }
@@ -440,6 +468,9 @@
       if (soon <= 0) return v - 30;
       v += now * 12 + (soon - now) * 4;
       const income = (good === "coffee" || good === "tobacco");
+      // fid：game.js evalBuildingValue 的「投机买厂」罚（p._specBuyPen，默认开）——手上 0 块可喂的田、
+      // 只靠明牌池里的田就买厂，常被先手抢光 → 死厂。旧 sim 没有这条，rollout 里对手买厂偏积极。
+      if (now === 0 && st._fid && fidOn(st)) v -= income ? 3 : 10;
       if (phase === "early") v += income ? 22 : 10; else if (phase === "mid") v += income ? 10 : 4; else v -= 12;
       if (income) { // 垄断/不撞右手
         if (!anyOppProduces(st, p, good)) v += 8;
@@ -497,8 +528,59 @@
     return v;
   }
 
+  // fid：game.js bestLargeViolet —— 库存内、未拥有、放得下的大紫里终局特殊分最高者（同分取首个）。
+  // 基础局的 19-23 两边估值函数逐项相同（estLVSpecial ≡ estLargeVioletSpecial）；扩展大紫不会走到这里（fidOn 已拦）。
+  function fidBestLargeViolet(st, p) {
+    const spaceLeft = 12 - buildingUsedSpaces(p);
+    let best = null;
+    for (const b of BUILDINGS_) {
+      if (b.type !== "large_violet") continue;
+      if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+      const special = estLVSpecial(p, b.id);
+      if (!best || special > best.special) best = { id: b.id, special };
+    }
+    return best;
+  }
+  // fid 建造选择：逐行镜像 game.js aiPickBuilding 的默认（非人格、非 DNA、L6 私有参数取默认）路径。
+  // cands = [{b, cost}]（doBuilder 的 opts / az 的 build 动作，均按 BUILDINGS 顺序）；返回下标，-1 = 不建。
+  // 与旧 sim 规则的三处差别：
+  //   ① **不因分数 ≤0 就 PASS**：game.js 取 scored[0]（稳定降序排序的首元 = 严格 > 扫描的首个最大），
+  //      只有下面 ③ 的「攒钱抢大紫」才会不建。旧 sim 的 bestS<=0 → PASS 让 rollout 里的对手大量少建。
+  //   ② 心仪大紫（特殊分 ≥3、中/后期）可买 → 抢卡加分 16 / 30（bd_grabMid / bd_grabLate）。
+  //   ③ 心仪大紫买不起但差额 ≤4（bd_saveGap）且最佳可买分 <20（bd_saveMediocre）→ 不建，留钱。
+  //   evalBuilding 的投机买厂罚（_specBuyPen）在 evalBuilding 内按同一标志生效。
+  function fidPickBuild(st, p, cands, isChooser, phase) {
+    const tgt = fidBestLargeViolet(st, p);
+    const tgtStrong = !!tgt && tgt.special >= 3 && (phase === "mid" || phase === "late");
+    let bestI = -1, bestS = -Infinity;
+    for (let k = 0; k < cands.length; k++) {
+      let s = evalBuilding(st, p, cands[k].b, phase) - cands[k].cost * 3 + (isChooser ? 5 : 0);
+      if (tgtStrong && cands[k].b.id === tgt.id) s += (phase === "late" ? 30 : 16);
+      if (s > bestS) { bestS = s; bestI = k; }
+    }
+    if (tgtStrong && !cands.some(c => c.b.id === tgt.id)) {
+      // game.js 用 effectiveCostWithRoleBonus(p, tgt, isChooser)：只认真正的 chooser（不含塔楼——基础局无塔楼）
+      const cost = effectiveCostBonus(p, BLD[tgt.id], isChooser, st.numPlayers);
+      if (p.money >= cost - 4 && bestS < 20) return -1;
+    }
+    return bestI;
+  }
+
   function phaseOf(st) {
     const cu = 1 - st.colonistsLeft / COL_TOTAL[st.numPlayers];
+    const vu = 1 - st.vpLeft / VP_TOTAL[st.numPlayers];
+    const pr = Math.max(cu, vu);
+    return pr < 0.33 ? "early" : pr < 0.66 ? "mid" : "late";
+  }
+  // fid 阶段：逐字镜像 game.js gamePhase()。它的殖民者分母是**手调常数** {1:30, 2:42, 3:55, 4:75, 5:95}，
+  // 与 sim 的真实供应池 COL_TOTAL {1:29, 2:40, …} 在 1/2 人局不同（3-5 人相同，故 4 人对照测不出来）：
+  // 2 人局 colonistsLeft 27-28 时 game 已是 mid、phaseOf 仍是 early；14 时 game 已 late、phaseOf 仍 mid →
+  // 采石场上限 / 玉米加分 / 建筑估值 / 抢卡攒钱 / 逐次装船阶段全部错档（实测 2 人局 L6 build fid 残差 6.4%）。
+  // phaseOf 本身不能改（旧 rollout / 角色启发式 / 价值特征都读它，G1-G3 字节门钉住）→ 只在 fid 子决策路径换用本函数。
+  // VP 分母两边相同（VP_TOTAL ≡ game.js vpStart）。
+  const FID_COL_TOTAL = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 };
+  function fidPhase(st) {
+    const cu = 1 - st.colonistsLeft / FID_COL_TOTAL[st.numPlayers];
     const vu = 1 - st.vpLeft / VP_TOTAL[st.numPlayers];
     const pr = Math.max(cu, vu);
     return pr < 0.33 ? "early" : pr < 0.66 ? "mid" : "late";
@@ -538,10 +620,19 @@
     }
   }
 
+  // 庄园(8)：从暗牌堆多拿 1 张。game.js doSettler 在**选明牌之前**抽（规则书同），且只要轮到该玩家、
+  // 面板未满、牌堆非空就抽——哪怕随后明牌池为空、无从选择。旧 sim 在选完之后抽、且只在有选项时抽。
+  // fid 下对齐 game.js：抽到的暗牌会进入 pickPlantation 的「已有几块该货田」计数，抽满 12 格则不再选明牌。
+  function fidHacienda(st, p) {
+    if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+  }
+
   function doSettler(st, chooser) {
+    const fid = fidOn(st);
     for (const i of order(st, chooser)) {
       const p = st.players[i];
       if (p.plantations.length >= 12) continue;
+      if (fid) { fidHacienda(st, p); if (p.plantations.length >= 12) continue; }
       const hut = isManned(p, 9);
       const opts = [];
       for (let k = 0; k < st.plantationPool.length; k++) opts.push({ kind: "plant", good: st.plantationPool[k], idx: k });
@@ -552,7 +643,7 @@
       if (pick.kind === "quarry") { st.quarriesLeft--; pl = { good: "quarry", manned: false }; }
       else { pl = { good: pick.good, manned: false }; st.plantationPool.splice(pick.idx, 1); }
       p.plantations.push(pl);
-      if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+      if (!fid && isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
       settleNewTile(st, p, pl);
     }
     // 扩展：图书馆(33) 拓殖翻倍 — chooser 再从剩余明牌池拿 1 张种植园
@@ -601,7 +692,7 @@
       if (st.noblesLeft > 0) { st.noblesLeft--; give(chooser); }
       for (const i of ord) if (isManned(st.players[i], 43) && st.noblesLeft > 0) { st.noblesLeft--; give(i); }
     }
-    for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p); }
+    { const fid = fidOn(st); for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p, fid); } }
     let open = 0; for (const p of st.players) for (const b of p.buildings) open += (BLD[b.bid].men - b.men);
     const refill = Math.max(st.numPlayers, open);
     if (st.colonistsLeft < refill) st.endTriggered = true;
@@ -611,6 +702,7 @@
 
   function doBuilder(st, chooser) {
     const phase = phaseOf(st);
+    const fid = fidOn(st);
     for (const i of order(st, chooser)) {
       const p = st.players[i];
       const used = buildingUsedSpaces(p);
@@ -631,8 +723,14 @@
       }
       if (opts.length === 0) continue;
       let bestI = -1, bestS = -Infinity;
-      for (let k = 0; k < opts.length; k++) { let s = evalBuilding(st, p, opts[k].b, phase) - opts[k].cost * 3 + (i === chooser ? 5 : 0); if (s > bestS) { bestS = s; bestI = k; } }
-      if (bestI < 0 || bestS <= 0) continue; // 没有正收益建筑就不建
+      if (fid) {
+        // game.js doBuilder 每位玩家调用 aiPickBuilding 时都现算 gamePhase()（大学(16) 取殖民者会推进阶段）
+        bestI = fidPickBuild(st, p, opts, i === chooser, fidPhase(st));
+        if (bestI < 0) continue;
+      } else {
+        for (let k = 0; k < opts.length; k++) { let s = evalBuilding(st, p, opts[k].b, phase) - opts[k].cost * 3 + (i === chooser ? 5 : 0); if (s > bestS) { bestS = s; bestI = k; } }
+        if (bestI < 0 || bestS <= 0) continue; // 没有正收益建筑就不建
+      }
       const { b, cost } = opts[bestI];
       if (cost > p.money && isManned(p, 25)) { // 扩展：黑市付费（还货+岸边工人抵差额，用尽余钱）
         let gap = cost - p.money;
@@ -982,6 +1080,7 @@
   }
   function doCaptain(st, chooser) {
     const phase = phaseOf(st);
+    const fid = fidOn(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
     captainStartBonuses(st, chooser);   // 工会大厅(35) / 灯塔(32) / Tibs 海关站(50) / 塔楼去重复位
@@ -991,7 +1090,8 @@
       for (const i of ord) {
         const cands = captainCands(st, st.players[i]);
         if (cands.length === 0) continue;
-        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase, captainOppGoods(st, cands, i), st.players[i]._captainDeny)[0]);
+        // fid：game.js 每次装船都现算 gamePhase()（装船发 VP → vpLeft 下降，阶段可能在本阶段内由 mid 进 late）
+        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, fid ? fidPhase(st) : phase, captainOppGoods(st, cands, i), st.players[i]._captainDeny)[0]);
         progress = true;
       }
     }
@@ -1514,9 +1614,20 @@
     return { goods, quarry };
   }
   function azSettlerHasDecision(st, i) { const o = azSettlerOptions(st, i); return o.goods.length > 0 || o.quarry; }
+  // fid：庄园(8) 在该玩家的拓殖决策**之前**抽（同 doSettler）。游标 az.hac = 已处理过庄园的 oi，
+  // 保证幂等——azDecision 可对同一决策点被反复调用（搜索/测试/重建），不能每调一次就多抽一张；
+  // 也覆盖「轮到该玩家但无可选项」被跳过的情形（game.js 照样抽）。
+  // 子决策重建（game.js simStateAtSubDecision 'settle'）在真实对局里庄园已抽过，故重建时置 az.hac = oi。
+  function azSettlerHacienda(st) {
+    const az = st.az;
+    if (az.hac === az.oi) return;
+    az.hac = az.oi;
+    fidHacienda(st, st.players[az.ord[az.oi]]);
+  }
   function azSettlerSkipToDecision(st) {
     const az = st.az;
-    while (az.oi < az.ord.length) { if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
+    const fid = fidOn(st);
+    while (az.oi < az.ord.length) { if (fid) azSettlerHacienda(st); if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
     // 全部处理完 → 弃掉剩余明牌种植园(与 doSettler 末段一致)
     settlerEndBonuses(st);   // 狩猎小屋(40) 贵族支：须在弃掉剩余明牌前结算
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
@@ -1676,7 +1787,11 @@
       if (action === AZ_QUARRY) { st.quarriesLeft--; pl = { good: "quarry", manned: false }; }
       else { const good = GOODS_[action]; const idx = st.plantationPool.indexOf(good); pl = { good, manned: false }; st.plantationPool.splice(idx, 1); }
       p.plantations.push(pl);
-      if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false }); // Hacienda
+      // Hacienda：fid 下已在决策前由 azSettlerHacienda 抽过；az.hac === az.oi 同样表示「本玩家已抽过」——
+      // 除 fid 流程外，只有子决策重建（game.js simStateAtSubDecision 'settle'，真实对局里庄园已抽）会写 az.hac。
+      // 不认这个游标的话，**fid 关**地续跑一个重建的拓殖局面会再抽一张（一次选田多出 2 块田）。
+      // 标志关的正常流程从不写 az.hac（只在 fidOn 时的 Settler 分支置 -1）→ undefined !== oi，默认路径逐位不变。
+      if (!fidOn(st) && az.hac !== az.oi && isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
       settleNewTile(st, p, pl);   // 济贫院(11) + Tibs 寄宿屋(48)
       az.oi++;
       return st;
@@ -1718,7 +1833,7 @@
     card.taken = true; card.takenBy = chooser;
     { const coins = card.money; st.players[chooser].money += coins; card.money = 0; bankNobleInvest(st, st.players[chooser], coins); }
     if (card.name === "Builder") { az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
-    if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
+    if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; if (fidOn(st)) az.hac = -1; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
     if (card.name === "Captain") { captainStartBonuses(st, chooser); az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
@@ -1758,13 +1873,20 @@
       return dec.actions.reduce((a, b) => PRICE[GOODS_[a]] >= PRICE[GOODS_[b]] ? a : b);
     }
     if (dec.type === "captain") {
-      // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)
+      // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)；fid 下每次现算（同 game.js）
       const cands = captainCands(st, st.players[dec.chooser]);
-      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase, captainOppGoods(st, cands, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
+      return azCaptainEncode(rankCaptain(cands, st.ships, fidOn(st) ? fidPhase(st) : st.az.cphase, captainOppGoods(st, cands, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
     }
     if (dec.type === "build") {
-      // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
       const i = dec.chooser, p = st.players[i];
+      if (fidOn(st)) {
+        // fid：与 doBuilder 的 fid 分支同一函数（game.js aiPickBuilding 镜像），阶段每次现算
+        const cands = [];
+        for (const a of dec.actions) { if (a === AZ_PASS) continue; const b = BLD[a]; cands.push({ b, cost: effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers) }); }
+        const k = cands.length ? fidPickBuild(st, p, cands, i === st.az.chooser, fidPhase(st)) : -1;
+        return k >= 0 ? cands[k].b.id : AZ_PASS;
+      }
+      // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
       const phase = st.az._bphase || (st.az._bphase = phaseOf(st)); // builder 阶段内 phase 固定
       let best = AZ_PASS, bestS = 0; // 阈值同 doBuilder：bestS<=0 → pass
       for (const a of dec.actions) {
@@ -1795,6 +1917,7 @@
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation,
+      fidOn, fidPhase, fidPickBuild, fidBestLargeViolet, evalBuilding,   // Stage 4 保真模式：供 tests/fid_unit_test.js 逐条对照 game.js
       // 供测试 ⑩ 交叉校验成本快路径与直算路径（性能改写不得改变成本）
       costCtx, ctxCost, effectiveCost, effectiveCostBonus, BUILDINGS: BUILDINGS_ },
   };
