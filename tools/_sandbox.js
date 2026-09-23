@@ -92,6 +92,8 @@ function makeFetch(repoRoot) {
   return async function fetch(url, _init) {
     let u = String(url == null ? '' : (url && url.url) || url);
     const cut = u.search(/[?#]/); if (cut >= 0) u = u.slice(0, cut);
+    // 绝对 URL（如 PRAIPool._cloneableSrc 给 worker 的 http://localhost/mcts_value_nn.json）→ 去掉协议与主机，按站点根解析
+    u = u.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '');
     let file = path.isAbsolute(u) && fs.existsSync(u) ? u : path.join(repoRoot, u.replace(/^\/+/, ''));
     let buf = null;
     try { buf = fs.readFileSync(file); } catch (e) { buf = null; }
@@ -187,4 +189,50 @@ function loadEngine(opts = {}) {
   return { sandbox: sb.sandbox, PRSim: sb.sandbox.PRSim, load: sb.load, run: sb.run, repoRoot: sb.repoRoot };
 }
 
-module.exports = { createSandbox, loadEngine, makeEl, createStorage, makeFetch, DEFAULT_ENGINE_FILES };
+
+// ---- createFakeWorkerClass：在 Node 里按浏览器同一协议跑 ai_worker.js（第三轮 Stage 2）----
+// 每个 worker 一个独立 vm 上下文（self=globalThis，无 window；importScripts=按 repoRoot 加载），
+// 双向消息都经 structuredClone + queueMicrotask 投递（FIFO、确定性，与浏览器的异步投递同构）。
+// opts.forceJS: 在 worker 全局设 _nnForceJS（NN 前向走 JS 后端，与评测主线程数值一致）。
+// opts.mathSeed: worker 上下文的 Math.random 用带种子的 PRNG（搜索路径本就只用 st.rnd；这只是防御）。
+// worker 的同步搜索会在微任务里跑完 → K 个 worker 串行执行，总墙钟 = K × 单个，行为与浏览器一致。
+function createFakeWorkerClass(opts = {}) {
+  const repoRoot = opts.repoRoot || DEFAULT_REPO_ROOT;
+  function mulberry32(a) { return function () { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  let serial = 0;
+  return class FakeWorker {
+    constructor(url) {
+      this.onmessage = null; this.onerror = null; this._dead = false;
+      const me = this;
+      const { sandbox: wsb, load } = createSandbox({
+        repoRoot,
+        extraGlobals: {
+          postMessage: (m) => {
+            const c = structuredClone(m);
+            queueMicrotask(() => { if (!me._dead && typeof me.onmessage === 'function') me.onmessage({ data: c }); });
+          },
+        },
+      });
+      wsb.self = wsb;
+      delete wsb.window;                                   // worker 无 window；ai_worker.js 自行 window=self
+      wsb.importScripts = (...files) => { for (const f of files) load(f); };
+      const M = {}; for (const k of Object.getOwnPropertyNames(Math)) M[k] = Math[k];
+      const r = mulberry32(((opts.mathSeed || 1) + (serial++) * 0x9E3779B9) >>> 0); M.random = () => r();
+      wsb.Math = M;
+      if (opts.forceJS) wsb._nnForceJS = true;
+      this._wsb = wsb;
+      load(String(url).replace(/^.*\//, ''));             // 'ai_worker.js'
+    }
+    postMessage(m) {
+      const c = structuredClone(m), wsb = this._wsb;
+      queueMicrotask(() => {
+        if (this._dead || typeof wsb.onmessage !== 'function') return;
+        try { wsb.onmessage({ data: c }); }
+        catch (e) { if (typeof this.onerror === 'function') this.onerror({ message: String((e && e.message) || e) }); }
+      });
+    }
+    terminate() { this._dead = true; }
+  };
+}
+
+module.exports = { createSandbox, loadEngine, makeEl, createStorage, makeFetch, createFakeWorkerClass, DEFAULT_ENGINE_FILES };

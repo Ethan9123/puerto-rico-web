@@ -2890,11 +2890,8 @@ async function humanPayBlackMarket(p, gap) {
   }
 }
 
-async function doBuilder(playerIdx, isChooser) {
-  const p = G.players[playerIdx];
-  G._actingSeat = playerIdx; // 联机：建造决策归属本座位
-  if (G.buildingUsedSpaces(p) >= 12) return;
-  // 列出可买且能负担的建筑
+// 列出可买且能负担的建筑（doBuilder 的候选集；抽成纯函数供子决策重建 / 测试复用，逻辑逐字未变）
+function buildBuilderOptions(p, isChooser) {
   const options = [];
   for (const b of BUILDINGS) {
     if (G.buildingStock[b.id] <= 0) continue;
@@ -2904,6 +2901,13 @@ async function doBuilder(playerIdx, isChooser) {
     if (p.money + G.blackMarketCapacity(p) < cost) continue; // 黑市可补差额
     options.push({ b, cost });
   }
+  return options;
+}
+async function doBuilder(playerIdx, isChooser) {
+  const p = G.players[playerIdx];
+  G._actingSeat = playerIdx; // 联机：建造决策归属本座位
+  if (G.buildingUsedSpaces(p) >= 12) return;
+  const options = buildBuilderOptions(p, isChooser);
   if (options.length === 0) return;
   let pickIdx;
   if (p.isHuman) {
@@ -3844,6 +3848,56 @@ function aiUnmodeledMods() {
   return !!(G.expansion || G.expansionNobles || G.expansionTibs || G.moduleFestival);
 }
 
+// ---- 子决策处的 sim 状态重建（第三轮 Stage 0：所有子决策前瞻/求解/搜索的唯一入口）----
+// 返回 { st, dec }（dec = az 在该点的决策，且已通过安全闸）或 null（不适用 → 调用方回退启发式）。
+//   kind 'build'  ctx = { options }                                              （doBuilder 的 options）
+//   kind 'captain' ctx = { candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet, cphase? }
+// ⚠ 修掉一个长期存在的 off-by-one：buildSimState 在【角色边界】是对的（picksThisTurn = 已选卡数）；
+//   但子决策发生在某角色阶段**中途**，该角色卡已 taken，而 az 层只在 azFinishRole 才 picksThisTurn++
+//   （sim.js azApply 角色分支不加）。不减 1 → 阶段结束后「下一个选角者」错位一格、本轮少一次选角。
+//   只读核对：4555/4555 个阶段中途的 az 决策都满足 已选卡数 = picksThisTurn + 1。
+//   受影响的历史结果：§9 求解器（build/captain）与 §13.6/§13.9 建造前瞻（见 AI_STRENGTH §18 更正）。
+function simStateAtSubDecision(kind, p, ctx) {
+  if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.azDecision !== "function") return null;
+  const st = buildSimState(G);
+  st.picksThisTurn = Math.max(0, st.picksThisTurn - 1);
+  const N = st.numPlayers;
+  if (kind === "build") {
+    const bcard = st.roleCards.find(r => r.name === "Builder");
+    const chooser = bcard ? bcard.takenBy : null;
+    if (chooser == null) return null;
+    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "builder", chooser, ord, oi };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
+    // 安全闸：az 重建的可建集合必须与 game.js doBuilder 逐 id 一致，否则前瞻/求解的是错模型
+    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
+    const gameIds = (ctx.options || []).map(o => o.b.id).sort((a, b) => a - b);
+    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+    return { st, dec };
+  }
+  if (kind === "captain") {
+    const ord = (ctx.order || []).slice();
+    const oi = ord.indexOf(p.idx);
+    if (oi < 0) return null;
+    st.az = { phase: "captain", chooser: ctx.chooserIdx, ord, oi, progressed: !!ctx.passProgressed,
+      chooserBonusUsed: !!(ctx.chooserBonusUsedSet && ctx.chooserBonusUsedSet.has(ctx.chooserIdx)),
+      // cphase 只供启发式 rankCaptain 用（精确求解不需要）；缺省时此前是 undefined（行为同 'late'）
+      cphase: ctx.cphase || (PRSim.phaseOf ? PRSim.phaseOf(st) : undefined) };
+    const dec = PRSim.azDecision(st);
+    if (!dec || dec.type !== "captain" || dec.chooser !== p.idx) return null;
+    // game.js 候选编码为与 az 相同的 int（shipSlot*10 + goodIdx，wharf=3），逐一比对集合 → 不一致即回退
+    const gameCodes = (ctx.candidates || []).filter(c => c.ship !== "smallwharf").map(captainCandCode).sort((a, b) => a - b);
+    const azCodes = dec.actions.slice().sort((a, b) => a - b);
+    if (gameCodes.length !== azCodes.length || gameCodes.some((c, i) => c !== azCodes[i])) return null;
+    return { st, dec };
+  }
+  return null;
+}
+function captainCandCode(c) { return (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS.indexOf(c.good); }
+
 // 返回：null=不适用(回退 aiPickBuilding) | -1=PASS(跳过建造) | >=0=options 下标。
 function solverPickBuilding(p, options, isChooser) {
   // 群友·建筑大师(西西/拾光/SC)即使全局开关关闭也启用终局精确建造求解器
@@ -3852,22 +3906,10 @@ function solverPickBuilding(p, options, isChooser) {
   // 扩展局：az 决策层未完整建模 → 不接管（保持启发式）
   if (aiUnmodeledMods()) return null;
   try {
-    const st = buildSimState(G);
-    if (!st.endTriggered) return null;                 // 仅终局触发后
-    const bcard = st.roleCards.find(r => r.name === "Builder");
-    const chooser = bcard ? bcard.takenBy : null;
-    if (chooser == null) return null;
-    const N = st.numPlayers;
-    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
-    const oi = ord.indexOf(p.idx);
-    if (oi < 0) return null;
-    st.az = { phase: "builder", chooser, ord, oi };     // 重建建造阶段 az 游标，指向当前玩家
-    const dec = PRSim.azDecision(st);
-    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
-    // 安全闸：az 重建的可建集合必须与 game.js doBuilder 完全一致，否则求解的是错模型 → 回退
-    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
-    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
-    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+    if (!G.endTriggered) return null;                  // 仅终局触发后
+    const rb = simStateAtSubDecision("build", p, { options });   // 重建建造阶段 az 游标 + 安全闸
+    if (!rb) return null;
+    const st = rb.st;
     const sol = PRSim.solveEndgame(st, window._l6SolverBuildCap || 2e6);   // 超预算→null→回退（2e6 即 A/B 验证档）
     if (!sol || sol.action == null) return null;
     if (sol.action < 0) return -1;                      // PASS = 不建造
@@ -3896,21 +3938,9 @@ function vnetPickBuilding(p, options, isChooser) {
   if (aiUnmodeledMods()) return null; // az 层未完整建模扩展
   if (!useRollout && G.numPlayers !== 4) return null;                           // evalLeafVecNN 仅 4 人局（rollout 模式无此限制）
   try {
-    const st = buildSimState(G);
-    const bcard = st.roleCards.find(r => r.name === "Builder");
-    const chooser = bcard ? bcard.takenBy : null;
-    if (chooser == null) return null;
-    const N = st.numPlayers;
-    const ord = []; for (let k = 0; k < N; k++) ord.push((chooser + k) % N);
-    const oi = ord.indexOf(p.idx);
-    if (oi < 0) return null;
-    st.az = { phase: "builder", chooser, ord, oi };
-    const dec = PRSim.azDecision(st);
-    if (!dec || dec.type !== "build" || dec.chooser !== p.idx) return null;
-    // 安全闸：az 可建集合必须与 game.js doBuilder 完全一致，否则前瞻的是错模型 → 回退
-    const azIds = dec.actions.filter(a => a >= 0).sort((a, b) => a - b);
-    const gameIds = options.map(o => o.b.id).sort((a, b) => a - b);
-    if (azIds.length !== gameIds.length || azIds.some((id, i) => id !== gameIds[i])) return null;
+    const rb = simStateAtSubDecision("build", p, { options });   // 重建 az 游标 + 安全闸（见 simStateAtSubDecision）
+    if (!rb) return null;
+    const st = rb.st, dec = rb.dec;
 
     const allowPass = window._l6VnetBuildPass !== false;   // 默认允许"不建造"参与比较
     // 公共随机数(common random numbers)：每个候选用**同一个种子**的独立 RNG 续局，
@@ -3971,22 +4001,12 @@ function solverPickCaptain(p, candidates, chooserIdx, order, passProgressed, cho
   if (typeof PRSim === "undefined" || !PRSim || typeof PRSim.solveEndgame !== "function" || typeof PRSim.azDecision !== "function") return null;
   if (aiUnmodeledMods()) return null;
   try {
-    const st = buildSimState(G);
-    if (!st.endTriggered) return null;
-    const ord = order.slice();
-    const oi = ord.indexOf(p.idx);
-    if (oi < 0) return null;
-    st.az = { phase: "captain", chooser: chooserIdx, ord, oi, progressed: !!passProgressed, chooserBonusUsed: chooserBonusUsedSet.has(chooserIdx) };
-    const dec = PRSim.azDecision(st);
-    if (!dec || dec.type !== "captain" || dec.chooser !== p.idx) return null;
-    // game.js 候选编码为与 az 相同的 int（shipSlot*10 + goodIdx，wharf=3），逐一比对集合 → 不一致即回退
-    const enc = c => (c.ship === "wharf" ? 3 : c.ship) * 10 + GOODS.indexOf(c.good);
-    const gameCodes = candidates.filter(c => c.ship !== "smallwharf").map(enc).sort((a, b) => a - b);
-    const azCodes = dec.actions.slice().sort((a, b) => a - b);
-    if (gameCodes.length !== azCodes.length || gameCodes.some((c, i) => c !== azCodes[i])) return null;
-    const sol = PRSim.solveEndgame(st, window._l6SolverBuildCap || 2e6);
+    if (!G.endTriggered) return null;
+    const rb = simStateAtSubDecision("captain", p, { candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet });
+    if (!rb) return null;
+    const sol = PRSim.solveEndgame(rb.st, window._l6SolverBuildCap || 2e6);
     if (!sol || sol.action == null) return null;
-    const hit = candidates.find(c => c.ship !== "smallwharf" && enc(c) === sol.action);
+    const hit = candidates.find(c => c.ship !== "smallwharf" && captainCandCode(c) === sol.action);
     return hit || null;
   } catch (e) { return null; }
 }
@@ -4105,6 +4125,9 @@ function alphazeroPickRole(p, available) {
 // 或任何出错，调用方回退到原同步函数 → Node 评测工具行为逐位不变。
 const PRAIPool = {
   K: 0, nn: false, wasm: false, vnet: false, lastIters: 0,
+  // 最近一次池搜索的记账：入口即重置为 ok:false，只有成功合并后才写 ok:true（失败/超时不会残留上一次的统计）。
+  // K = 实际合并的回复数（可能少于池大小 poolK）；perWorker = 各 worker 迭代数。供 _aiDecisionLog / 评测回退审计用。
+  lastStats: null,
   _slots: [], _initP: null, _nnP: null, _vnetP: null, _broken: false, _reqId: 0, _hooked: false,
   available() {
     if (this._broken) return false;
@@ -4246,6 +4269,8 @@ const PRAIPool = {
     if (mode === "alpha" && !this.nn) throw new Error("ai-worker NN unavailable");
     if (mode === "alpha" && window._l6ValueNet && !this.vnet) throw new Error("ai-worker value net unavailable");
     const id = ++this._reqId;
+    const _t0 = Date.now();
+    this.lastStats = { reqId: id, mode, ok: false, K: 0, poolK: this._slots.length, perWorker: [], errors: [], ms: 0 };
     const state = Object.assign({}, st); delete state.rnd; // 函数不能 structured-clone；worker 侧按 seed 自建 RNG
     const knobs = this._knobs();
     const tables = this._tables();
@@ -4254,10 +4279,14 @@ const PRAIPool = {
     const ps = this._slots.map((slot, k) => new Promise(resolve => {
       if (!slot.alive) return resolve(null);
       slot.cur = id; slot.resolve = (m) => { if (m && m.type === "result") got.push(m); else if (m && m.type === "error") errs.push(m.message); resolve(m); };
-      try { slot.w.postMessage({ type: "pick", id, state, mode, opts, seed: (seedBase + k * 0x9E3779B9) >>> 0, knobs, tables }); }
+      // RPdiv（第三轮 Stage 2，opt-in window._rpDiversify=ε）：worker k≥1 的叶 rollout 以概率 ε 随机选角，
+      // 让各 worker 的树去相关（默认叶 rollout 确定性 → K 棵树只在牌堆洗牌上不同）。worker 0 保持原样。
+      const wopts = (window._rpDiversify > 0 && k >= 1 && mode === "alpha") ? Object.assign({}, opts, { leafEps: window._rpDiversify }) : opts;
+      try { slot.w.postMessage({ type: "pick", id, state, mode, opts: wopts, seed: (seedBase + k * 0x9E3779B9) >>> 0, knobs, tables }); }
       catch (e) { slot.resolve = null; slot.cur = null; errs.push(String((e && e.message) || e)); resolve(null); }
     }));
-    const tmo = timeoutMs != null ? timeoutMs : ((opts && opts.budgetMs) || 1500) * 1.5 + 3000;
+    // window._aiPoolTimeoutMs：评测用（ms 预算设为 1e9 时默认超时 ~17 天，丢一条回复就会挂死进程）
+    const tmo = timeoutMs != null ? timeoutMs : (window._aiPoolTimeoutMs > 0 ? window._aiPoolTimeoutMs : ((opts && opts.budgetMs) || 1500) * 1.5 + 3000);
     let timer = null;
     await Promise.race([Promise.allSettled(ps), new Promise(r => { timer = setTimeout(r, tmo); })]);
     if (timer) clearTimeout(timer);
@@ -4272,6 +4301,7 @@ const PRAIPool = {
       for (const s of (r.stats || [])) { const m = merged.get(s.nm); if (m) { m.N += s.N; m.Q += s.Q; } else merged.set(s.nm, { nm: s.nm, N: s.N, Q: s.Q }); }
     }
     this.lastIters = iters;
+    this.lastStats = { reqId: id, mode, ok: true, K: got.length, poolK: this._slots.length, perWorker: got.map(r => r.iters || 0), errors: errs.slice(), ms: Date.now() - _t0, merged: Array.from(merged.values()), replies: got.map(r => r.stats || []) };
     if (!merged.size) return got[0].idx; // 根只有 ≤1 个合法角色等退化情形：worker 已直接给出索引
     return PRSim.selectRootRole(Array.from(merged.values()), st, opts);
   },
@@ -4349,7 +4379,28 @@ async function alphazeroPickRoleAsync(p, available) {
 
 // 主循环用：L4/L5/L6 走 worker 池（await，不冻结 UI）；其余等级或池不可用时等价于同步 aiPickRole。
 // 注意 level5Reactive 内的对手预测递归与 netplay 的 aiDefaultFor 仍调用同步 aiPickRole。
+// 主循环入口：选角 + 决策日志（window._aiDecisionLog，环形 1000 条）。日志只用 Date.now()/数组 push，
+// 不碰随机数与控制流 → Node 评测逐位不变。path='pool' 表示本决策最后一次池搜索成功；L6 决策若最后一次
+// 池搜索不是 'alpha' 模式（alphazeroPickRoleAsync 的失败分支会转去 expert 池 / 同步 L5），记 fallback=true。
 async function aiPickRoleAsync(p, available) {
+  const t0 = Date.now(), r0 = PRAIPool._reqId;
+  const res = await aiPickRoleAsyncCore(p, available);
+  try { logAiDecision(p, available, r0, t0); } catch (e) {}
+  return res;
+}
+function logAiDecision(p, available, r0, t0) {
+  const log = window._aiDecisionLog || (window._aiDecisionLog = []);
+  const s = PRAIPool.lastStats, lvl = p._aiLevel || 3;
+  const usedPool = !!(s && s.reqId > r0);
+  log.push({ t: t0, seat: p.idx, lvl, turn: (typeof G !== "undefined" && G) ? G.turnNumber : null, legal: available.length,
+    path: usedPool ? (s.ok ? "pool" : "pool-failed") : "sync", mode: usedPool ? s.mode : null,
+    K: usedPool ? s.K : 0, poolK: PRAIPool.K, perWorker: usedPool ? s.perWorker : null, ms: Date.now() - t0,
+    fallback: lvl === 6 && usedPool && (!s.ok || s.mode !== "alpha"),
+    // 池可用却没走池（人格直选 / worker 无 NN 回退同步等）：单独标出，交由审计判断是否属于回退
+    syncWhilePool: lvl >= 4 && !usedPool && PRAIPool.available() });
+  if (log.length > 1000) log.splice(0, log.length - 1000);
+}
+async function aiPickRoleAsyncCore(p, available) {
   let lvl = p._aiLevel || 3;
   if (lvl < 4 || lvl > 6 || !PRAIPool.available()) return aiPickRole(p, available);
   updatePlan(p);
