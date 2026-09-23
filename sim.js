@@ -308,6 +308,12 @@
     for (let i = 0; i < st.roleCards.length; i++) if (!st.roleCards[i].taken) out.push(i);
     return out;
   }
+  // legalRoleIdxs(st).length > 0 的免分配版（回合结束判定每步都调一次）
+  function anyUntaken(st) {
+    const rc = st.roleCards;
+    for (let i = 0; i < rc.length; i++) if (!rc[i].taken) return true;
+    return false;
+  }
 
   // ---------- 启发式子策略 ----------
   function pickPlantation(st, p, options, isChooser) {
@@ -841,19 +847,38 @@
     for (const g of GOODS_) { let t = 0; for (let j = 0; j < st.players.length; j++) if (j !== seat) t += st.players[j].goods[g] || 0; og[g] = t; }
     return og;
   }
+  // rankCaptain 只在"候选要开空船"时才读 oppGoods（`oppGoods && s.good === null && W > 0`）。
+  // 没有这种候选时传 null 与传完整表逐位等价，省掉每次装货一次 5×N 的汇总。
+  function captainOppGoods(st, cands, seat) {
+    for (let k = 0; k < cands.length; k++) {
+      const sh = cands[k].ship;
+      if (typeof sh === "number" && st.ships[sh].good === null) return oppGoodsOf(st, seat);
+    }
+    return null;
+  }
   // 某玩家本轮可装船的候选 {ship(0..2 或 "wharf"), good, amount}。抽出供 doCaptain 与因子化层共用。
   function captainCands(st, p) {
     const cands = [];
     for (let s = 0; s < st.ships.length; s++) {
       const ship = st.ships[s]; if (ship.count >= ship.capacity) continue;
       if (ship.good === null) {
-        for (const g of GOODS_) { if (p.goods[g] <= 0) continue; if (st.ships.some((sh, idx) => idx !== s && sh.good === g)) continue; cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }); }
+        for (const g of GOODS_) {
+          if (p.goods[g] <= 0) continue;
+          let onOther = false;
+          for (let idx = 0; idx < st.ships.length; idx++) if (idx !== s && st.ships[idx].good === g) { onOther = true; break; }
+          if (onOther) continue;
+          cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) });
+        }
       } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
     }
     // 规则：选定一种货后必须装"尽可能多" — 同种货有多艘可选船时只能选装载量最大的
-    const maxByGood = {};
-    for (const c of cands) maxByGood[c.good] = Math.max(maxByGood[c.good] || 0, c.amount);
-    const legal = cands.filter(c => c.amount === maxByGood[c.good]);
+    // amount 恒 >= 1 → "等于同货最大值" ⇔ "没有同货候选比它多"；保持 cands 原顺序
+    const legal = [];
+    for (let a = 0; a < cands.length; a++) {
+      const c = cands[a]; let top = true;
+      for (let b = 0; b < cands.length; b++) if (cands[b].good === c.good && cands[b].amount > c.amount) { top = false; break; }
+      if (top) legal.push(c);
+    }
     // 码头：私人船，容量 11，不受上述约束
     if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) legal.push({ ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) });
     // 扩展：小码头(31) — 自有船，可装任意货，每 2 货 = 1VP
@@ -920,6 +945,8 @@
   }
 
   // 装船阶段末：满船清空 + 各玩家留货(storageKinds 满 + 1)。抽出供两路共用。
+  // 按价格降序的货种表（稳定排序 → 先排后滤与先滤后排结果相同）
+  const GOODS_BY_PRICE_DESC = GOODS_.slice().sort((a, b) => PRICE[b] - PRICE[a]);
   function captainCleanupKeep(st) {
     const cleared = [];   // Tibs 海关站(50)：本阶段被清空的**满船**货种
     for (const ship of st.ships) if (ship.count >= ship.capacity) { if (st.expansionTibs && ship.good) cleared.push(ship.good); st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
@@ -927,7 +954,7 @@
       const total = GOODS_.reduce((s, g) => s + p.goods[g], 0);
       if (total > 0) {
         const kinds = storageKinds(p);
-        const sorted = GOODS_.filter(g => p.goods[g] > 0).sort((a, b) => PRICE[b] - PRICE[a]);
+        const sorted = GOODS_BY_PRICE_DESC.filter(g => p.goods[g] > 0);
         const keep = {}; const full = sorted.slice(0, kinds);
         for (const g of full) keep[g] = p.goods[g];
         let singleSlots = 1 + (isManned(p, 27) ? 3 : 0); // 扩展：储藏库 +3 单货槽
@@ -964,7 +991,7 @@
       for (const i of ord) {
         const cands = captainCands(st, st.players[i]);
         if (cands.length === 0) continue;
-        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase, oppGoodsOf(st, i), st.players[i]._captainDeny)[0]);
+        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase, captainOppGoods(st, cands, i), st.players[i]._captainDeny)[0]);
         progress = true;
       }
     }
@@ -1005,7 +1032,7 @@
     checkEnd(st);
     st.picksThisTurn++;
     // 本回合选满(或无牌可选) → 回合结束
-    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || !anyUntaken(st)) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1028,32 +1055,62 @@
   function heuristicPickRole(st, chooser, legal) {
     const p = st.players[chooser];
     const phase = phaseOf(st);
-    const goods = GOODS_.reduce((a, g) => a + p.goods[g], 0);
-    let cap = 0; for (const s of st.ships) cap += (s.capacity - s.count);
-    let myOpen = 0; for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
-    let myProd = totalProduction(p);
-    let mannedCorn = 0; for (const pl of p.plantations) if (pl.good === "corn" && pl.manned) mannedCorn++;
+    // 只算合法角色真正用到的量。此前每一步都先对 4 名玩家各算 totalProduction + finalScore + 空岗/存货，
+    // 而结果大多只在某一个 case 里用（finalScore 只在 Builder；产能只在 Craftsman……），
+    // cpu-prof 里这一块（含 totalProduction/finalScore/asState）是 rollout 最热的单点。
+    // 这里全是纯函数 → 懒算、提前退出与原先先算全部的结果逐位相同（tests/search_golden_test.js 钉住）。
+    let hasCap = false, hasMay = false, hasBld = false, hasCft = false;
+    for (const i of legal) {
+      switch (st.roleCards[i].name) { case "Captain": hasCap = true; break; case "Mayor": hasMay = true; break; case "Builder": hasBld = true; break; case "Craftsman": hasCft = true; break; }
+    }
     const downstream = st.players[(chooser + 1) % st.numPlayers];
     const office = isManned(p, 12);
-    // 对手聚合量(每次调用算一次)
-    const myScore = finalScore(p, st);
-    let oppMaxProd = 0, oppOpenMax = 0, oppGoodsMax = 0, lead = 0, oppMature = false;
-    for (const o of st.players) {
-      if (o === p) continue;
-      let pr = totalProduction(o);
-      if (pr > oppMaxProd) oppMaxProd = pr;
-      let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
-      if (op > oppOpenMax) oppOpenMax = op;
-      const og = GOODS_.reduce((a, g) => a + o.goods[g], 0); if (og > oppGoodsMax) oppGoodsMax = og;
-      const sc = finalScore(o, st); if (sc > lead) lead = sc;
-      if (pr >= 5 && o.buildings.length >= 5) oppMature = true;
+    // Captain：能运多少 / 玉米流 / 对手囤货（原 oppGoodsMax >= 4 ⇔ 有对手存货 >= 4）
+    let goods = 0, cap = 0, mannedCorn = 0, oppGoods4 = false;
+    if (hasCap) {
+      for (const g of GOODS_) goods += p.goods[g];
+      for (const s of st.ships) cap += (s.capacity - s.count);
+      for (const pl of p.plantations) if (pl.good === "corn" && pl.manned) mannedCorn++;
+      if (goods >= 2) for (const o of st.players) {
+        if (o === p) continue;
+        let og = 0; for (const g of GOODS_) og += o.goods[g];
+        if (og >= 4) { oppGoods4 = true; break; }
+      }
     }
-    const behind = myScore < lead - 3;
+    // Mayor：空岗（原 oppOpenMax >= 3 && oppOpenMax > myOpen ⇔ 有对手空岗 >= 3 且 > myOpen）
+    let myOpen = 0, oppOpenHi = false;
+    if (hasMay) {
+      for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
+      for (const o of st.players) {
+        if (o === p) continue;
+        let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
+        if (op >= 3 && op > myOpen) { oppOpenHi = true; break; }
+      }
+    }
+    // Craftsman：产能（原 myProd < oppMaxProd ⇔ 有对手产能 > myProd）
+    let myProd = 0, oppOutProd = false;
+    if (hasCft) {
+      myProd = totalProduction(p);
+      for (const o of st.players) { if (o === p) continue; if (totalProduction(o) > myProd) { oppOutProd = true; break; } }
+    }
+    // Builder：原条件 (behind || oppMature || late) && canRushBuild()，各项纯 → 按便宜程度重排短路
+    const oppMature = () => {
+      for (const o of st.players) { if (o === p) continue; if (o.buildings.length >= 5 && totalProduction(o) >= 5) return true; }
+      return false;
+    };
+    const behind = () => {
+      const myScore = finalScore(p, st);
+      let lead = 0;
+      for (const o of st.players) { if (o === p) continue; const sc = finalScore(o, st); if (sc > lead) lead = sc; }
+      return myScore < lead - 3;
+    };
     const canRushBuild = () => {
       const spaceLeft = 12 - buildingUsedSpaces(p);
+      const lateSmall = phase === "late" && spaceLeft <= 4;
       for (const b of BUILDINGS_) {
-        if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
-        if (p.money >= Math.max(0, b.cost - 1) && (b.type === "large_violet" || (phase === "late" && spaceLeft <= 4))) return true;
+        if (!(b.type === "large_violet" || lateSmall)) continue;
+        if (st.buildingStock[b.id] <= 0 || spaceLeft < b.size || ownsBuilding(p, b.id)) continue;
+        if (p.money >= Math.max(0, b.cost - 1)) return true;
       }
       return false;
     };
@@ -1066,21 +1123,21 @@
         case "Captain":
           s += Math.min(goods, cap) * 1.3;                  // 基础:能运多少
           if (mannedCorn >= 2 && goods >= 3 && cap > 0) s += 6;
-          if (oppGoodsMax >= 4 && goods >= 2) s += 4;
+          if (oppGoods4) s += 4;
           break;
         case "Mayor":
           s += Math.min(myOpen, Math.ceil(st.colonistsOnShip / st.numPlayers) + 1) * 2.2; // 基础:能填岗
-          if (oppOpenMax >= 3 && oppOpenMax > myOpen) s -= 6;
+          if (oppOpenHi) s -= 6;
           if (myOpen >= 3 && st.colonistsOnShip >= 1) s += 4;
           if (phase !== "early") for (const b of p.buildings) if (BLD[b.bid].type === "large_violet" && b.men < BLD[b.bid].men) { s += 8; break; }
           break;
         case "Builder":
           if (p.money >= 5) s += 4.5;                       // 基础:有钱可建
-          if ((behind || oppMature || phase === "late") && canRushBuild()) s += 8;
+          if ((phase === "late" || oppMature() || behind()) && canRushBuild()) s += 8;
           break;
         case "Craftsman":
           s += myProd * 1.6;                                // 基础:产能
-          if (myProd < oppMaxProd) s -= 6;
+          if (oppOutProd) s -= 6;
           if (phase === "late" && myProd < 3) s -= 6;
           break;
         case "Trader":
@@ -1124,15 +1181,20 @@
   }
 
   // 终局奖励（从 perspective 玩家视角）：胜=1、平分摊、负=0；叠加小幅分差降噪
-  function reward(st, perspective) {
+  function reward(st, perspective) { return rewardFn(st)(perspective); }
+  // 同一终局对多个视角求奖励：终局分只算一次。ISMCTS 回传时路径上每个节点都要一个视角的奖励，
+  // 此前每个节点都重算全体 finalScore。算术与 reward 逐项相同（同一表达式、同一求值顺序）。
+  function rewardFn(st) {
     const scores = st.players.map(q => finalScore(q, st));
-    const my = scores[perspective];
     const best = Math.max(...scores);
     const winners = scores.filter(s => s === best).length;
-    let r = (my === best) ? (1 / winners) : 0;
-    const second = Math.max(...scores.filter((_, i) => i !== perspective), 0);
-    const margin = (my - second) / 30; // 归一化分差
-    return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
+    return (perspective) => {
+      const my = scores[perspective];
+      let r = (my === best) ? (1 / winners) : 0;
+      const second = Math.max(...scores.filter((_, i) => i !== perspective), 0);
+      const margin = (my - second) / 30; // 归一化分差
+      return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
+    };
   }
 
   // ---------- 手写"经济评估"：一个面板的前瞻性经济价值（供 MCTS 叶节点评估，给困难档统筹全局）----------
@@ -1216,14 +1278,14 @@
   // 叶子评估：有权重 W 时截断 rollout truncate 步后用价值函数；否则全 rollout。
   // 返回一个函数 perspective→[-1,1] 奖励（统一标度供 UCT 用）。
   function evalLeaf(st, W, truncate, rnd) {
-    if (!W) { rolloutToEnd(st, rnd); return (persp) => reward(st, persp); }
+    if (!W) { rolloutToEnd(st, rnd); return rewardFn(st); }
     let steps = 0;
     while (!isTerminal(st) && steps++ < truncate) {
       const ch = currentChooser(st); if (ch < 0) break;
       const legal = legalRoleIdxs(st); if (!legal.length) break;
       applyRole(st, heuristicPickRole(st, ch, legal));
     }
-    if (isTerminal(st)) return (persp) => reward(st, persp);
+    if (isTerminal(st)) return rewardFn(st);
     return (persp) => 2 * evalValue(extractFeatures(st, persp), W) - 1; // [0,1]→[-1,1]
   }
 
@@ -1256,6 +1318,9 @@
     // Phase 2：rolloutFrac ∈ (0,1] 时，每次迭代以该概率改走完整 rollout（reward 尺度）而非 NN 叶评估；
     // 仅在 >0 时才消耗 rootState.rnd，默认 0 路径的 PRNG 流与旧版逐位一致。
     const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
+    // 第三轮 RPdiv：leafEps ∈ (0,1) 时，NN 叶评估前的启发式推进每步以该概率改走均匀随机合法角色。
+    // 用于让根并行的各 worker 树去相关（worker k>=1 才开）。默认 0 → 不消耗 rootState.rnd，与旧版逐位一致。
+    const leafEps = (opts.leafEps > 0) ? Math.min(1, opts.leafEps) : 0;
     if (currentChooser(rootState) < 0) return opts.returnStats ? { idx: -1, stats: [], iters: 0 } : -1;
     const rootLegal = legalRoleIdxs(rootState);
     if (rootLegal.length <= 1) return opts.returnStats ? { idx: rootLegal[0], stats: [], iters: 0 } : rootLegal[0];
@@ -1281,7 +1346,9 @@
           try { node.P = priorPolicyFn(st, ch) || {}; } catch (e) { node.P = {}; }
         }
         // UCT / PUCT
-        let chosen = null, bestV = -Infinity;
+        // chosenI = 取到 bestV 的**首个**合法下标。同名角色（5 人局两张 Prospector）共用一个子节点 → v 相同，
+        // 严格 > 保证停在同名的首个下标上，与原先的 legal.find(名字相同) 逐项一致，省掉每步一次闭包扫描。
+        let chosen = null, chosenI = -1, bestV = -Infinity;
         for (const i of legal) {
           const nm = st.roleCards[i].name, c = node.children.get(nm);
           let v;
@@ -1293,9 +1360,9 @@
           } else {
             v = c.N === 0 ? Infinity : c.Q / c.N + C * Math.sqrt(Math.log(node.N + 1) / c.N);
           }
-          if (v > bestV) { bestV = v; chosen = nm; }
+          if (v > bestV) { bestV = v; chosen = nm; chosenI = i; }
         }
-        const ri = legal.find(i => st.roleCards[i].name === chosen);
+        const ri = chosenI >= 0 ? chosenI : undefined;
         const child = node.children.get(chosen);
         const wasUnvisited = child.N === 0;
         visited.push({ child, chooser: ch });
@@ -1316,10 +1383,13 @@
         while (!isTerminal(st) && steps++ < truncate) {
           const ch = currentChooser(st); if (ch < 0) break;
           const legal = legalRoleIdxs(st); if (!legal.length) break;
-          applyRole(st, heuristicPickRole(st, ch, legal));
+          let ri;
+          if (leafEps > 0 && (rootState.rnd ? rootState.rnd() : Math.random()) < leafEps) ri = legal[Math.floor((rootState.rnd ? rootState.rnd() : Math.random()) * legal.length)];
+          else ri = heuristicPickRole(st, ch, legal);
+          applyRole(st, ri);
         }
         if (isTerminal(st)) {
-          leafEval = (persp) => reward(st, persp);
+          leafEval = rewardFn(st);
         } else {
           let vecEval = null;
           if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
@@ -1525,7 +1595,7 @@
   function azFinishRole(st) {
     checkEnd(st);
     st.picksThisTurn++;
-    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || !anyUntaken(st)) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1690,7 +1760,7 @@
     if (dec.type === "captain") {
       // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)
       const cands = captainCands(st, st.players[dec.chooser]);
-      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase, oppGoodsOf(st, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
+      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase, captainOppGoods(st, cands, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
     }
     if (dec.type === "build") {
       // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
