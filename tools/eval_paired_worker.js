@@ -52,6 +52,9 @@ const CRN = process.env.EVAL_CRN === '1';
 // （与 A 臂完全相同）。每个 ≥2 合法角色的 L6 决策都断言：本次池搜索成功、合并了 K 个回复、每个 worker 恰好
 // alphaIters 次迭代——否则记入 meta.l6.rpBad（该臂无效）。
 const RP_K = process.env.EVAL_RP_K ? parseInt(process.env.EVAL_RP_K) : 0;
+// EVAL_HARVEST=<file.jsonl>（第三轮 Stage 2 诊断用）：每个 ≥2 合法角色的 L6 选角决策，把当时的
+// buildSimState(G) 快照追加一行 {g, seat, k, st}。buildSimState 无副作用、不取随机数 → 对局逐字节不变。
+const HARVEST = process.env.EVAL_HARVEST || null;
 
 // ---- 可设种子的 Math 包装(必须在 game.js 加载前注入, 让 `rnd: Math.random`
 //      这类引用捕获拿到的是稳定的 wrapper) ----
@@ -79,6 +82,7 @@ const TMP = OUT + '.tmp', META = OUT + '.meta.jsonl', META_TMP = META + '.tmp', 
 for (const f of [OUT, DONE, META]) { try { fs.unlinkSync(f); } catch (e) {} }
 const _fd = fs.openSync(TMP, 'w');      // 逐局追加写；完成后原子 rename
 const _mfd = fs.openSync(META_TMP, 'w');
+const _hfd = HARVEST ? fs.openSync(HARVEST, 'w') : null;
 let _rows = 0;
 const { run } = loadEngine({
   files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'],
@@ -87,6 +91,7 @@ const { run } = loadEngine({
     sb.__setSeed = s => { _rng = mulberry32(s >>> 0); };
     sb.__writeRow = json => { fs.writeSync(_fd, json + '\n'); _rows++; };
     sb.__writeMeta = json => { fs.writeSync(_mfd, json + '\n'); };
+    sb.__harvest = json => { if (_hfd !== null) fs.writeSync(_hfd, json + '\n'); };
     // CRN：进入/离开一个 AI 决策时切换随机流（key 由沙盒内按局面指纹算好）
     sb.__aiStreamEnter = key => { _envRng = _rng; _rng = mulberry32((fnv1a(key) ^ 0x9E3779B9) >>> 0); };
     sb.__aiStreamExit = () => { if (_envRng) { _rng = _envRng; _envRng = null; } };
@@ -170,6 +175,8 @@ const src = `(async () => {
     const r0 = PRAIPool._reqId;
     const prev = ctx; ctx = my;
     const t0 = Date.now();
+    ${HARVEST ? `
+    if (lvl === 6 && gm && available.length >= 2) { gm.hk = (gm.hk || 0) + 1; __harvest(JSON.stringify({ g: gm.g, seat: p.idx, k: gm.hk - 1, st: buildSimState(G) })); }` : ''}
     ${CRN ? `
     const fp = JSON.stringify(buildSimState(G));           // rnd 是函数 → JSON 自动丢弃；纯快照、零副作用
     const base = gameSeed + '|' + p.idx + '|' + lvl + '|' + __fnv1a(fp);
@@ -241,6 +248,7 @@ const t0 = Date.now();
 run(src).then(played => {
   fs.fsyncSync(_fd); fs.closeSync(_fd);
   fs.fsyncSync(_mfd); fs.closeSync(_mfd);
+  if (_hfd !== null) { fs.fsyncSync(_hfd); fs.closeSync(_hfd); }
   fs.renameSync(META_TMP, META);
   fs.renameSync(TMP, OUT);
   const buf = fs.readFileSync(OUT);
