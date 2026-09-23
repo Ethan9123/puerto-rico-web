@@ -1648,9 +1648,11 @@ function startGame(netOpts) {
     // 此前 deep 档 L6 是 alphaIters=800 封顶——按实测 ~1.0 ms/迭代只跑 ~0.82 s 就停，
     // 而它**被允许用 5 s**，即 80%+ 的已分配思考时间被白白扔掉（AI_STRENGTH §16.2）。
     // §16 实测搜索在这个区间未饱和（+3.5pp/翻倍），所以这些时间是真的有价值的。
-    // 时长上限本身没动（normal 仍 2.5s / deep 仍 5s），改的只是「有没有把它用满」。
+    // 时长上限本身没动（normal 仍 2.5s），改的只是「有没有把它用满」。
+    // 第三轮（AI_STRENGTH §18，用户决定）：deep 档 L6 alphaMs 5000→6000，与标签「6s」及同档 L5(expertMs 6000) 一致。
+    // 按 §17 斜率推断 ≈ +0.9pp（+0.26 次翻倍），**未测量**。
     normal:  { L4: 800,   L5: 1500,  hardIters: 150, hardMs: 2000, expertIters: 60000, expertMs: 3000, alphaIters: 60000, alphaMs: 2500 },
-    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 60000, expertMs: 6000, alphaIters: 60000, alphaMs: 5000 },
+    deep:    { L4: 1500,  L5: 6000,  hardIters: 350, hardMs: 5000, expertIters: 60000, expertMs: 6000, alphaIters: 60000, alphaMs: 6000 },
     // 极限：迭代上限大幅抬高，让【时间预算】成为唯一约束 → AI 真的把整段时间用满、不停推演更多可能（L6 此前 1600 次常在 10s 前就停了）
     extreme: { L4: 2500,  L5: 10000, hardIters: 700, hardMs: 8000, expertIters: 60000, expertMs: 12000, alphaIters: 60000, alphaMs: 12000 },
   };
