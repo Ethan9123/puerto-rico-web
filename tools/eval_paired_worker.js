@@ -59,6 +59,26 @@ const RP_K = process.env.EVAL_RP_K ? parseInt(process.env.EVAL_RP_K) : 0;
 // EVAL_HARVEST=<file.jsonl>（第三轮 Stage 2 诊断用）：每个 ≥2 合法角色的 L6 选角决策，把当时的
 // buildSimState(G) 快照追加一行 {g, seat, k, st}。buildSimState 无副作用、不取随机数 → 对局逐字节不变。
 const HARVEST = process.env.EVAL_HARVEST || null;
+// EVAL_HARVEST_SUB=<file.jsonl>（第三轮 Stage 5b census，AI_STRENGTH §18.2 补充 B）：在每个 L6 子决策
+// （build/settle/trade/craftbonus/captain）的调用点，原函数**返回之后**：
+//   · 用 simStateAtSubDecision(kind, p, ctx) 在 window._l6Fid 临时打开（先过 l6FidAllowed()）的情况下重建该点的
+//     sim 状态 → 状态自带 _fid = true，安全闸也在 fid 的 azDecision 上判（null = 安全闸拒绝，照记一行）；
+//   · 记 game.js 实际走的一手（映射成 az 动作 id）、以及在 fid 状态上现算的 azHeuristicAction 与 PRSub 种子
+//     （census 离线复算后逐条比对：前者 = 「实际一手 ≡ 启发式」，后者 = JSON 往返不丢公开信息）；
+//   · build 另存旧口径（d4cbcd6 vnetPickBuilding / solverPickBuilding 的起点）：**原样** buildSimState(G)
+//     （不做 picksThisTurn−1、不置游标——游标由 census 逐行复刻旧代码去搭）、真实牌序、G.turnNumber、p.idx、options id 序、isChooser。
+// 每局末追加一行 {g, kind:'_end', row:'ok'|'error'|'incomplete', n, cfg}（census 据此核对局数、对局有效性，
+// 以及 cfg = 采样配置/L6 回退数是否就是预注册的 A2 配置）。
+// 钩子卫生（同 tools/heur_parity.js）：只读 G；钩子期间 Math.random 切到独立丢弃流并计数 → 对局行与无钩子逐字节相同
+// （证明：同参数带/不带本开关跑，cmp 对局行）。
+const HARVEST_SUB = process.env.EVAL_HARVEST_SUB || null;
+// EVAL_HARVEST_OLD=<dir>（仅与 EVAL_HARVEST_SUB 同用；§13.9/§9 复刻的等价性证据）：<dir> 是 d4cbcd6 的工作树拷贝
+// （git archive d4cbcd6 | tar -x -C <dir>）。在另一个 vm 上下文里加载**旧** game.js + sim*.js，置
+// _l6VnetBuild=true、_l6BuildEval='rollout'、_l6VnetBuildSamples=2、_l6SolverBuild=true，在每个 L6 建造点
+// 以当前真实 G 调旧 vnetPickBuilding（及 endTriggered 时旧 solverPickBuilding），把它们的选择记进同一行
+// （old139Live / oldSolLive）。旧上下文有自己的计数 Math.random，不碰本对局的随机流。census 把离线复刻的选择与之逐条比对。
+const HARVEST_OLD = process.env.EVAL_HARVEST_OLD || null;
+if (HARVEST_OLD && !HARVEST_SUB) { console.error('ERROR EVAL_HARVEST_OLD 需与 EVAL_HARVEST_SUB 同用'); process.exit(1); }
 
 // ---- 可设种子的 Math 包装(必须在 game.js 加载前注入, 让 `rnd: Math.random`
 //      这类引用捕获拿到的是稳定的 wrapper) ----
@@ -87,9 +107,23 @@ for (const f of [OUT, DONE, META]) { try { fs.unlinkSync(f); } catch (e) {} }
 const _fd = fs.openSync(TMP, 'w');      // 逐局追加写；完成后原子 rename
 const _mfd = fs.openSync(META_TMP, 'w');
 const _hfd = HARVEST ? fs.openSync(HARVEST, 'w') : null;
+const _sfd = HARVEST_SUB ? fs.openSync(HARVEST_SUB + '.tmp', 'w') : null;
 let _rows = 0;
+// 旧引擎（d4cbcd6）上下文：只在 EVAL_HARVEST_OLD 时创建
+const _old = HARVEST_OLD ? (() => {
+  let calls = 0; const r = mulberry32(0x0DDC0DE);
+  const M = {}; for (const k of Object.getOwnPropertyNames(Math)) M[k] = Math[k];
+  M.random = () => { calls++; return r(); };
+  const eng = loadEngine({ repoRoot: path.resolve(HARVEST_OLD), files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'], beforeLoad: sb => { sb.Math = M; } });
+  if (typeof eng.sandbox.vnetPickBuilding !== 'function' || /simStateAtSubDecision/.test(eng.run('vnetPickBuilding.toString()')))
+    throw new Error('EVAL_HARVEST_OLD: ' + HARVEST_OLD + ' is not the d4cbcd6 engine (vnetPickBuilding missing or already migrated)');
+  eng.run(`window._l6VnetBuild = true; window._l6BuildEval = 'rollout'; window._l6VnetBuildSamples = 2; window._l6SolverBuild = true;
+    globalThis.__oldPick = function (g, p, options, isChooser, which) { G = g; try { return which === 'solver' ? solverPickBuilding(p, options, isChooser) : vnetPickBuilding(p, options, isChooser); } finally { G = null; } };`);
+  calls = 0;   // 旧 game.js 加载时 kvLoad → prDeviceId 取过 1 次，不算旧决策函数的
+  return { pick: (...a) => eng.sandbox.__oldPick(...a), rnd: () => { const c = calls; calls = 0; return c; } };
+})() : null;
 const { run } = loadEngine({
-  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'],
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'].concat(HARVEST_SUB ? ['sim_sub.js'] : []),
   beforeLoad: sb => {
     sb.Math = MathSeeded;
     sb.__setSeed = s => { _rng = mulberry32(s >>> 0); };
@@ -101,6 +135,14 @@ const { run } = loadEngine({
     sb.__aiStreamExit = () => { if (_envRng) { _rng = _envRng; _envRng = null; } };
     sb.__fnv1a = fnv1a;
     sb.__progress = msg => console.log(msg);
+    if (HARVEST_SUB) {
+      sb.__harvestSub = json => { fs.writeSync(_sfd, json + '\n'); };
+      // 钩子期间：当前流（环境流或某个 AI 流）暂存，换成独立丢弃流并计数；退出时恢复，返回本次调用次数
+      let saved = null, hookCalls = 0; const hookStream = mulberry32(0xC0FFEE);
+      sb.__hookEnter = () => { saved = _rng; hookCalls = 0; _rng = () => { hookCalls++; return hookStream(); }; };
+      sb.__hookExit = () => { _rng = saved; saved = null; return hookCalls; };
+      if (_old) { sb.__oldPick = (...a) => _old.pick(...a); sb.__oldRnd = () => _old.rnd(); }
+    }
     if (RP_K > 0) {
       sb.Worker = createFakeWorkerClass({ forceJS: true, mathSeed: SEED_BASE });
       sb.navigator.hardwareConcurrency = RP_K + 1;          // game.js: K = min(_aiWorkersK||8, cores−1)
@@ -222,6 +264,92 @@ const src = `(async () => {
     }
   };
 
+  ${HARVEST_SUB ? `
+  // ---- Stage 5b census 采样钩子（见文件头 EVAL_HARVEST_SUB）：只挂 L6 座位；原函数返回之后才运行 ----
+  {
+    const clean = (st) => { const o = Object.assign({}, st); delete o.rnd; return o; };
+    function subRecord(kind, p, game, rebuild, extra) {
+      if (!gm || p._aiLevel !== 6) return;
+      const rec = { g: gm.g, seat: p.idx, kind, k: (gm.subk = (gm.subk || 0) + 1) - 1, turn: G.turnNumber, game };
+      __hookEnter();
+      try {
+        // 「以 _fid=true 重建」按字面做：重建期间临时打开 window._l6Fid（先问 l6FidAllowed()，与 buildSimState 的
+        // 入口规则同一处）→ buildSimState 当场置 st._fid，simStateAtSubDecision 的安全闸（az 动作集 == game 选项）
+        // 就是在 **fid** 的 azDecision 上判的，而不是先在非 fid 状态上过闸、事后才补标志（那样 fid 独有的动作集
+        // 差异——如 Stage 4 庄园抽牌时机——会漏过闸）。只在本次重建内打开，finally 立即恢复：对局本身从不见到它。
+        // fid 不被允许（扩展局 / 改过 L6 启发式参数）= 预注册的模型根本不适用 → 记 fidAllowed:false，census 判 INVALID。
+        const fa = l6FidAllowed();
+        if (!fa) rec.fidAllowed = false;
+        const w0 = window._l6Fid;
+        let rb;
+        window._l6Fid = fa;
+        try { rb = rebuild(); } finally { window._l6Fid = w0; }
+        if (!rb) rec.fid = null;                                   // 安全闸拒绝（闸在 fid 状态上判）
+        else {
+          const stF = clean(rb.st);
+          if (fa && stF._fid !== true) throw new Error('fid rebuild did not set st._fid');
+          rec.fid = stF;
+          rec.dec = { type: rb.dec.type, chooser: rb.dec.chooser, actions: rb.dec.actions.slice() };
+          const pr = PRSub.subSearchSteps(PRSim.clone(stF), { fid: true });   // 规范化 + fid 启发式 + 种子（不跑任何 rollout）
+          rec.hLive = pr ? pr.h : null; rec.seedLive = pr ? pr.seed : null;
+          rec.decLive = pr ? pr.dec.actions.slice() : null;
+        }
+        if (extra) extra(rec);
+      } catch (e) { rec.hookErr = String((e && e.stack) || e).slice(0, 400); }
+      finally { rec.hookRand = __hookExit(); }
+      __harvestSub(JSON.stringify(rec));
+    }
+    // 建造：旧口径 = d4cbcd6 vnetPickBuilding/solverPickBuilding 的第一行 buildSimState(G)（原样，不减一、不置游标）
+    const _aiPickBuilding = aiPickBuilding;
+    aiPickBuilding = function (p, options, isChooser) {
+      const r = _aiPickBuilding.apply(this, arguments);
+      subRecord('build', p, r < 0 ? PRSim.AZ_PASS : options[r].b.id, () => simStateAtSubDecision('build', p, { options }), (rec) => {
+        rec.old = { st: clean(buildSimState(G)), turn: G.turnNumber, pidx: p.idx, opts: options.map(o => o.b.id), isChooser: !!isChooser, endT: !!G.endTriggered };
+        ${HARVEST_OLD ? `
+        const m = (x) => x === null ? null : x < 0 ? PRSim.AZ_PASS : options[x].b.id;
+        rec.old139Live = m(__oldPick(G, p, options, isChooser, 'vnet'));
+        if (G.endTriggered) rec.oldSolLive = m(__oldPick(G, p, options, isChooser, 'solver'));
+        rec.oldRnd = __oldRnd();` : ''}
+      });
+      return r;
+    };
+    const _aiPickPlantation = aiPickPlantation;
+    aiPickPlantation = function (p, options, isChooser) {
+      const r = _aiPickPlantation.apply(this, arguments);
+      const o = options[r];
+      subRecord('settle', p, o.kind === 'quarry' ? PRSim.AZ_QUARRY : GOODS.indexOf(o.good), () => simStateAtSubDecision('settle', p, { options, isChooser }));
+      return r;
+    };
+    // 装船：doCaptain 的循环态借 solverPickCaptain 调用点取（A2 下它恒返回 null，随后 rankCaptainForAI 给出实际一手）
+    let capCtx = null;
+    const _solverPickCaptain = solverPickCaptain;
+    solverPickCaptain = function (p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet) {
+      capCtx = { p, candidates, chooserIdx, order, passProgressed, chooserBonusUsedSet };
+      return _solverPickCaptain.apply(this, arguments);
+    };
+    const _rankCaptainForAI = rankCaptainForAI;
+    rankCaptainForAI = function (candidates) {
+      const res = _rankCaptainForAI.apply(this, arguments);
+      const c = capCtx; capCtx = null;
+      if (c && c.candidates === candidates) subRecord('captain', c.p, captainCandCode(res[0]),
+        () => simStateAtSubDecision('captain', c.p, { candidates, chooserIdx: c.chooserIdx, order: c.order, passProgressed: c.passProgressed, chooserBonusUsedSet: c.chooserBonusUsedSet }));
+      return res;
+    };
+    const _aiPickTrade = aiPickTrade;
+    aiPickTrade = function (p, opts) {
+      const res = _aiPickTrade.apply(this, arguments);
+      const card = G.roleCards.find(x => x.name === 'Trader');
+      const isChooser = !!card && card.takenBy === p.idx;
+      subRecord('trade', p, (res.dest === 'post' ? 10 : 0) + GOODS.indexOf(res.g), () => simStateAtSubDecision('trade', p, { opts, isChooser }));
+      return res;
+    };
+    const _aiPickCraftBonus = aiPickCraftBonus;
+    aiPickCraftBonus = function (chooser, available, ownKinds) {
+      const res = _aiPickCraftBonus.apply(this, arguments);
+      subRecord('craftbonus', chooser, GOODS.indexOf(res), () => simStateAtSubDecision('craftbonus', chooser, { available, ownKinds }));
+      return res;
+    };
+  }` : ''}
   const N = 4;
   let done = 0;
   for (let g = ${G_START}; g < ${G_END}; g++) {
@@ -251,6 +379,16 @@ const src = `(async () => {
       row = { g, seed, seat, lo: ${LO}, error: String((e && e.message) || e).slice(0, 300) };
     }
     __writeRow(JSON.stringify(row));
+    ${HARVEST_SUB ? `
+    // _end 行带上采样配置：census 逐项与预注册（补充 B 的「采样」= A2 配置：seedBase 20261123、EVAL_CRN=1、DEPLOY、
+    // L6@400 vs 3×L5@400、无 HEUR/KNOBS/求解器/池、基础局、L6 零回退、fid 可用）核对，不符 → INVALID。
+    // 否则拿错配置采的样本也能出一个「有效」的 GO/NO-GO（审查复现过：漏给 seedBase 就静默用了 20260611）。
+    __harvestSub(JSON.stringify({ g, kind: '_end', row: row.error ? 'error' : row.incomplete ? 'incomplete' : 'ok', n: gm.subk || 0,
+      cfg: { seed, seedBase: ${SEED_BASE}, crn: ${CRN ? 'true' : 'false'}, lo: ${LO}, nn: ${JSON.stringify(NN_ARG)},
+        budget: window._aiThinkBudget, heur: ${JSON.stringify(HEUR_OBJ)}, knobs: ${JSON.stringify(KNOBS)}, alphaC: ${JSON.stringify(ALPHA_C)},
+        endBoost: ${JSON.stringify(END_BOOST)}, l6Solver: ${L6_SOLVER ? 'true' : 'false'}, l6SolverCap: ${JSON.stringify(L6_SOLVER_CAP)},
+        rpK: ${RP_K}, mods: ${JSON.stringify(MODS)}, l6Fid: !!window._l6Fid, fidAllowed: l6FidAllowed(),
+        l6n: gm.l6.n, l6fb: gm.l6.fb, oldCheck: ${HARVEST_OLD ? 'true' : 'false'} } }));` : ''}
     gm.ms = Date.now() - tg; gm.crn = ${CRN ? 'true' : 'false'}; gm.rpK = ${RP_K};
     if (window._l6TreePar && ${RP_K} > 0) gm.tp = true;     // 仅 TP 臂才写 → 其它臂的 meta 行形状不变
     __writeMeta(JSON.stringify(gm));
@@ -265,6 +403,7 @@ run(src).then(played => {
   fs.fsyncSync(_fd); fs.closeSync(_fd);
   fs.fsyncSync(_mfd); fs.closeSync(_mfd);
   if (_hfd !== null) { fs.fsyncSync(_hfd); fs.closeSync(_hfd); }
+  if (_sfd !== null) { fs.fsyncSync(_sfd); fs.closeSync(_sfd); fs.renameSync(HARVEST_SUB + '.tmp', HARVEST_SUB); }
   fs.renameSync(META_TMP, META);
   fs.renameSync(TMP, OUT);
   const buf = fs.readFileSync(OUT);

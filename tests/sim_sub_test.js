@@ -22,6 +22,8 @@
 //   ⑩ v(h, r) == 独立重写的「确定化 + 纯启发式续局 + ε=0 rollout（走 sim.js rolloutToEnd）」
 //   ⑪ 单候选 0 rollout；截止/上限 → 返回 h 并打标；dec 不符 → 抛错；fid 只在基础局置位
 //   ⑫ 生成器 subSearchSteps + 「假池」K=2 切分求值 == 同步 subSearch
+//   ⑮ opts.leafValue（Stage 5b census 的胜率份额叶）：leafValue=reward 与缺省逐位相同；叶恰在终局以 dec.chooser 调用；
+//      胜率份额叶 == 独立重写；census 的 winShare == 独立公式（含 2/3/4 家并列）
 //   ⑬ Worker 形态：无 window、self=globalThis、静态表经 _PR_STATIC、状态经 structuredClone（rnd 去掉）
 //      → importScripts(sim.js, sim_sub.js) 后 subEvalBatch/subSearch 与主线程逐位相同
 'use strict';
@@ -550,6 +552,66 @@ let switchCase = null;
   } else console.log('⑭ stage4 fid branch: skipped (sim.js has no fidOn)');
 }
 
+// ⑮ opts.leafValue（Stage 5b census 的胜率份额叶）：只换叶、不换管线
+//   (a) leafValue = reward（宿主函数）→ subEvalBatch / subSearch 与缺省逐位相同（fid 关/开）
+//   (b) leaf 恰被调用 |actions|×|rs| 次，座位 = dec.chooser，状态已到终局
+//   (c) 胜率份额叶 == 独立重写（同一确定化 + 续局 + ε=0 rollout，终局按 finalScore 并列第一 1/k）；
+//       且与 reward 叶确实不同（非空洞）；取值只在 {0, 1/k}
+//   (d) tools/sub_census.js 的 winShare == 独立公式（含构造的 2/3 家并列）
+{
+  const rewardLeaf = (st, seat) => S.reward(st, seat);
+  const Wind = (st, seat) => {   // 独立公式（不借 census）
+    const sc = st.players.map(q => S.finalScore(q, st)); let best = -Infinity; for (const v of sc) if (v > best) best = v;
+    let k = 0; for (const v of sc) if (v === best) k++;
+    return sc[seat] === best ? 1 / k : 0;
+  };
+  function finishW(st, chooser) {
+    for (;;) { const dd = S.azDecision(st); if (!dd || dd.type === 'role') break; S.azApply(st, S.azHeuristicAction(st, dd)); }
+    const saved = sandbox._mctsEps; sandbox._mctsEps = 0;
+    S.rolloutToEnd(st, () => 0.5);
+    sandbox._mctsEps = saved;
+    return Wind(st, chooser);
+  }
+  let nC = 0, diff = 0, bad = 0; const wset = new Set();
+  for (const k of Object.keys(pick)) for (const fid of [false, true]) {
+    const st0 = pick[k], dec = X.subSearchSteps(st0, { fid }).dec, rs = [0, 1, 7, 3000000];
+    const d0 = X.subEvalBatch(st0, dec, dec.actions, rs, { fid }), d1 = X.subEvalBatch(st0, dec, dec.actions, rs, { fid, leafValue: rewardLeaf });
+    ok(J(d0) === J(d1), `⑮a ${k} fid=${fid}: leafValue=reward changes values`);
+    const s0 = strip(X.subSearch(st0, { fid })), s1 = strip(X.subSearch(st0, { fid, leafValue: rewardLeaf }));
+    ok(J(s0) === J(s1), `⑮a ${k} fid=${fid}: leafValue=reward changes subSearch ${J(s0)} vs ${J(s1)}`);
+    const calls = [];
+    const w = X.subEvalBatch(st0, dec, dec.actions, rs, { fid, leafValue: (st, seat) => { calls.push([seat, S.isTerminal(st)]); return Wind(st, seat); } });
+    ok(calls.length === dec.actions.length * rs.length && calls.every(c => c[0] === dec.chooser && c[1]), `⑮b ${k} fid=${fid}: leaf calls ${J(calls.slice(0, 4))}… n=${calls.length}`);
+    for (let a = 0; a < dec.actions.length; a++) for (let j = 0; j < rs.length; j++) {
+      // 独立重写：v(c) 的「先想一遍」语义同 ⑩b（indepC 内联一份，只把 finish 换成 finishW）
+      const { st, dec: dd } = detStart(st0, rs[j], fid);
+      if (dd.type === 'build') { if (!st.az._bphase) st.az._bphase = phaseT(st); } else st.az._bphase = null;
+      S.azApply(st, dec.actions[a]);
+      const want = finishW(st, dd.chooser);   // fid 建造不读 _bphase（每次现算），写了也无害
+      nC++; ok(w[a][j] === want, `⑮c ${k} fid=${fid} c=${dec.actions[a]} r=${rs[j]}: W=${w[a][j]} != independent ${want}`);
+      if (w[a][j] !== d0[a][j]) diff++;
+      const x = w[a][j]; wset.add(x); if (!(x === 0 || x === 1 || x === 0.5 || Math.abs(x - 1 / 3) < 1e-15 || x === 0.25)) bad++;
+    }
+  }
+  ok(nC >= 60, `⑮c only ${nC} independent cases`);
+  ok(diff > 0, '⑮c vacuous: win-share leaf never differs from reward leaf');
+  ok(bad === 0, `⑮c ${bad} win-share values outside {0,1/k}`);
+  ok(wset.has(0) && [...wset].some(x => x > 0), `⑮c vacuous: win-share values ${J([...wset])} (need both 0 and >0)`);
+  // (d) census 的 winShare
+  const C = require('../tools/sub_census.js');
+  const base = S.clone(pick.build);
+  let nd = 0;
+  for (const ties of [1, 2, 3, 4]) for (let seat = 0; seat < 4; seat++) {
+    const st = S.clone(base);
+    // 构造：前 ties 家同分最高，其余更低（直接改 vp 筹码，finalScore = vp + 建筑分 + 特殊分）
+    const sc = st.players.map(q => S.finalScore(q, st)); const top = Math.max(...sc) + 5;
+    st.players.forEach((q, i) => { q.vp += (i < ties ? top : top - 3) - sc[i]; });
+    nd++; ok(C.winShare(S, st, seat) === Wind(st, seat), `⑮d winShare ties=${ties} seat=${seat}: ${C.winShare(S, st, seat)} vs ${Wind(st, seat)}`);
+    ok(Wind(st, seat) === (seat < ties ? 1 / ties : 0), `⑮d setup ties=${ties} seat=${seat}`);
+  }
+  console.log(`⑮ leafValue: ${nC} independent win-share cases, ${diff} differ from reward leaf; winShare ${nd} tie cases`);
+}
+
 console.log(`harvested ${all.length} sub-decisions (${multi.length} multi-candidate): ` + Object.keys(byKind).map(k => `${k}=${byKind[k].length}`).join(' '));
 console.log(fails ? `\nSIM_SUB TEST FAILED: ${fails}` : '\nSIM_SUB TEST OK');
 process.exit(fails ? 1 : 0);
@@ -592,3 +654,7 @@ process.exit(fails ? 1 : 0);
 //   ⑪  默认硬上限改 Infinity                               → 「⑪ default hard cap: {… "nRollouts":50095 … "capped":false …}」
 //   ⑪  注入求值器路径不查截止                               → 「⑪ maxMs=0 (injected evalBatch): calls=2 …」
 //   ⑪  sameDec 不逐个比对动作                               → 「⑪ dec with same-length but different actions must throw」
+//   ---- Stage 5b（opts.leafValue）----
+//   ⑮  叶函数拿错座位（(chooser+1)%N）                       → 「⑮a settle fid=false: leafValue=reward changes values」+ ⑮b/⑮c 共 20+ 行
+//   ⑮d census winShare 平手记 1（不除 k）                    → 「⑮d winShare ties=2 seat=0: 1 vs 0.5」等 9 行
+//   缺省路径逐位不变另有独立证据：改动前后同一脚本对 46 个 (状态, fid) 的 subSearch + subEvalBatch 输出 sha256 相同。

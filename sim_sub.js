@@ -146,7 +146,11 @@
 
   // ---------- 单个值 v(c, r) ----------
   // base 已规范化到 dec；seed = decisionSeed(base, dec)。trace（仅测试用）在确定化完成后被调用。
-  function evalOne(base, dec, seed, action, r, trace) {
+  // leaf（opts.leafValue，Stage 5b census 用）：终局叶值函数 (st, seat) → 数；缺省 = PRSim.reward（搜索本身的口径）。
+  //   census 要测「实现的胜率份额」：同一条管线（同一确定化、同一续局、同一 rollout），只把最后一步
+  //   reward（0.8×胜率份额 + 0.2×分差）换成纯胜率份额 W。只换叶、不换管线 → 值仍只依赖 (st0, c, r)，
+  //   CRN / 切分不变性照旧成立。缺省路径不多做任何事（同一个 reward 调用）→ 搜索输出逐位不变。
+  function evalOne(base, dec, seed, action, r, trace, leaf) {
     const st = cloneF(base);   // _fid（若有）已在 normalize 置于 base
     const rnd = permRng(seed, r);
     // 先排序再洗：Fisher-Yates 的输出是「输入顺序 ∘ 随机置换」，直接洗真实顺序的牌堆，
@@ -180,13 +184,14 @@
       const legal = PRSim.legalRoleIdxs(st); if (!legal.length) break;
       PRSim.applyRole(st, PRSim.heuristicPickRole(st, ch, legal));
     }
-    return PRSim.reward(st, dec.chooser);
+    return leaf ? leaf(st, dec.chooser) : PRSim.reward(st, dec.chooser);
   }
 
   // 批量求值：values[a][k] = v(actions[a], rList[k])。
   // st0 可以是尚未推进到决策点的状态（会先规范化）；dec 必须与规范化后的 azDecision 一致，否则抛错
   // （防止调用方拿错 dec，把动作 apply 到别人的回合上）。
-  // opts: { fid, deadline(ms 时间戳), maxRollouts, counter:{n}, _trace }——后三个供同步驱动做中途截止。
+  // opts: { fid, deadline(ms 时间戳), maxRollouts, counter:{n}, _trace, leafValue }——deadline/maxRollouts/counter 供同步驱动做中途截止；
+  //   leafValue(st, seat)：叶值函数，缺省 reward（见 evalOne）。
   function subEvalBatch(st0, dec, actions, rList, opts) {
     opts = opts || {};
     const nz = normalize(st0, !!opts.fid);
@@ -206,7 +211,7 @@
           if (opts.deadline != null && now() >= opts.deadline) return { abort: "time" };
           if (opts.maxRollouts != null && ctr.n >= opts.maxRollouts) return { abort: "cap" };
         }
-        out[a][k] = evalOne(base, dec, seed, actions[a], rList[k], opts._trace);
+        out[a][k] = evalOne(base, dec, seed, actions[a], rList[k], opts._trace, opts.leafValue);
         if (ctr) ctr.n++;
       }
     }
@@ -280,7 +285,8 @@
     return p;
   }
 
-  // 同步驱动。opts: bSel, gateN, delta, z, fid, maxMs, maxRollouts, h, evalBatch(actions, rs) [测试/5c 注入]
+  // 同步驱动。opts: bSel, gateN, delta, z, fid, maxMs, maxRollouts, h, evalBatch(actions, rs) [测试/5c 注入],
+  //   leafValue（缺省 reward；预注册的决策规则用缺省——census 只在「测收益」时换叶，见 tools/sub_census.js）
   function subSearch(st0, opts) {
     opts = opts || {};
     const t0 = now();
@@ -292,7 +298,7 @@
     if (dec.actions.indexOf(h) < 0) { res.error = "h-not-in-actions"; return res; }   // 不应发生；发生则不搜
     if (dec.actions.length <= 1) return res;
     const ctr = { n: 0 };
-    const evOpts = { counter: ctr, _trace: opts._trace,
+    const evOpts = { counter: ctr, _trace: opts._trace, leafValue: opts.leafValue,
       deadline: opts.maxMs != null ? t0 + opts.maxMs : null,
       maxRollouts: opts.maxRollouts != null ? opts.maxRollouts : DEFAULTS.maxRollouts };
     const steps = ruleSteps({ dec, h }, opts);
