@@ -67,5 +67,23 @@ function midgame(seed, plies) {
   }
 }
 
+// ---- ③ 下拉标签与实际每步思考时长一致（第三轮：此前 normal 标 1.5s 实为 2.5–3s、extreme 标 10s 实为 12s）----
+// 标签里的秒数 = 该档 L5(expertMs)/L6(alphaMs) 的时长；两者不同时须写成「低–高s」。deep 档 L6 须为 6000（用户决定）。
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'game.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const m = src.match(/const budgetMap = \{([\s\S]*?)\n  \};/);
+  for (const preset of ['normal', 'deep', 'extreme']) {
+    const row = m[1].match(new RegExp(preset + ':\\s*\\{([^}]*)\\}'));
+    const num = (k) => parseInt(row[1].match(new RegExp(k + ':\\s*(\\d+)'))[1]);
+    const a = num('alphaMs') / 1000, e = num('expertMs') / 1000;
+    const want = a === e ? `${a}s` : `${Math.min(a, e)}–${Math.max(a, e)}s`;
+    const opt = html.match(new RegExp('<option value="' + preset + '"[^>]*>([^<]*)</option>'));
+    ok(!!opt && opt[1].includes('（' + want), `③ ${preset} 标签「${opt && opt[1]}」须以实际时长 ${want} 开头（alphaMs=${a * 1000}, expertMs=${e * 1000}）`);
+  }
+  const deep = m[1].match(/deep:\s*\{([^}]*)\}/)[1];
+  ok(/alphaMs:\s*6000\b/.test(deep), '③ deep 档 L6 alphaMs = 6000（AI_STRENGTH §18 用户决定）');
+}
+
 console.log(fails ? `\nBUDGET BINDING TEST FAILED: ${fails}` : '\nBUDGET BINDING TEST OK');
 process.exit(fails ? 1 : 0);

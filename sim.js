@@ -289,6 +289,8 @@
         _towerShipped: p._towerShipped,  // Tibs 塔楼(49) 本装船阶段是否已拿过首装 VP
       })),
     };
+    // 保真标志（Stage 4）：只在为真时写 → 标志关闭时 clone 出的对象形状与旧版逐字段相同
+    if (st._fid) c._fid = true;
     // 复制因子化决策游标(MCTS 需要在子决策处 clone 分叉)
     if (st.az) c.az = Object.assign({}, st.az, {
       ord: st.az.ord ? st.az.ord.slice() : undefined,
@@ -308,6 +310,27 @@
     for (let i = 0; i < st.roleCards.length; i++) if (!st.roleCards[i].taken) out.push(i);
     return out;
   }
+  // legalRoleIdxs(st).length > 0 的免分配版（回合结束判定每步都调一次）
+  function anyUntaken(st) {
+    const rc = st.roleCards;
+    for (let i = 0; i < rc.length; i++) if (!rc[i].taken) return true;
+    return false;
+  }
+
+  // ---------- 保真模式 st._fid（第三轮 Stage 4）----------
+  // sim 的子决策启发式（rollout 里所有玩家的建造/选田/派工/装船都靠它）此前与 game.js 的真实 AI
+  // 有几处逐行可见的分歧（AI_STRENGTH §18.1 #6）。子决策搜索（Stage 5）要在 sim 里「预演真实对手」，
+  // 模型必须忠实 → 在状态标志 st._fid 下对齐 game.js；标志关闭时每一行都与旧实现逐位相同
+  // （tests/search_golden_test.js + 基础/扩展局字节门钉住）。
+  // **只对基础局生效**：扩展模块下 game.js 的 AI 还有大量 sim 未建模的分支（森林屋、黑市、贵族……），
+  // 此时对齐一半反而制造新的不一致 → 任一扩展开关打开，fid 行为全部失效（等同标志关闭）。
+  // 标志只在为真时才写到状态上（clone / buildSimState 同此约定）→ 关闭时对象形状、JSON 指纹都不变。
+  // **只镜像默认启发式参数**：fid 路径把 game.js L6_HEUR_DEFAULTS（pl_* / bd_*：抢卡 16/30、攒钱 4/20、
+  // 成本系数 3、chooser +5、moneyLean 7……）写成字面常数。window._l6Heur 覆盖这些键时 game.js 的 L6 座位
+  // 不再走默认值，sim 无从得知 → game.js l6FidAllowed() 此时不置 _fid（子决策搜索的调用方同样应先问它）。
+  // 阶段：fid 路径用 fidPhase（game.js gamePhase 的分母），不用 phaseOf——见 fidPhase 处注释。
+  function fidOn(st) { return !!st._fid && !st.expansion && !st.expansionNobles && !st.expansionTibs; }
+  const FID_CHAIN_DONE = 5;      // game.js aiReallocate CHAIN_DONE 默认值（p._chainDone 只是 A/B 钩子，sim 不建模）
 
   // ---------- 启发式子策略 ----------
   function pickPlantation(st, p, options, isChooser) {
@@ -315,11 +338,13 @@
     let qCount = 0; for (const pl of p.plantations) if (pl.good === "quarry") qCount++;
     const violet = p.buildings.filter(b => { const t = BLD[b.bid].type; return t === "violet" || t === "large_violet"; }).length;
     const lean = violet >= 1 || p.money >= 7;
-    const cap = lean ? 4 : 2;
+    // 非建筑流上限：旧 sim 恒为 2；game.js aiPickPlantation 是「早期 2、中后期 1」（fid 对齐）。
+    // 分歧点只在中后期、非建筑流、恰好已有 1 个采石场的 chooser 身上——但正是这类玩家在 rollout 里被高估了建造折扣。
+    const cap = lean ? 4 : (fidOn(st) ? (fidPhase(st) === "early" ? 2 : 1) : 2);
     if (isChooser && qCount < cap && st.quarriesLeft > 0) { const qi = options.findIndex(o => o.kind === "quarry"); if (qi >= 0) return qi; }
     // 在 plant 选项里打分：补产业链 > 垄断 > 避免撞右手高价货 > 多样化
     const upstream = st.players[(p.idx - 1 + st.numPlayers) % st.numPlayers];
-    const ph = phaseOf(st);
+    const ph = fidOn(st) ? fidPhase(st) : phaseOf(st);   // fid：game.js 的 gamePhase 分母（玉米加分分档）
     let bestI = -1, bestS = -Infinity;
     for (let i = 0; i < options.length; i++) {
       const o = options[i]; if (o.kind !== "plant") continue;
@@ -338,7 +363,11 @@
     return bestI >= 0 ? bestI : 0;
   }
 
-  function reallocate(p) {
+  // fid（第二参，调用方已按 fidOn(st) 求值）：对齐 game.js aiReallocate 的两处差异——
+  //   ① CHAIN_DONE：放下这一枚就「立即增产」（对侧已有【有人】的厂槽/田）的空位 +5，抬到紫建激活之上；
+  //      仅有空厂槽（未上人）的起链投资保持原值。旧 sim 只看厂槽总数，不区分有人没人。
+  //   ② 兜底放置顺序：game.js 取第一个非森林空地（**含采石场**，按面板顺序）；旧 sim 先挑非采石场。
+  function reallocate(p, fid) {
     // 贵族扩展：贵族优先驻守贵族功能建筑（皇家花园45/礼拜堂39/规划办41/狩猎小屋40），
     // 顺序与 game.js aiReallocate(2685-2692) 一致。
     let remNobles = p.unplacedNobles || 0;
@@ -385,20 +414,25 @@
         let gain;
         if (pl.good === "quarry") gain = quarryGain;
         else if (pl.good === "corn") gain = prodUnit("corn");
+        else if (fid) gain = fields[pl.good] < fc[pl.good] ? prodUnit(pl.good) + FID_CHAIN_DONE : fields[pl.good] < fcT[pl.good] ? prodUnit(pl.good) : 0;
         else gain = (fields[pl.good] < fcT[pl.good]) ? prodUnit(pl.good) : 0;
         if (gain > bestGain) { bestGain = gain; best = { k: "p", r: pl }; }
       }
       for (const b of p.buildings) {
         const bd = BLD[b.bid]; if (b.men >= bd.men) continue;
         let gain;
-        if (bd.type === "production" && bd.good && bd.good !== "corn") gain = (fc[bd.good] < fT[bd.good]) ? prodUnit(bd.good) : 0;
+        if (bd.type === "production" && bd.good && bd.good !== "corn") {
+          if (fid) gain = fc[bd.good] < fields[bd.good] ? prodUnit(bd.good) + FID_CHAIN_DONE : fc[bd.good] < fT[bd.good] ? prodUnit(bd.good) : 0;
+          else gain = (fc[bd.good] < fT[bd.good]) ? prodUnit(bd.good) : 0;
+        }
         else if (bd.type === "production") gain = prodUnit("corn");
         else gain = (b.men === 0) ? violetVal(b) : 0;
         if (gain > bestGain) { bestGain = gain; best = { k: "b", r: b }; }
       }
       if (!best) {
         // 规则：只要面板上还有空位就必须放置，不能主动留在岸边（森林不可上工人）
-        const pl = p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest");
+        const pl = fid ? p.plantations.find(x => !x.manned && x.good !== "forest")
+          : (p.plantations.find(x => !x.manned && x.good !== "forest" && x.good !== "quarry") || p.plantations.find(x => !x.manned && x.good !== "forest"));
         if (pl) { placeOne(pl, "p"); continue; }
         const bb = p.buildings.find(x => x.men < BLD[x.bid].men);
         if (bb) { placeOne(bb, "b"); continue; }
@@ -434,6 +468,9 @@
       if (soon <= 0) return v - 30;
       v += now * 12 + (soon - now) * 4;
       const income = (good === "coffee" || good === "tobacco");
+      // fid：game.js evalBuildingValue 的「投机买厂」罚（p._specBuyPen，默认开）——手上 0 块可喂的田、
+      // 只靠明牌池里的田就买厂，常被先手抢光 → 死厂。旧 sim 没有这条，rollout 里对手买厂偏积极。
+      if (now === 0 && st._fid && fidOn(st)) v -= income ? 3 : 10;
       if (phase === "early") v += income ? 22 : 10; else if (phase === "mid") v += income ? 10 : 4; else v -= 12;
       if (income) { // 垄断/不撞右手
         if (!anyOppProduces(st, p, good)) v += 8;
@@ -491,8 +528,59 @@
     return v;
   }
 
+  // fid：game.js bestLargeViolet —— 库存内、未拥有、放得下的大紫里终局特殊分最高者（同分取首个）。
+  // 基础局的 19-23 两边估值函数逐项相同（estLVSpecial ≡ estLargeVioletSpecial）；扩展大紫不会走到这里（fidOn 已拦）。
+  function fidBestLargeViolet(st, p) {
+    const spaceLeft = 12 - buildingUsedSpaces(p);
+    let best = null;
+    for (const b of BUILDINGS_) {
+      if (b.type !== "large_violet") continue;
+      if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
+      const special = estLVSpecial(p, b.id);
+      if (!best || special > best.special) best = { id: b.id, special };
+    }
+    return best;
+  }
+  // fid 建造选择：逐行镜像 game.js aiPickBuilding 的默认（非人格、非 DNA、L6 私有参数取默认）路径。
+  // cands = [{b, cost}]（doBuilder 的 opts / az 的 build 动作，均按 BUILDINGS 顺序）；返回下标，-1 = 不建。
+  // 与旧 sim 规则的三处差别：
+  //   ① **不因分数 ≤0 就 PASS**：game.js 取 scored[0]（稳定降序排序的首元 = 严格 > 扫描的首个最大），
+  //      只有下面 ③ 的「攒钱抢大紫」才会不建。旧 sim 的 bestS<=0 → PASS 让 rollout 里的对手大量少建。
+  //   ② 心仪大紫（特殊分 ≥3、中/后期）可买 → 抢卡加分 16 / 30（bd_grabMid / bd_grabLate）。
+  //   ③ 心仪大紫买不起但差额 ≤4（bd_saveGap）且最佳可买分 <20（bd_saveMediocre）→ 不建，留钱。
+  //   evalBuilding 的投机买厂罚（_specBuyPen）在 evalBuilding 内按同一标志生效。
+  function fidPickBuild(st, p, cands, isChooser, phase) {
+    const tgt = fidBestLargeViolet(st, p);
+    const tgtStrong = !!tgt && tgt.special >= 3 && (phase === "mid" || phase === "late");
+    let bestI = -1, bestS = -Infinity;
+    for (let k = 0; k < cands.length; k++) {
+      let s = evalBuilding(st, p, cands[k].b, phase) - cands[k].cost * 3 + (isChooser ? 5 : 0);
+      if (tgtStrong && cands[k].b.id === tgt.id) s += (phase === "late" ? 30 : 16);
+      if (s > bestS) { bestS = s; bestI = k; }
+    }
+    if (tgtStrong && !cands.some(c => c.b.id === tgt.id)) {
+      // game.js 用 effectiveCostWithRoleBonus(p, tgt, isChooser)：只认真正的 chooser（不含塔楼——基础局无塔楼）
+      const cost = effectiveCostBonus(p, BLD[tgt.id], isChooser, st.numPlayers);
+      if (p.money >= cost - 4 && bestS < 20) return -1;
+    }
+    return bestI;
+  }
+
   function phaseOf(st) {
     const cu = 1 - st.colonistsLeft / COL_TOTAL[st.numPlayers];
+    const vu = 1 - st.vpLeft / VP_TOTAL[st.numPlayers];
+    const pr = Math.max(cu, vu);
+    return pr < 0.33 ? "early" : pr < 0.66 ? "mid" : "late";
+  }
+  // fid 阶段：逐字镜像 game.js gamePhase()。它的殖民者分母是**手调常数** {1:30, 2:42, 3:55, 4:75, 5:95}，
+  // 与 sim 的真实供应池 COL_TOTAL {1:29, 2:40, …} 在 1/2 人局不同（3-5 人相同，故 4 人对照测不出来）：
+  // 2 人局 colonistsLeft 27-28 时 game 已是 mid、phaseOf 仍是 early；14 时 game 已 late、phaseOf 仍 mid →
+  // 采石场上限 / 玉米加分 / 建筑估值 / 抢卡攒钱 / 逐次装船阶段全部错档（实测 2 人局 L6 build fid 残差 6.4%）。
+  // phaseOf 本身不能改（旧 rollout / 角色启发式 / 价值特征都读它，G1-G3 字节门钉住）→ 只在 fid 子决策路径换用本函数。
+  // VP 分母两边相同（VP_TOTAL ≡ game.js vpStart）。
+  const FID_COL_TOTAL = { 1: 30, 2: 42, 3: 55, 4: 75, 5: 95 };
+  function fidPhase(st) {
+    const cu = 1 - st.colonistsLeft / FID_COL_TOTAL[st.numPlayers];
     const vu = 1 - st.vpLeft / VP_TOTAL[st.numPlayers];
     const pr = Math.max(cu, vu);
     return pr < 0.33 ? "early" : pr < 0.66 ? "mid" : "late";
@@ -532,10 +620,19 @@
     }
   }
 
+  // 庄园(8)：从暗牌堆多拿 1 张。game.js doSettler 在**选明牌之前**抽（规则书同），且只要轮到该玩家、
+  // 面板未满、牌堆非空就抽——哪怕随后明牌池为空、无从选择。旧 sim 在选完之后抽、且只在有选项时抽。
+  // fid 下对齐 game.js：抽到的暗牌会进入 pickPlantation 的「已有几块该货田」计数，抽满 12 格则不再选明牌。
+  function fidHacienda(st, p) {
+    if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+  }
+
   function doSettler(st, chooser) {
+    const fid = fidOn(st);
     for (const i of order(st, chooser)) {
       const p = st.players[i];
       if (p.plantations.length >= 12) continue;
+      if (fid) { fidHacienda(st, p); if (p.plantations.length >= 12) continue; }
       const hut = isManned(p, 9);
       const opts = [];
       for (let k = 0; k < st.plantationPool.length; k++) opts.push({ kind: "plant", good: st.plantationPool[k], idx: k });
@@ -546,7 +643,7 @@
       if (pick.kind === "quarry") { st.quarriesLeft--; pl = { good: "quarry", manned: false }; }
       else { pl = { good: pick.good, manned: false }; st.plantationPool.splice(pick.idx, 1); }
       p.plantations.push(pl);
-      if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
+      if (!fid && isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
       settleNewTile(st, p, pl);
     }
     // 扩展：图书馆(33) 拓殖翻倍 — chooser 再从剩余明牌池拿 1 张种植园
@@ -595,7 +692,7 @@
       if (st.noblesLeft > 0) { st.noblesLeft--; give(chooser); }
       for (const i of ord) if (isManned(st.players[i], 43) && st.noblesLeft > 0) { st.noblesLeft--; give(i); }
     }
-    for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p); }
+    { const fid = fidOn(st); for (const i of ord) { const p = st.players[i]; if (p.unplaced) reallocate(p, fid); } }
     let open = 0; for (const p of st.players) for (const b of p.buildings) open += (BLD[b.bid].men - b.men);
     const refill = Math.max(st.numPlayers, open);
     if (st.colonistsLeft < refill) st.endTriggered = true;
@@ -605,6 +702,7 @@
 
   function doBuilder(st, chooser) {
     const phase = phaseOf(st);
+    const fid = fidOn(st);
     for (const i of order(st, chooser)) {
       const p = st.players[i];
       const used = buildingUsedSpaces(p);
@@ -625,8 +723,14 @@
       }
       if (opts.length === 0) continue;
       let bestI = -1, bestS = -Infinity;
-      for (let k = 0; k < opts.length; k++) { let s = evalBuilding(st, p, opts[k].b, phase) - opts[k].cost * 3 + (i === chooser ? 5 : 0); if (s > bestS) { bestS = s; bestI = k; } }
-      if (bestI < 0 || bestS <= 0) continue; // 没有正收益建筑就不建
+      if (fid) {
+        // game.js doBuilder 每位玩家调用 aiPickBuilding 时都现算 gamePhase()（大学(16) 取殖民者会推进阶段）
+        bestI = fidPickBuild(st, p, opts, i === chooser, fidPhase(st));
+        if (bestI < 0) continue;
+      } else {
+        for (let k = 0; k < opts.length; k++) { let s = evalBuilding(st, p, opts[k].b, phase) - opts[k].cost * 3 + (i === chooser ? 5 : 0); if (s > bestS) { bestS = s; bestI = k; } }
+        if (bestI < 0 || bestS <= 0) continue; // 没有正收益建筑就不建
+      }
       const { b, cost } = opts[bestI];
       if (cost > p.money && isManned(p, 25)) { // 扩展：黑市付费（还货+岸边工人抵差额，用尽余钱）
         let gap = cost - p.money;
@@ -841,19 +945,38 @@
     for (const g of GOODS_) { let t = 0; for (let j = 0; j < st.players.length; j++) if (j !== seat) t += st.players[j].goods[g] || 0; og[g] = t; }
     return og;
   }
+  // rankCaptain 只在"候选要开空船"时才读 oppGoods（`oppGoods && s.good === null && W > 0`）。
+  // 没有这种候选时传 null 与传完整表逐位等价，省掉每次装货一次 5×N 的汇总。
+  function captainOppGoods(st, cands, seat) {
+    for (let k = 0; k < cands.length; k++) {
+      const sh = cands[k].ship;
+      if (typeof sh === "number" && st.ships[sh].good === null) return oppGoodsOf(st, seat);
+    }
+    return null;
+  }
   // 某玩家本轮可装船的候选 {ship(0..2 或 "wharf"), good, amount}。抽出供 doCaptain 与因子化层共用。
   function captainCands(st, p) {
     const cands = [];
     for (let s = 0; s < st.ships.length; s++) {
       const ship = st.ships[s]; if (ship.count >= ship.capacity) continue;
       if (ship.good === null) {
-        for (const g of GOODS_) { if (p.goods[g] <= 0) continue; if (st.ships.some((sh, idx) => idx !== s && sh.good === g)) continue; cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) }); }
+        for (const g of GOODS_) {
+          if (p.goods[g] <= 0) continue;
+          let onOther = false;
+          for (let idx = 0; idx < st.ships.length; idx++) if (idx !== s && st.ships[idx].good === g) { onOther = true; break; }
+          if (onOther) continue;
+          cands.push({ ship: s, good: g, amount: Math.min(p.goods[g], ship.capacity - ship.count) });
+        }
       } else if (p.goods[ship.good] > 0) cands.push({ ship: s, good: ship.good, amount: Math.min(p.goods[ship.good], ship.capacity - ship.count) });
     }
     // 规则：选定一种货后必须装"尽可能多" — 同种货有多艘可选船时只能选装载量最大的
-    const maxByGood = {};
-    for (const c of cands) maxByGood[c.good] = Math.max(maxByGood[c.good] || 0, c.amount);
-    const legal = cands.filter(c => c.amount === maxByGood[c.good]);
+    // amount 恒 >= 1 → "等于同货最大值" ⇔ "没有同货候选比它多"；保持 cands 原顺序
+    const legal = [];
+    for (let a = 0; a < cands.length; a++) {
+      const c = cands[a]; let top = true;
+      for (let b = 0; b < cands.length; b++) if (cands[b].good === c.good && cands[b].amount > c.amount) { top = false; break; }
+      if (top) legal.push(c);
+    }
     // 码头：私人船，容量 11，不受上述约束
     if (isManned(p, 18) && !p.wharfUsed) for (const g of GOODS_) if (p.goods[g] > 0) legal.push({ ship: "wharf", good: g, amount: Math.min(p.goods[g], 11) });
     // 扩展：小码头(31) — 自有船，可装任意货，每 2 货 = 1VP
@@ -920,6 +1043,8 @@
   }
 
   // 装船阶段末：满船清空 + 各玩家留货(storageKinds 满 + 1)。抽出供两路共用。
+  // 按价格降序的货种表（稳定排序 → 先排后滤与先滤后排结果相同）
+  const GOODS_BY_PRICE_DESC = GOODS_.slice().sort((a, b) => PRICE[b] - PRICE[a]);
   function captainCleanupKeep(st) {
     const cleared = [];   // Tibs 海关站(50)：本阶段被清空的**满船**货种
     for (const ship of st.ships) if (ship.count >= ship.capacity) { if (st.expansionTibs && ship.good) cleared.push(ship.good); st.supply[ship.good] += ship.count; ship.good = null; ship.count = 0; }
@@ -927,7 +1052,7 @@
       const total = GOODS_.reduce((s, g) => s + p.goods[g], 0);
       if (total > 0) {
         const kinds = storageKinds(p);
-        const sorted = GOODS_.filter(g => p.goods[g] > 0).sort((a, b) => PRICE[b] - PRICE[a]);
+        const sorted = GOODS_BY_PRICE_DESC.filter(g => p.goods[g] > 0);
         const keep = {}; const full = sorted.slice(0, kinds);
         for (const g of full) keep[g] = p.goods[g];
         let singleSlots = 1 + (isManned(p, 27) ? 3 : 0); // 扩展：储藏库 +3 单货槽
@@ -955,6 +1080,7 @@
   }
   function doCaptain(st, chooser) {
     const phase = phaseOf(st);
+    const fid = fidOn(st);
     const ord = order(st, chooser);
     const bonusUsed = new Set();
     captainStartBonuses(st, chooser);   // 工会大厅(35) / 灯塔(32) / Tibs 海关站(50) / 塔楼去重复位
@@ -964,7 +1090,8 @@
       for (const i of ord) {
         const cands = captainCands(st, st.players[i]);
         if (cands.length === 0) continue;
-        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, phase, oppGoodsOf(st, i), st.players[i]._captainDeny)[0]);
+        // fid：game.js 每次装船都现算 gamePhase()（装船发 VP → vpLeft 下降，阶段可能在本阶段内由 mid 进 late）
+        captainLoad(st, i, chooser, bonusUsed, rankCaptain(cands, st.ships, fid ? fidPhase(st) : phase, captainOppGoods(st, cands, i), st.players[i]._captainDeny)[0]);
         progress = true;
       }
     }
@@ -1005,7 +1132,7 @@
     checkEnd(st);
     st.picksThisTurn++;
     // 本回合选满(或无牌可选) → 回合结束
-    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || !anyUntaken(st)) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1028,32 +1155,62 @@
   function heuristicPickRole(st, chooser, legal) {
     const p = st.players[chooser];
     const phase = phaseOf(st);
-    const goods = GOODS_.reduce((a, g) => a + p.goods[g], 0);
-    let cap = 0; for (const s of st.ships) cap += (s.capacity - s.count);
-    let myOpen = 0; for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
-    let myProd = totalProduction(p);
-    let mannedCorn = 0; for (const pl of p.plantations) if (pl.good === "corn" && pl.manned) mannedCorn++;
+    // 只算合法角色真正用到的量。此前每一步都先对 4 名玩家各算 totalProduction + finalScore + 空岗/存货，
+    // 而结果大多只在某一个 case 里用（finalScore 只在 Builder；产能只在 Craftsman……），
+    // cpu-prof 里这一块（含 totalProduction/finalScore/asState）是 rollout 最热的单点。
+    // 这里全是纯函数 → 懒算、提前退出与原先先算全部的结果逐位相同（tests/search_golden_test.js 钉住）。
+    let hasCap = false, hasMay = false, hasBld = false, hasCft = false;
+    for (const i of legal) {
+      switch (st.roleCards[i].name) { case "Captain": hasCap = true; break; case "Mayor": hasMay = true; break; case "Builder": hasBld = true; break; case "Craftsman": hasCft = true; break; }
+    }
     const downstream = st.players[(chooser + 1) % st.numPlayers];
     const office = isManned(p, 12);
-    // 对手聚合量(每次调用算一次)
-    const myScore = finalScore(p, st);
-    let oppMaxProd = 0, oppOpenMax = 0, oppGoodsMax = 0, lead = 0, oppMature = false;
-    for (const o of st.players) {
-      if (o === p) continue;
-      let pr = totalProduction(o);
-      if (pr > oppMaxProd) oppMaxProd = pr;
-      let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
-      if (op > oppOpenMax) oppOpenMax = op;
-      const og = GOODS_.reduce((a, g) => a + o.goods[g], 0); if (og > oppGoodsMax) oppGoodsMax = og;
-      const sc = finalScore(o, st); if (sc > lead) lead = sc;
-      if (pr >= 5 && o.buildings.length >= 5) oppMature = true;
+    // Captain：能运多少 / 玉米流 / 对手囤货（原 oppGoodsMax >= 4 ⇔ 有对手存货 >= 4）
+    let goods = 0, cap = 0, mannedCorn = 0, oppGoods4 = false;
+    if (hasCap) {
+      for (const g of GOODS_) goods += p.goods[g];
+      for (const s of st.ships) cap += (s.capacity - s.count);
+      for (const pl of p.plantations) if (pl.good === "corn" && pl.manned) mannedCorn++;
+      if (goods >= 2) for (const o of st.players) {
+        if (o === p) continue;
+        let og = 0; for (const g of GOODS_) og += o.goods[g];
+        if (og >= 4) { oppGoods4 = true; break; }
+      }
     }
-    const behind = myScore < lead - 3;
+    // Mayor：空岗（原 oppOpenMax >= 3 && oppOpenMax > myOpen ⇔ 有对手空岗 >= 3 且 > myOpen）
+    let myOpen = 0, oppOpenHi = false;
+    if (hasMay) {
+      for (const pl of p.plantations) if (!pl.manned) myOpen++; for (const b of p.buildings) myOpen += (BLD[b.bid].men - b.men);
+      for (const o of st.players) {
+        if (o === p) continue;
+        let op = 0; for (const b of o.buildings) op += (BLD[b.bid].men - b.men); for (const pl of o.plantations) if (!pl.manned) op++;
+        if (op >= 3 && op > myOpen) { oppOpenHi = true; break; }
+      }
+    }
+    // Craftsman：产能（原 myProd < oppMaxProd ⇔ 有对手产能 > myProd）
+    let myProd = 0, oppOutProd = false;
+    if (hasCft) {
+      myProd = totalProduction(p);
+      for (const o of st.players) { if (o === p) continue; if (totalProduction(o) > myProd) { oppOutProd = true; break; } }
+    }
+    // Builder：原条件 (behind || oppMature || late) && canRushBuild()，各项纯 → 按便宜程度重排短路
+    const oppMature = () => {
+      for (const o of st.players) { if (o === p) continue; if (o.buildings.length >= 5 && totalProduction(o) >= 5) return true; }
+      return false;
+    };
+    const behind = () => {
+      const myScore = finalScore(p, st);
+      let lead = 0;
+      for (const o of st.players) { if (o === p) continue; const sc = finalScore(o, st); if (sc > lead) lead = sc; }
+      return myScore < lead - 3;
+    };
     const canRushBuild = () => {
       const spaceLeft = 12 - buildingUsedSpaces(p);
+      const lateSmall = phase === "late" && spaceLeft <= 4;
       for (const b of BUILDINGS_) {
-        if (st.buildingStock[b.id] <= 0 || ownsBuilding(p, b.id) || spaceLeft < b.size) continue;
-        if (p.money >= Math.max(0, b.cost - 1) && (b.type === "large_violet" || (phase === "late" && spaceLeft <= 4))) return true;
+        if (!(b.type === "large_violet" || lateSmall)) continue;
+        if (st.buildingStock[b.id] <= 0 || spaceLeft < b.size || ownsBuilding(p, b.id)) continue;
+        if (p.money >= Math.max(0, b.cost - 1)) return true;
       }
       return false;
     };
@@ -1066,21 +1223,21 @@
         case "Captain":
           s += Math.min(goods, cap) * 1.3;                  // 基础:能运多少
           if (mannedCorn >= 2 && goods >= 3 && cap > 0) s += 6;
-          if (oppGoodsMax >= 4 && goods >= 2) s += 4;
+          if (oppGoods4) s += 4;
           break;
         case "Mayor":
           s += Math.min(myOpen, Math.ceil(st.colonistsOnShip / st.numPlayers) + 1) * 2.2; // 基础:能填岗
-          if (oppOpenMax >= 3 && oppOpenMax > myOpen) s -= 6;
+          if (oppOpenHi) s -= 6;
           if (myOpen >= 3 && st.colonistsOnShip >= 1) s += 4;
           if (phase !== "early") for (const b of p.buildings) if (BLD[b.bid].type === "large_violet" && b.men < BLD[b.bid].men) { s += 8; break; }
           break;
         case "Builder":
           if (p.money >= 5) s += 4.5;                       // 基础:有钱可建
-          if ((behind || oppMature || phase === "late") && canRushBuild()) s += 8;
+          if ((phase === "late" || oppMature() || behind()) && canRushBuild()) s += 8;
           break;
         case "Craftsman":
           s += myProd * 1.6;                                // 基础:产能
-          if (myProd < oppMaxProd) s -= 6;
+          if (oppOutProd) s -= 6;
           if (phase === "late" && myProd < 3) s -= 6;
           break;
         case "Trader":
@@ -1124,15 +1281,20 @@
   }
 
   // 终局奖励（从 perspective 玩家视角）：胜=1、平分摊、负=0；叠加小幅分差降噪
-  function reward(st, perspective) {
+  function reward(st, perspective) { return rewardFn(st)(perspective); }
+  // 同一终局对多个视角求奖励：终局分只算一次。ISMCTS 回传时路径上每个节点都要一个视角的奖励，
+  // 此前每个节点都重算全体 finalScore。算术与 reward 逐项相同（同一表达式、同一求值顺序）。
+  function rewardFn(st) {
     const scores = st.players.map(q => finalScore(q, st));
-    const my = scores[perspective];
     const best = Math.max(...scores);
     const winners = scores.filter(s => s === best).length;
-    let r = (my === best) ? (1 / winners) : 0;
-    const second = Math.max(...scores.filter((_, i) => i !== perspective), 0);
-    const margin = (my - second) / 30; // 归一化分差
-    return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
+    return (perspective) => {
+      const my = scores[perspective];
+      let r = (my === best) ? (1 / winners) : 0;
+      const second = Math.max(...scores.filter((_, i) => i !== perspective), 0);
+      const margin = (my - second) / 30; // 归一化分差
+      return 0.8 * r + 0.2 * Math.max(-1, Math.min(1, margin));
+    };
   }
 
   // ---------- 手写"经济评估"：一个面板的前瞻性经济价值（供 MCTS 叶节点评估，给困难档统筹全局）----------
@@ -1216,14 +1378,14 @@
   // 叶子评估：有权重 W 时截断 rollout truncate 步后用价值函数；否则全 rollout。
   // 返回一个函数 perspective→[-1,1] 奖励（统一标度供 UCT 用）。
   function evalLeaf(st, W, truncate, rnd) {
-    if (!W) { rolloutToEnd(st, rnd); return (persp) => reward(st, persp); }
+    if (!W) { rolloutToEnd(st, rnd); return rewardFn(st); }
     let steps = 0;
     while (!isTerminal(st) && steps++ < truncate) {
       const ch = currentChooser(st); if (ch < 0) break;
       const legal = legalRoleIdxs(st); if (!legal.length) break;
       applyRole(st, heuristicPickRole(st, ch, legal));
     }
-    if (isTerminal(st)) return (persp) => reward(st, persp);
+    if (isTerminal(st)) return rewardFn(st);
     return (persp) => 2 * evalValue(extractFeatures(st, persp), W) - 1; // [0,1]→[-1,1]
   }
 
@@ -1256,6 +1418,9 @@
     // Phase 2：rolloutFrac ∈ (0,1] 时，每次迭代以该概率改走完整 rollout（reward 尺度）而非 NN 叶评估；
     // 仅在 >0 时才消耗 rootState.rnd，默认 0 路径的 PRNG 流与旧版逐位一致。
     const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
+    // 第三轮 RPdiv：leafEps ∈ (0,1) 时，NN 叶评估前的启发式推进每步以该概率改走均匀随机合法角色。
+    // 用于让根并行的各 worker 树去相关（worker k>=1 才开）。默认 0 → 不消耗 rootState.rnd，与旧版逐位一致。
+    const leafEps = (opts.leafEps > 0) ? Math.min(1, opts.leafEps) : 0;
     if (currentChooser(rootState) < 0) return opts.returnStats ? { idx: -1, stats: [], iters: 0 } : -1;
     const rootLegal = legalRoleIdxs(rootState);
     if (rootLegal.length <= 1) return opts.returnStats ? { idx: rootLegal[0], stats: [], iters: 0 } : rootLegal[0];
@@ -1281,7 +1446,9 @@
           try { node.P = priorPolicyFn(st, ch) || {}; } catch (e) { node.P = {}; }
         }
         // UCT / PUCT
-        let chosen = null, bestV = -Infinity;
+        // chosenI = 取到 bestV 的**首个**合法下标。同名角色（5 人局两张 Prospector）共用一个子节点 → v 相同，
+        // 严格 > 保证停在同名的首个下标上，与原先的 legal.find(名字相同) 逐项一致，省掉每步一次闭包扫描。
+        let chosen = null, chosenI = -1, bestV = -Infinity;
         for (const i of legal) {
           const nm = st.roleCards[i].name, c = node.children.get(nm);
           let v;
@@ -1293,9 +1460,9 @@
           } else {
             v = c.N === 0 ? Infinity : c.Q / c.N + C * Math.sqrt(Math.log(node.N + 1) / c.N);
           }
-          if (v > bestV) { bestV = v; chosen = nm; }
+          if (v > bestV) { bestV = v; chosen = nm; chosenI = i; }
         }
-        const ri = legal.find(i => st.roleCards[i].name === chosen);
+        const ri = chosenI >= 0 ? chosenI : undefined;
         const child = node.children.get(chosen);
         const wasUnvisited = child.N === 0;
         visited.push({ child, chooser: ch });
@@ -1316,10 +1483,13 @@
         while (!isTerminal(st) && steps++ < truncate) {
           const ch = currentChooser(st); if (ch < 0) break;
           const legal = legalRoleIdxs(st); if (!legal.length) break;
-          applyRole(st, heuristicPickRole(st, ch, legal));
+          let ri;
+          if (leafEps > 0 && (rootState.rnd ? rootState.rnd() : Math.random()) < leafEps) ri = legal[Math.floor((rootState.rnd ? rootState.rnd() : Math.random()) * legal.length)];
+          else ri = heuristicPickRole(st, ch, legal);
+          applyRole(st, ri);
         }
         if (isTerminal(st)) {
-          leafEval = (persp) => reward(st, persp);
+          leafEval = rewardFn(st);
         } else {
           let vecEval = null;
           if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
@@ -1379,6 +1549,138 @@
     }
     const ri = rootLegal.find(i => rootState.roleCards[i].name === bestName);
     return ri != null ? ri : (rootLegal.length ? rootLegal[0] : -1);
+  }
+
+  // ---------- 树并行（TP，第三轮 Stage 3；固定设计见 AI_STRENGTH §18.2 补充 C）----------
+  // 为什么要它：§18.3 实测根并行 4 个 worker ≈ 1.2 个核（各树只在牌堆洗牌上不同、叶 rollout 确定，合并后几乎不增信息）。
+  // 树并行把「树」留在主线程（game.js PRAIPool.pickRoleTreeParallel），worker 只做单树一次迭代里**与树无关**的那部分：
+  //   确定化 → 沿主线程选好的路径按角色名重放 → (无先验节点处) 算先验并用同一 PUCT 选一个子 → 叶评估。
+  // 本函数就是那部分的逐行复刻；K=1、B=1、无虚拟损失时，主线程 + 本函数 == ismctsPickRoleIdx **逐位相同**
+  // （tests/tp_test.js ① 钉住，任何漂移即红）。ismctsPickRoleIdx 本身一行未动 → 默认路径逐字节不变。
+  //
+  //   rootState : worker 为本次决策缓存的根状态（整次决策共用一条 rnd 流，与单树同：rootState.rnd 即那条流）
+  //   req       : { path:[角色名...], pless:bool, N:number }
+  //               path  = 主线程从根往下选出的子节点名（每一步都是主线程已知先验的节点上的 PUCT 选择）
+  //               pless = 路径末端节点在主线程上还没有先验 P → 由本函数在确定化状态上算 P 并选子节点（扩展）
+  //               N     = 该无先验节点在主线程上的访问数（含在途虚拟损失）；其子节点此时必然全为 0 访问
+  //   opts      : searchOptsForMode('alpha', ...) 重建后的选项（C 由主线程解析好后下发，两侧一致）
+  //   rnd       : 可选；给出则设为 rootState.rnd（worker 端在 tpinit 时已设好，这里只是方便直接调用）
+  // 返回 { reached, stop, chs, vals, pl }：
+  //   reached = 实际重放了几步（路径中途终局/无人可选/合法集不含该名 → 在该处截断，只回传前缀——与单树「循环遇终局即停」同）
+  //   chs     = 每一步的选择者座位（含无先验节点处本函数选的那一步）→ 主线程回传 Q 时用 vals[chs[j]]，与单树 visited.chooser 同
+  //   vals    = 叶值，**每个座位**一个（与单树 leafEval(seat) 同一个闭包、同一个 double）
+  //   pl      = 无先验节点的 { P, names(合法名，按合法序、含同名重复), ch, chosen }；未到达/终局则为 null
+  function tpEvalPath(rootState, req, opts, rnd) {
+    if (rnd) rootState.rnd = rnd;
+    opts = opts || {};
+    // 以下取值与 ismctsPickRoleIdx 开头逐字相同（同一默认值、同一钳制）
+    const C = opts.C || (root._mctsC != null ? root._mctsC : 1.0);
+    const valueW = opts.valueW || null;
+    const truncate = opts.truncate != null ? opts.truncate : 6;
+    const evalLeafFn = opts.evalLeafFn || null;
+    const evalLeafVecFn = opts.evalLeafVecFn || null;
+    const priorPolicyFn = opts.priorPolicyFn || null;
+    const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
+    const leafEps = (opts.leafEps > 0) ? Math.min(1, opts.leafEps) : 0;
+    // 树并行只为 L6（PUCT）设计：UCT 分支的「未访问=+∞」无先验可言，主线程也不会为它发请求
+    if (!priorPolicyFn) throw new Error("tpEvalPath: tree-parallel requires PUCT (priorPolicyFn / alpha mode)");
+    // 确定化：与单树每次迭代开头完全相同（clone + 用 rootState.rnd 洗未知牌堆）→ 同一条流、同样的消耗
+    const st = determinize(rootState);
+    const path = req.path || [];
+    const chs = [];
+    let reached = 0, stop = null;
+    for (let j = 0; j < path.length; j++) {
+      // 与单树 while(!isTerminal) / ch<0 break / legal 空 break 同序判定
+      if (isTerminal(st)) { stop = "terminal"; break; }
+      const ch = currentChooser(st);
+      if (ch < 0) { stop = "nochooser"; break; }
+      const legal = legalRoleIdxs(st);
+      if (legal.length === 0) { stop = "nolegal"; break; }
+      // 名字 → **首个**同名合法下标：单树里同名角色（5 人局两张 Prospector）共用一个子节点、PUCT 值相同，
+      // 严格 > 使 chosenI 停在同名的首个下标上 → 这里必须同样取首个（两张卡上的钱可能不同，取错即分叉）
+      const nm = path[j];
+      let ri = -1;
+      for (const i of legal) if (st.roleCards[i].name === nm) { ri = i; break; }
+      // 角色卡公开 → 合法名集只由路径决定，理论上不会缺；真缺了就当截断并上报（主线程计数，绝不静默）
+      if (ri < 0) { stop = "mismatch"; break; }
+      chs.push(ch);
+      applyRole(st, ri);
+      reached++;
+    }
+    let pl = null;
+    if (req.pless && stop === null && !isTerminal(st)) {
+      const ch = currentChooser(st);
+      const legal = ch >= 0 ? legalRoleIdxs(st) : [];
+      if (ch < 0) stop = "nochooser";
+      else if (legal.length === 0) stop = "nolegal";
+      else {
+        // 先验：与单树「节点第一次被穿过时算一次」同一调用、同一 try/catch → {} 语义
+        let P;
+        try { P = priorPolicyFn(st, ch) || {}; } catch (e) { P = {}; }
+        // 此节点在单树里此刻刚建好子节点 → 子节点全 0 访问；父访问数用主线程发来的 N。
+        // 公式与单树逐字相同（q=0、c.N=0 也照原式写，保证同一 double）；严格 > 取首个。
+        // （子节点全 0 时 sqrt(N+1) 对所有候选是同一个正因子 → 选择其实与 N 无关；照发 N 是为了与单树同式、便于核对。）
+        const N = req.N || 0;
+        let chosen = null, chosenI = -1, bestV = -Infinity;
+        const names = [];
+        for (const i of legal) {
+          const nm = st.roleCards[i].name;
+          names.push(nm);
+          const cN = 0;
+          const Pn = (P && P[nm] != null) ? P[nm] : (1 / legal.length);
+          const q = 0;
+          const v = q + C * Pn * Math.sqrt(N + 1) / (1 + cN);
+          if (v > bestV) { bestV = v; chosen = nm; chosenI = i; }
+        }
+        chs.push(ch);
+        applyRole(st, chosenI >= 0 ? chosenI : undefined);
+        pl = { P, names, ch, chosen };
+      }
+    } else if (req.pless && stop === null) {
+      stop = "terminal";   // 无先验节点本身就是终局：单树在此直接叶评估（不建子、不算先验）
+    }
+    // 叶评估：与 ismctsPickRoleIdx 的 hybrid 叶逐行相同（useNet 判定、截断推进、leafEps、终局 rewardFn、
+    // 向量版/标量版 NN、evalLeaf 回退），随机数都取 rootState.rnd → 与单树同序消耗
+    let leafEval;
+    const useNet = (evalLeafFn || evalLeafVecFn) &&
+      (rolloutFrac <= 0 || (rootState.rnd ? rootState.rnd() : Math.random()) >= rolloutFrac);
+    if (useNet) {
+      let steps = 0;
+      while (!isTerminal(st) && steps++ < truncate) {
+        const ch = currentChooser(st); if (ch < 0) break;
+        const legal = legalRoleIdxs(st); if (!legal.length) break;
+        let ri;
+        if (leafEps > 0 && (rootState.rnd ? rootState.rnd() : Math.random()) < leafEps) ri = legal[Math.floor((rootState.rnd ? rootState.rnd() : Math.random()) * legal.length)];
+        else ri = heuristicPickRole(st, ch, legal);
+        applyRole(st, ri);
+      }
+      if (isTerminal(st)) {
+        leafEval = rewardFn(st);
+      } else {
+        let vecEval = null;
+        if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
+        if (vecEval) {
+          leafEval = vecEval;
+        } else if (evalLeafFn) {
+          leafEval = (persp) => {
+            try {
+              const v = evalLeafFn(st, persp);
+              if (typeof v !== "number" || !isFinite(v)) return 0;
+              return Math.max(-1, Math.min(1, v));
+            } catch (e) { return 0; }
+          };
+        } else {
+          leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+        }
+      }
+    } else {
+      leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+    }
+    // 每个座位一个值（叶评估闭包都是纯函数：同一状态同一视角 → 同一 double，调用次数不影响结果）。
+    // 主线程只取路径上各选择者的那几个；全给是为了主线程不必另外知道选择者即可回传。
+    const vals = [];
+    for (let s = 0; s < st.numPlayers; s++) vals.push(leafEval(s));
+    return { reached, stop, chs, vals, pl };
   }
 
   // 按"档位"重建 ismctsPickRoleIdx 的函数型选项（evalLeafFn / priorPolicyFn 不能跨线程传递，
@@ -1444,9 +1746,20 @@
     return { goods, quarry };
   }
   function azSettlerHasDecision(st, i) { const o = azSettlerOptions(st, i); return o.goods.length > 0 || o.quarry; }
+  // fid：庄园(8) 在该玩家的拓殖决策**之前**抽（同 doSettler）。游标 az.hac = 已处理过庄园的 oi，
+  // 保证幂等——azDecision 可对同一决策点被反复调用（搜索/测试/重建），不能每调一次就多抽一张；
+  // 也覆盖「轮到该玩家但无可选项」被跳过的情形（game.js 照样抽）。
+  // 子决策重建（game.js simStateAtSubDecision 'settle'）在真实对局里庄园已抽过，故重建时置 az.hac = oi。
+  function azSettlerHacienda(st) {
+    const az = st.az;
+    if (az.hac === az.oi) return;
+    az.hac = az.oi;
+    fidHacienda(st, st.players[az.ord[az.oi]]);
+  }
   function azSettlerSkipToDecision(st) {
     const az = st.az;
-    while (az.oi < az.ord.length) { if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
+    const fid = fidOn(st);
+    while (az.oi < az.ord.length) { if (fid) azSettlerHacienda(st); if (azSettlerHasDecision(st, az.ord[az.oi])) return true; az.oi++; }
     // 全部处理完 → 弃掉剩余明牌种植园(与 doSettler 末段一致)
     settlerEndBonuses(st);   // 狩猎小屋(40) 贵族支：须在弃掉剩余明牌前结算
     if (st.plantationPool.length > 0) { st.plantationDiscard = st.plantationDiscard.concat(st.plantationPool); st.plantationPool = []; }
@@ -1525,7 +1838,7 @@
   function azFinishRole(st) {
     checkEnd(st);
     st.picksThisTurn++;
-    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || legalRoleIdxs(st).length === 0) {
+    if (st.picksThisTurn >= picksPerRound(st.numPlayers) || !anyUntaken(st)) {
       for (const r of st.roleCards) if (!r.taken) r.money += 1;
       if (st.endTriggered) { st.gameOver = true; }
       else {
@@ -1606,7 +1919,11 @@
       if (action === AZ_QUARRY) { st.quarriesLeft--; pl = { good: "quarry", manned: false }; }
       else { const good = GOODS_[action]; const idx = st.plantationPool.indexOf(good); pl = { good, manned: false }; st.plantationPool.splice(idx, 1); }
       p.plantations.push(pl);
-      if (isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false }); // Hacienda
+      // Hacienda：fid 下已在决策前由 azSettlerHacienda 抽过；az.hac === az.oi 同样表示「本玩家已抽过」——
+      // 除 fid 流程外，只有子决策重建（game.js simStateAtSubDecision 'settle'，真实对局里庄园已抽）会写 az.hac。
+      // 不认这个游标的话，**fid 关**地续跑一个重建的拓殖局面会再抽一张（一次选田多出 2 块田）。
+      // 标志关的正常流程从不写 az.hac（只在 fidOn 时的 Settler 分支置 -1）→ undefined !== oi，默认路径逐位不变。
+      if (!fidOn(st) && az.hac !== az.oi && isManned(p, 8) && p.plantations.length < 12 && st.plantationDeck.length > 0) p.plantations.push({ good: st.plantationDeck.pop(), manned: false });
       settleNewTile(st, p, pl);   // 济贫院(11) + Tibs 寄宿屋(48)
       az.oi++;
       return st;
@@ -1648,7 +1965,7 @@
     card.taken = true; card.takenBy = chooser;
     { const coins = card.money; st.players[chooser].money += coins; card.money = 0; bankNobleInvest(st, st.players[chooser], coins); }
     if (card.name === "Builder") { az.phase = "builder"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
-    if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
+    if (card.name === "Settler") { az.phase = "settler"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; if (fidOn(st)) az.hac = -1; return st; }
     if (card.name === "Trader") { az.phase = "trader"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; return st; }
     if (card.name === "Craftsman") { const produced = craftsmanProduce(st, chooser); az.phase = "craftbonus"; az.chooser = chooser; az.produced = [...produced]; return st; }
     if (card.name === "Captain") { captainStartBonuses(st, chooser); az.phase = "captain"; az.chooser = chooser; az.ord = order(st, chooser); az.oi = 0; az.progressed = false; az.chooserBonusUsed = false; az.cphase = phaseOf(st); return st; }
@@ -1688,13 +2005,20 @@
       return dec.actions.reduce((a, b) => PRICE[GOODS_[a]] >= PRICE[GOODS_[b]] ? a : b);
     }
     if (dec.type === "captain") {
-      // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)
+      // doCaptain: rankCaptain 选最优装船(阶段 phase 在 captain 开始时固定为 az.cphase)；fid 下每次现算（同 game.js）
       const cands = captainCands(st, st.players[dec.chooser]);
-      return azCaptainEncode(rankCaptain(cands, st.ships, st.az.cphase, oppGoodsOf(st, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
+      return azCaptainEncode(rankCaptain(cands, st.ships, fidOn(st) ? fidPhase(st) : st.az.cphase, captainOppGoods(st, cands, dec.chooser), st.players[dec.chooser]._captainDeny)[0]);
     }
     if (dec.type === "build") {
-      // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
       const i = dec.chooser, p = st.players[i];
+      if (fidOn(st)) {
+        // fid：与 doBuilder 的 fid 分支同一函数（game.js aiPickBuilding 镜像），阶段每次现算
+        const cands = [];
+        for (const a of dec.actions) { if (a === AZ_PASS) continue; const b = BLD[a]; cands.push({ b, cost: effectiveCostBonus(p, b, i === st.az.chooser || towerActive(st, p), st.numPlayers) }); }
+        const k = cands.length ? fidPickBuild(st, p, cands, i === st.az.chooser, fidPhase(st)) : -1;
+        return k >= 0 ? cands[k].b.id : AZ_PASS;
+      }
+      // 与 doBuilder 同口径选择：评分最高且 >0 才建，否则 pass
       const phase = st.az._bphase || (st.az._bphase = phaseOf(st)); // builder 阶段内 phase 固定
       let best = AZ_PASS, bestS = 0; // 阈值同 doBuilder：bestS<=0 → pass
       for (const a of dec.actions) {
@@ -1721,10 +2045,11 @@
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
-    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, phaseOf, totalColonists, productionCapacity,
+    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, tpEvalPath, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation,
+      fidOn, fidPhase, fidPickBuild, fidBestLargeViolet, evalBuilding,   // Stage 4 保真模式：供 tests/fid_unit_test.js 逐条对照 game.js
       // 供测试 ⑩ 交叉校验成本快路径与直算路径（性能改写不得改变成本）
       costCtx, ctxCost, effectiveCost, effectiveCostBonus, BUILDINGS: BUILDINGS_ },
   };
