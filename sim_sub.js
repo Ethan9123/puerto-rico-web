@@ -38,6 +38,7 @@
 //   胜者 c* == h → 直接返回 h，不跑门；
 //   否则留出门：48 个与选择阶段不相交的新 perm（r = 1e6 + k），d_k = v(c*, r) − v(h, r)，
 //     mean(d) ≥ δ(0.02) 且 (SE = 0 或 mean/SE ≥ z(2.0)) 才切换，否则 h。
+//   「≥」与「平手」都按精确算术判（值在 1/150 格点上，浮点带 1e-9 容差，§18.2 补充 D，见 CMP_EPS）。
 //   选择阶段用过的 perm 不进门：选择本身会把噪声挑成「优势」（赢家诅咒），门必须用新样本。
 //
 // 5c 集成接口：subSearchSteps 是生成器，逐批 yield {actions, rs}，调用方回填 values[a][k]
@@ -52,6 +53,16 @@
   const ROLLOUT_GUARD = 400;        // 与 sim.js rolloutToEnd 的 guard 同值
   const CONT_GUARD = 5000;          // 到角色边界的子决策步数上限（与 azPlayHeuristic 同值；正常 < 50）
   const DEFAULTS = { bSel: 160, gateN: 48, delta: 0.02, z: 2.0, maxRollouts: 2000 };
+  // 决策规则里的比较按**精确算术**的含义执行（§18.2 补充 D）：PRSim.reward = 0.8·胜率份额 + 0.2·clamp(分差/30)，
+  //   0.8/k（k=1..5 家并列）与 1 VP 分差 0.2/30 都是 1/150 的整数倍 → 每个 v、每个 d 都落在 1/150 的格点上，
+  //   48 个 d 的均值落在 1/7200 ≈ 1.4e-4 的格点上。但浮点里 0.2·(m+3)/30 − 0.2·m/30 按基线 m 不同会落在 0.02 的两侧
+  //   （58 个基线里 26 个 < 0.02），48 个混合 d 精确均值恰为 δ 时，浮点均值约 4 成落在 δ 之下（审查 5c-1 发现，
+  //   随机构造 20 万例实测 38%）——「≥ δ」会被舍入方向随机地判成「<」。选择阶段的「平手归启发式」同理：两个候选
+  //   精确累计和相等时，浮点和的大小由求和路径决定，不是规则。
+  //   所以两处都带容差 CMP_EPS：门 = mean ≥ δ − EPS；排名 = |Δ和| ≤ EPS 视为平手（取启发式序在前）。
+  //   EPS = 1e-9：远大于累积舍入（≤ ~2000 个 |v|≤1 的和，误差 ~1e-13），远小于格点间距（和 1/150、门均值 1/7200），
+  //   所以它只把「精确相等」判回相等，不会让任何精确小于 δ 的均值过门（不放松门槛），比较器在格点上仍可传递。
+  const CMP_EPS = 1e-9;
 
   // ---------- 随机数 / 哈希 ----------
   function mulberry32(a) {
@@ -243,8 +254,8 @@
       if (!vals) return null;
       for (let s = 0; s < S.length; s++) { let acc = sums[S[s]]; const row = vals[s]; for (let k = 0; k < m; k++) acc += row[k]; sums[S[s]] = acc; }
       rNext += m; used += m;
-      // 稳定：和相等 → 启发式序在前（下标小）者
-      S = S.slice().sort((x, y) => (sums[y] - sums[x]) || (x - y)).slice(0, Math.ceil(S.length / 2));
+      // 稳定：和相等（精确算术意义下，见 CMP_EPS）→ 启发式序在前（下标小）者
+      S = S.slice().sort((x, y) => { const dd = sums[y] - sums[x]; return (dd > CMP_EPS || dd < -CMP_EPS) ? dd : (x - y); }).slice(0, Math.ceil(S.length / 2));
     }
     const best = cands[S[0]];
     if (best === h) return { best, h, switched: false, gate: { mean: null, se: null, n: 0 }, cands, selPerms: used };
@@ -259,7 +270,8 @@
       let ss = 0; for (let k = 0; k < gateN; k++) ss += (d[k] - mean) * (d[k] - mean);
       const se = Math.sqrt(ss / (gateN - 1) / gateN);
       gate = { mean, se, n: gateN };
-      switched = mean >= delta && (se === 0 || mean / se >= z);
+      // mean ≥ δ 按精确算术（CMP_EPS，见 DEFAULTS 处）；δ=∞ 时 ∞−EPS=∞，仍永不切换
+      switched = mean >= delta - CMP_EPS && (se === 0 || mean / se >= z);
     }
     return { best, h, switched, gate, cands, selPerms: used };
   }
@@ -329,7 +341,7 @@
   }
 
   const PRSub = {
-    decisionSeed, value, subEvalBatch, subSearch, subSearchSteps, DEFAULTS, GATE_R0,
+    decisionSeed, value, subEvalBatch, subSearch, subSearchSteps, DEFAULTS, GATE_R0, CMP_EPS,
     _internal: { mulberry32, fnv1a, permSeed, permRng, canon, publicView, normalize, isBaseGame, cloneF },
   };
   root.PRSub = PRSub;

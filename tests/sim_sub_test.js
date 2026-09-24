@@ -5,6 +5,8 @@
 //   ⑤s 连续减半的 perm 日程逐批钉死（每轮 m=max(1,⌊B/(L·|S|)⌋)、新 perm 连续不重用、幸存 ⌈|S|/2⌉、
 //      按累计和排名、门 = [GATE_R0, GATE_R0+gateN) 与选择阶段不相交）
 //   ⑦x 门统计量精确：SE 用 n−1、mean/SE ≥ z 的边界两侧与恰好相等
+//   ⑦e 比较按精确算术（§18.2 补充 D）：reward 格点上精确均值 = δ 而浮点均值 < δ → 必须切；精确和平手而浮点不等 → 归启发式序在前；
+//      各差一个格点 → 按差判（容差不放松门槛）
 //   ⑩b v(c≠h) == 独立重写（首位建造者 + 大学 + colonistsLeft 卡在阶段阈值：_bphase 须在 apply 之前定）
 //   ⑭ 隐藏抽牌守卫：到达决策点要先抽隐藏牌（Stage 4 庄园前置抽牌，az.hac≠az.oi）→ 抛错；抽过之后的局面正常且无泄漏
 //      （当前 sim.js 无 fid：用桩模拟 azDecision 前置抽牌；sim.js 带 fidOn 时另跑真实 Stage 4 分支）
@@ -328,6 +330,75 @@ function indepC(st0, c, r, noPre, fid) {
   const zEq = r.gate.mean / r.gate.se;
   r = run(0.2935, { z: zEq });
   ok(r.switched, `⑦x mean/SE == z exactly must switch (z=${zEq})`);
+}
+
+// ⑦e 比较按精确算术（§18.2 补充 D；sim_sub.js CMP_EPS）：值用 PRSim.reward 的真实公式在 1/150 格点上构造，
+//     精确和相等、浮点和不等 → 门「≥ δ」必须过、排名平手必须归启发式序在前；精确差一个格点 → 必须按差判
+{
+  const st0 = byKind.build.slice().sort((a, b) => b.n - a.n)[0].st;
+  const dec = decOf(st0), h = hOf(st0), order = [h].concat(dec.actions.filter(a => a !== h));
+  const N = X.DEFAULTS.gateN, c2 = order[2];
+  const f = (rr, m) => 0.8 * rr + 0.2 * Math.max(-1, Math.min(1, m / 30));   // 同 sim.js rewardFn
+  const U = (rr, m) => Math.round(rr * 120) + Math.max(-30, Math.min(30, m)); // 精确值 × 150（整数）
+  ok(X.CMP_EPS > 0 && X.CMP_EPS < 1 / 7200 / 1000, `⑦e CMP_EPS=${X.CMP_EPS} must be tiny vs the 1/7200 gate lattice`);
+  const rng = mulberry32(777);
+  const RS = [0, 1, 1 / 2, 1 / 3, 1 / 4];
+  // 构造 48 对 (v_c, v_h)，精确 Σd = 3·48/150（均值恰为 δ=0.02），且浮点均值 < 0.02（原实现会判「不过」）
+  let gatePairs = null, tries = 0;
+  while (!gatePairs && tries++ < 20000) {
+    const ps = []; let u = 0;
+    for (let k = 0; k < N - 1; k++) {
+      // 胜率份额两边相同、分差 +3±1 VP：d ≈ δ、SE 小（z ≫ 2），只让 δ 那一条起作用；基线 mh 各异 → 浮点舍入方向各异
+      const rh = RS[Math.floor(rng() * 5)], mh = Math.floor(rng() * 50) - 25;
+      const rc = rh, mc = mh + 3 + (rng() < 0.3 ? (rng() < 0.5 ? 1 : -1) : 0);
+      ps.push([rc, mc, rh, mh]); u += U(rc, mc) - U(rh, mh);
+    }
+    const need = 3 * N - u; if (Math.abs(need) > 6) continue;
+    const mh = Math.floor(rng() * 10) - 5; ps.push([0, mh + need, 0, mh]);
+    let sd = 0; for (const [rc, mc, rh, mh2] of ps) sd += f(rc, mc) - f(rh, mh2);
+    if (sd / N < 0.02) gatePairs = ps;
+  }
+  ok(!!gatePairs, '⑦e setup: no exact-δ gate case with float mean < δ found');
+  if (gatePairs) {
+    const gateRun = (pairs, extra) => X.subSearch(st0, Object.assign({ evalBatch: (acts, rs) => acts.map(a => rs.map(rr => {
+      if (rr < X.GATE_R0) return a === c2 ? 1 : 0;
+      const q = pairs[rr - X.GATE_R0]; return a === c2 ? f(q[0], q[1]) : a === h ? f(q[2], q[3]) : 0;
+    })) }, extra || {}));
+    let r = gateRun(gatePairs);
+    ok(r.best === c2 && r.gate.mean < 0.02 && r.switched && r.action === c2,
+      `⑦e exact mean == δ (float mean ${r.gate.mean}) must switch: ${J(r.gate)} switched=${r.switched}`);
+    // 精确均值 = δ − 1/7200（最后一对少 1 VP）→ 不过（容差没有放松门槛）
+    const below = gatePairs.map(q => q.slice()); below[N - 1][1] -= 1;
+    r = gateRun(below);
+    ok(!r.switched && r.action === h, `⑦e exact mean == δ − 1/7200 must not switch: ${J(r.gate)}`);
+  }
+  // 排名平手：A=order[1]、B=order[2] 在选择阶段的精确累计和相等、B 的浮点和更大 → 必须取 A（启发式序在前）；
+  //   其余候选（含 h）恒 −1 → 一路淘汰；门给 δ=∞ 只看 best。先空跑一次拿到选择阶段用到的 r 区间。
+  let selR = 0;
+  X.subSearch(st0, { delta: Infinity, evalBatch: (acts, rs) => { for (const x of rs) if (x < X.GATE_R0) selR = Math.max(selR, x + 1); return acts.map(a => rs.map(() => a === order[1] || a === order[2] ? 1 : -1)); } });
+  let tab = null; tries = 0;
+  while (!tab && tries++ < 20000) {
+    const A = [], B = []; let ua = 0, ub = 0;
+    for (let k = 0; k < selR; k++) {
+      A.push([RS[Math.floor(rng() * 5)] * (rng() < 0.7 ? 0 : 1), Math.floor(rng() * 40) - 20]);
+      B.push([RS[Math.floor(rng() * 5)] * (rng() < 0.7 ? 0 : 1), Math.floor(rng() * 40) - 20]);
+      ua += U(A[k][0], A[k][1]); ub += U(B[k][0], B[k][1]);
+    }
+    const need = ua - ub, last = B[selR - 1];   // 调 B 的最后一个分差让精确和相等
+    const m2 = last[1] + need; if (Math.abs(m2) > 29) continue; last[1] = m2;
+    let fa = 0, fb = 0; for (let k = 0; k < selR; k++) { fa += f(A[k][0], A[k][1]); fb += f(B[k][0], B[k][1]); }
+    if (fb > fa) tab = { A, B };
+  }
+  ok(!!tab, `⑦e setup: no exact-tie selection case with float(B) > float(A) found (selR=${selR})`);
+  if (tab) {
+    const r = X.subSearch(st0, { delta: Infinity, evalBatch: (acts, rs) => acts.map(a => rs.map(rr => rr >= X.GATE_R0 ? 0
+      : a === order[1] ? f(tab.A[rr][0], tab.A[rr][1]) : a === order[2] ? f(tab.B[rr][0], tab.B[rr][1]) : -1)) });
+    ok(r.best === order[1], `⑦e exact-tie between two non-h candidates must go to the earlier one in heuristic-first order (want ${order[1]}, got ${r.best})`);
+    // 非空洞：B 精确多 1 VP（最后一个 perm）→ 必须取 B
+    const r2 = X.subSearch(st0, { delta: Infinity, evalBatch: (acts, rs) => acts.map(a => rs.map(rr => rr >= X.GATE_R0 ? 0
+      : a === order[1] ? f(tab.A[rr][0], tab.A[rr][1]) : a === order[2] ? f(tab.B[rr][0], tab.B[rr][1] + (rr === selR - 1 ? 1 : 0)) : -1)) });
+    ok(r2.best === order[2], `⑦e B ahead by one lattice step must win (got ${r2.best})`);
+  }
 }
 
 // ⑨ 真实局面上的切换 + ⑧ δ=∞
@@ -658,3 +729,7 @@ process.exit(fails ? 1 : 0);
 //   ⑮  叶函数拿错座位（(chooser+1)%N）                       → 「⑮a settle fid=false: leafValue=reward changes values」+ ⑮b/⑮c 共 20+ 行
 //   ⑮d census winShare 平手记 1（不除 k）                    → 「⑮d winShare ties=2 seat=0: 1 vs 0.5」等 9 行
 //   缺省路径逐位不变另有独立证据：改动前后同一脚本对 46 个 (状态, fid) 的 subSearch + subEvalBatch 输出 sha256 相同。
+//   ---- Stage 5c 修复轮（§18.2 补充 D：比较按精确算术）----
+//   ⑦e 门去掉 CMP_EPS（mean >= delta）                    → 「⑦e exact mean == δ (float mean 0.019999999999999993) must switch …」
+//   ⑦e 排名去掉 CMP_EPS（dd || (x − y)）                   → 「⑦e exact-tie between two non-h candidates must go to the earlier one … (want 1, got 2)」
+//   ⑦e CMP_EPS 放大到 1e-3（> 门格点 1/7200）               → 「⑦e exact mean == δ − 1/7200 must not switch」+「⑦ mean<δ must not switch」+ EPS 量级断言

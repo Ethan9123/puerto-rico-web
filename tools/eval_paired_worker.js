@@ -26,7 +26,13 @@
 //   {"rows","gStart","gEnd","sha256"}。**每局恰好一行**：崩溃局写 {g,seed,seat,lo,error}，
 //   未终局写 {g,seed,seat,lo,incomplete:true} —— 以前这两种情况都静默跳过，导致分片永远不满、
 //   续跑器无限重跑。
-//   侧车 <out>.meta.jsonl 每局一行：L6/L5 决策数、每次 L6 决策的迭代数、回退次数、耗时。
+//   侧车 <out>.meta.jsonl 每局一行：L6/L5 决策数、每次 L6 决策的迭代数、回退次数、耗时、envDraws（本局环境流 Math.random 取数）。
+//
+// L6 子决策搜索（第三轮 Stage 5c，默认关）：L6_KNOBS='{"_l6Sub":{"kinds":["build","captain"]}}'（可另给 delta/bSel/gateN/z）。
+//   评测一律不限时（maxMs 缺省置 null → 只由迭代数约束，结果确定）；无 EVAL_RP_K 时同步搜（sync，仅 Node），
+//   有 EVAL_RP_K 时走浏览器同一条 PRAIPool.subEval → FakeWorker 路径（两者逐位相同，tests/l6_sub_integration_test.js (a)）。
+//   每局侧车 meta.extra.sub[kind] = {decisions, searched, switched, rollouts, timeouts, rejects, single, poolFail, ms, msMax}。
+//   搜索不取 Math.random：δ=∞ 时对局行与关闭时逐字节相同（同一测试 (b)）。
 //   **盲化**：控制台只打印进度计数，不打印胜率（确认性评测期间不做中期窥视）。
 'use strict';
 const fs = require('fs');
@@ -99,7 +105,12 @@ let _rng = Math.random;
 let _envRng = null;           // CRN：环境流（决策期间暂存）
 const MathSeeded = {};
 for (const k of Object.getOwnPropertyNames(Math)) MathSeeded[k] = Math[k];
-MathSeeded.random = () => _rng();
+// 环境流取数计数（侧车 meta.envDraws，逐局）：CRN 下 = 不在 AI 决策流里时的 Math.random 调用数（非 CRN 时 = 全部调用数）。
+// 为什么要它：CRN 下对局开局之后读环境流的只有弃牌堆重洗（flipPlantations），一个「多取的」环境随机数
+// 只有在同局之后还发生重洗时才会改变对局行——最后一次重洗之后的多取在行上完全看不见。
+// 比对 envDraws 能直接抓到任何多取，与之后有没有重洗无关（tests/l6_sub_integration_test.js (b)）。只计数不改流 → 行逐字节不变。
+let _envDraws = 0;
+MathSeeded.random = () => { if (_envRng === null) _envDraws++; return _rng(); };
 
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 const TMP = OUT + '.tmp', META = OUT + '.meta.jsonl', META_TMP = META + '.tmp', DONE = OUT + '.done';
@@ -123,7 +134,7 @@ const _old = HARVEST_OLD ? (() => {
   return { pick: (...a) => eng.sandbox.__oldPick(...a), rnd: () => { const c = calls; calls = 0; return c; } };
 })() : null;
 const { run } = loadEngine({
-  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js'].concat(HARVEST_SUB ? ['sim_sub.js'] : []),
+  files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'sim_nn.js', 'sim_az.js', 'sim_solve.js', 'sim_sub.js'],
   beforeLoad: sb => {
     sb.Math = MathSeeded;
     sb.__setSeed = s => { _rng = mulberry32(s >>> 0); };
@@ -134,6 +145,7 @@ const { run } = loadEngine({
     sb.__aiStreamEnter = key => { _envRng = _rng; _rng = mulberry32((fnv1a(key) ^ 0x9E3779B9) >>> 0); };
     sb.__aiStreamExit = () => { if (_envRng) { _rng = _envRng; _envRng = null; } };
     sb.__fnv1a = fnv1a;
+    sb.__envDraws = () => _envDraws;
     sb.__progress = msg => console.log(msg);
     if (HARVEST_SUB) {
       sb.__harvestSub = json => { fs.writeSync(_sfd, json + '\n'); };
@@ -185,6 +197,13 @@ const src = `(async () => {
   ${L6_SOLVER ? `window._l6Solver = true;` : ''}
   ${L6_SOLVER_CAP != null ? `window._l6SolverCap = ${L6_SOLVER_CAP};` : ''}
   ${KNOBS ? `Object.assign(window, ${JSON.stringify(KNOBS)});` : ''}
+  ${KNOBS && KNOBS._l6Sub ? `
+  // L6 子决策搜索（Stage 5c）：评测一律不限时（maxMs:null → 只由迭代数约束，结果确定）；
+  // 无 worker 池（非 EVAL_RP_K）时允许同步搜（sync，仅 Node）；有池时走浏览器同一条 PRAIPool.subEval 路径。
+  // 每局记账在侧车 meta.extra.sub[kind] = {decisions, searched, switched, rollouts, timeouts, rejects, single, poolFail, ms, msMax}。
+  if (window._l6Sub.maxMs === undefined) window._l6Sub.maxMs = null;
+  if (!${RP_K > 0}) window._l6Sub.sync = true;
+  if (typeof PRSub === 'undefined' || !PRSub.subSearchSteps) throw new Error('_l6Sub 需要 sim_sub.js');` : ''}
   ${CRN ? `
   // CRN 模式：存档/云同步与评测无关，且 prDeviceId 会从环境流取随机数 → 全部桩掉
   saveGame = function(){}; kvSync = function(){}; clearSave = function(){}; prDeviceId = function(){ return 'eval'; };` : ''}
@@ -359,9 +378,10 @@ const src = `(async () => {
     gm = { g, l6: { n: 0, iters: [], fb: 0, warns: 0, ms: 0 }, lo: { n: 0, iters: [], fb: 0, warns: 0, ms: 0 }, extra: {} };
     window.__evalGameMeta = gm.extra;          // 其他代码（如子决策搜索）可往这里记账
     const tg = Date.now();
-    let row;
+    let row, ed0 = 0;
     try {
       __setSeed(seed);
+      ed0 = __envDraws();
       const levels = [${LO},${LO},${LO},${LO}]; levels[seat] = 6;
       G = new Game(N, 'AI', ${JSON.stringify(MODS)});
       G.players.forEach((p,i)=>{ p.isHuman=false; loadDNA(p, i); p._aiLevel=levels[i]; });
@@ -391,6 +411,7 @@ const src = `(async () => {
         l6n: gm.l6.n, l6fb: gm.l6.fb, oldCheck: ${HARVEST_OLD ? 'true' : 'false'} } }));` : ''}
     gm.ms = Date.now() - tg; gm.crn = ${CRN ? 'true' : 'false'}; gm.rpK = ${RP_K};
     if (window._l6TreePar && ${RP_K} > 0) gm.tp = true;     // 仅 TP 臂才写 → 其它臂的 meta 行形状不变
+    gm.envDraws = __envDraws() - ed0;           // 本局（__setSeed 之后）环境流取数，见 MathSeeded 处注释
     __writeMeta(JSON.stringify(gm));
     done++;
     if (done % 5 === 0) __progress('[progress] ' + done + '/' + (${G_END} - ${G_START}) + ' games');
