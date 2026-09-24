@@ -4918,9 +4918,11 @@ async function alphazeroPickRoleAsync(p, available) {
       rolloutFrac: l6LeafOpts().rolloutFrac,
       // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布 / evalLeafVecFn(价值网, 按 _l6ValueNet 旋钮)：由 worker 按 mode='alpha' 重建
     };
-    // 树并行（opt-in window._l6TreePar，默认关——须先过 §18.2 补充 C 的 η 验收 + 伤害检查 + 浏览器审计才改默认）。
-    // 只给 L6（alpha 档）用；L4/L5 的 UCT 搜索保持根并行。TP 超时返回部分统计，不会转去跑根并行。
-    const ri = window._l6TreePar ? await PRAIPool.pickRoleTreeParallel(st, "alpha", opts) : await PRAIPool.pickRoleParallel(st, "alpha", opts);
+    // 树并行（第三轮 Stage 3，**默认开**；window._l6TreePar = false 退回根并行）。依据 AI_STRENGTH §18.5 / §18.7：
+    // 同一批 150 个局面上 TP 的决策质量显著好于根并行（N=1600 一致率 +4.7pp [1.1, 8.3]），真实对局伤害检查通过；
+    // 未达预注册的 η ≥ 0.75（按 §18.2 补充 E 偏离，不做强度数值声明）。只给 L6（alpha 档）用；L4/L5 的 UCT 搜索保持根并行。
+    // TP 超时返回部分统计，不会转去跑根并行。
+    const ri = window._l6TreePar !== false ? await PRAIPool.pickRoleTreeParallel(st, "alpha", opts) : await PRAIPool.pickRoleParallel(st, "alpha", opts);
     if (ri == null || ri < 0) return ismctsPickRoleAsync(p, available, "expert");
     const name = st.roleCards[ri].name;
     const idx = available.findIndex(r => r.name === name);

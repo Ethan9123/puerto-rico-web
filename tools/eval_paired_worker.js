@@ -57,10 +57,11 @@ const CRN = process.env.EVAL_CRN === '1';
 // N/Q → selectRootRole），worker 用 tools/_sandbox.js 的 FakeWorker 在各自 vm 上下文里跑；3×L5 对手仍走同步路径
 // （与 A 臂完全相同）。每个 ≥2 合法角色的 L6 决策都断言：本次池搜索成功、合并了 K 个回复、每个 worker 恰好
 // alphaIters 次迭代——否则记入 meta.l6.rpBad（该臂无效）。
-// 树并行（第三轮 Stage 3，AI_STRENGTH §18.2 补充 C）：再加 L6_KNOBS='{"_l6TreePar":true}' → L6 走同一个池的
+// 树并行（第三轮 Stage 3，AI_STRENGTH §18.2 补充 C；§18.7 后**默认开**）：EVAL_RP_K 下 L6 默认走同一个池的
 // PRAIPool.pickRoleTreeParallel（主线程一棵树 + K 个 FakeWorker 做路径评估）。此时每个 ≥2 合法角色的 L6 决策断言：
 // 本次池搜索成功、mode='alpha-tp'、K 个 worker 都有贡献、合计迭代 == K·alphaIters（每 worker 份额 alphaIters，与 RP4×N 同算力）、
 // 未超时、无 worker 错误（出错 worker 的份额会被其余 worker 补跑，K/合计看起来仍满）——否则同样记入 meta.l6.rpBad（该臂无效）。
+// 根并行臂须显式 L6_KNOBS='{"_l6TreePar":false}'（历史臂 RP4x400 跑在 TP 仍为 opt-in 的引擎 4982779 上，manifest 钉住，无需此旋钮）。
 const RP_K = process.env.EVAL_RP_K ? parseInt(process.env.EVAL_RP_K) : 0;
 // EVAL_HARVEST=<file.jsonl>（第三轮 Stage 2 诊断用）：每个 ≥2 合法角色的 L6 选角决策，把当时的
 // buildSimState(G) 快照追加一行 {g, seat, k, st}。buildSimState 无副作用、不取随机数 → 对局逐字节不变。
@@ -262,7 +263,7 @@ const src = `(async () => {
         if (s && s.reqId > r0) my.iters = (s.perWorker || []).reduce((a, b) => a + b, 0);
         if (available.length >= 2) {
           let bad = null;
-          const tp = !!window._l6TreePar;
+          const tp = window._l6TreePar !== false;   // 与 game.js 同：TP 默认开，L6_KNOBS '{"_l6TreePar":false}' 才是根并行
           if (!s || !(s.reqId > r0)) bad = 'no-pool-call';
           else if (!s.ok) bad = 'pool-failed';
           else if (s.mode !== (tp ? 'alpha-tp' : 'alpha')) bad = 'mode-' + s.mode;
@@ -410,7 +411,7 @@ const src = `(async () => {
         rpK: ${RP_K}, mods: ${JSON.stringify(MODS)}, l6Fid: !!window._l6Fid, fidAllowed: l6FidAllowed(),
         l6n: gm.l6.n, l6fb: gm.l6.fb, oldCheck: ${HARVEST_OLD ? 'true' : 'false'} } }));` : ''}
     gm.ms = Date.now() - tg; gm.crn = ${CRN ? 'true' : 'false'}; gm.rpK = ${RP_K};
-    if (window._l6TreePar && ${RP_K} > 0) gm.tp = true;     // 仅 TP 臂才写 → 其它臂的 meta 行形状不变
+    if (window._l6TreePar !== false && ${RP_K} > 0) gm.tp = true;     // 仅 TP 臂才写 → 其它臂的 meta 行形状不变
     gm.envDraws = __envDraws() - ed0;           // 本局（__setSeed 之后）环境流取数，见 MathSeeded 处注释
     __writeMeta(JSON.stringify(gm));
     done++;

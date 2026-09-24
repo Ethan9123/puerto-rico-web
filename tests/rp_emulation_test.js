@@ -112,6 +112,7 @@ async function poolPick(st, v) {
       G = new Game(4, 'AI', {});
       G.players.forEach((p, i) => { p.isHuman = false; loadDNA(p, i); p._aiLevel = 6; });
       window._aiDecisionLog = [];
+      window._l6TreePar = false;   // ④ 测的是根并行路径；TP 默认开之后须显式关（TP 另有 tests/tp_test.js）
       const ch = G.governor, p = G.players[ch];
       const avail = G.roleCards.filter(rc => !rc.taken);
       const idx = await aiPickRoleAsync(p, avail);

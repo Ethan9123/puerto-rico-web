@@ -12,7 +12,7 @@
 //      目标 − 被吞的路径数；随后该 worker 仍可用于下一次决策。
 //      其中 3p-midtrunc（maxIters=400、C=0.5、截断叶 2）让树长得够深，某些确定化在路径**中途**（末端节点之前）撞终局
 //      → 只回传前缀；断言该局面 midTrunc>0（与「无先验末端节点本身即终局」分开计，后者不涉及前缀）。
-//   ⑤ 真实入口：window._l6TreePar=true 时 aiPickRoleAsync 的 L6 走 TP，决策日志 path='pool'、mode='alpha-tp'、fallback=false。
+//   ⑤ 真实入口：window._l6TreePar 未设置（生产默认）时 aiPickRoleAsync 的 L6 走 TP，决策日志 path='pool'、mode='alpha-tp'、fallback=false。
 //   ⑥ 虚拟损失语义（§18.2 补充 C）：K=4、B=2 时记下 FakeWorker 的真实收发序列（tppaths 发出 / tpresult 到达），用本文件里
 //      按补充 C 文字**独立重写**的参照树（选择 + 虚拟损失 + 首个先验为准 + 回传）逐事件回放：每条请求的 {path, pless, N}
 //      与最终根统计都必须逐位相同。钉住：父侧 N 含 vl、q 的分母含 vl、「N==0 且无在途访问」才算扩展。
@@ -364,11 +364,11 @@ function refReplay(S, st, C, id, log) {
     ok(after.s && after.s.ok && after.s.iters === 4 * OPT.maxIters && after.s.K === 4, `④ 之后的决策照常：iters=${after.s && after.s.iters} K=${after.s && after.s.K}`);
   }
 
-  // ⑤ 真实入口
+  // ⑤ 真实入口：旋钮未设置时（生产默认）L6 走 TP
   {
     const r = await run(`(async () => {
       render=function(){}; flyToDest=function(){}; showToast=function(){};
-      window._allAIMode = true; window._fastSpectator = true; window._l6TreePar = true;
+      window._allAIMode = true; window._fastSpectator = true; delete window._l6TreePar;   // 默认（未设置）即 TP（§18.7 起）
       window._aiThinkBudget = { L4:50, L5:100, hardIters:30, hardMs:1e9, expertIters:30, expertMs:1e9, alphaIters:30, alphaMs:1e9 };
       window._aiPoolTimeoutMs = 120000;
       await loadAIDNA();

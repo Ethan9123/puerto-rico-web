@@ -312,7 +312,8 @@ async function playOne(browser, BASE, gi, tempSample, log) {
 function budgetFor(d, B) { // 该决策应遵守的思考预算（ms）
   if (d.thinkMs) return d.thinkMs; // 人格席位 _thinkMs（仅 --allow-personas 时可能出现）
   const m = d.mode || (d.lvl >= 6 ? 'alpha' : d.lvl === 5 ? 'expert' : d.lvl === 4 ? 'hard' : null);
-  return m === 'alpha' ? B.alphaMs : m === 'expert' ? B.expertMs : m === 'hard' ? B.hardMs : null;
+  // 'alpha-tp' = L6 树并行（第三轮 Stage 3）：与根并行 'alpha' 同一预算 alphaMs
+  return (m === 'alpha' || m === 'alpha-tp') ? B.alphaMs : m === 'expert' ? B.expertMs : m === 'hard' ? B.hardMs : null;
 }
 
 // long task 归因：与之重叠最多的 long-animation-frame 里，渲染（样式/布局/排版）与脚本谁占大头
@@ -364,8 +365,8 @@ function summarize(games) {
     };
   }
 
-  // L6 迭代（只看成功的 alpha 池决策；回退到 expert 池的不算）
-  const l6a = all.filter(d => d.lvl === 6 && d.path === 'pool' && d.mode === 'alpha');
+  // L6 迭代（只看成功的 alpha 池决策——根并行 'alpha' 或树并行 'alpha-tp'；回退到 expert 池的不算）
+  const l6a = all.filter(d => d.lvl === 6 && d.path === 'pool' && (d.mode === 'alpha' || d.mode === 'alpha-tp'));
   const l6pw = [], l6ratio = [];
   for (const d of l6a) for (const it of (d.perWorker || [])) {
     l6pw.push(it);
