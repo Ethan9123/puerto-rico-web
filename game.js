@@ -4198,6 +4198,7 @@ function alphazeroPickRole(p, available) {
 // ============================================================
 // AI Worker 池（root-parallel ISMCTS，把搜索搬离主线程）
 // ============================================================
+// 另有树并行 pickRoleTreeParallel（第三轮 Stage 3，opt-in window._l6TreePar，仅 L6）：主线程一棵树、worker 只评估路径，见该函数注释。
 // K 个 ai_worker.js 各自用不同种子、同一预算独立跑 ISMCTS，回传根统计 {nm,N,Q}；主线程按角色名
 // 合并(N/Q 相加)后用 PRSim.selectRootRole 选角 → 同样墙钟约 K× 模拟量，且 UI 不再冻结。
 // 不可用时（Node 沙盒 / file:// 离线 / 无 Worker / 显式关闭：?aiworker=0 或 window._aiNoWorker=true）
@@ -4251,16 +4252,22 @@ const PRAIPool = {
     });
   },
   _spawn(staticData, knobs) {
-    const slot = { w: null, alive: false, cur: null, resolve: null, ready: null, nnResolve: null };
+    const slot = { w: null, alive: false, cur: null, resolve: null, ready: null, nnResolve: null, tpId: null, tpOn: null, tpClock: null };
     try {
       const w = new Worker("ai_worker.js");
       slot.w = w;
       slot.ready = new Promise(resolve => {
         w.onmessage = (ev) => {
+          // TP 计时：在读 ev.data 之前取时间戳 → 浏览器里 ev.data 的（惰性）反序列化也算进 TP 的主线程切片；无 TP 决策时不取
+          const _tpIn = (slot.tpOn && slot.tpClock) ? slot.tpClock() : 0;
           const m = (ev && ev.data) || {};
           if (m.type === "ready") { slot.alive = true; resolve(m); return; }
           if (m.type === "error" && m.id == null) { console.warn("[ai-worker] init failed:", m.message); resolve(null); return; } // init 失败
           if (m.type === "nnready") { if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(m); } return; }
+          // 树并行（TP）：一次决策里同一 worker 会回多条 tpresult → 单独的 tpId/tpOn 通道（不占用根并行的 cur/resolve）。
+          // 请求 id 全局递增、两种搜索共用 → 同一 id 不会同时出现在两条通道；id 不等于当前 TP 决策的回复（上一次决策超时后
+          // 才到的、或被注入的过期回复）一律丢弃——绝不能被当成本次在途批次的回复去回传（tests/tp_test.js ③ 钉住）。
+          if ((m.type === "tpresult" || m.type === "error") && m.id != null && m.id === slot.tpId && slot.tpOn) { slot.tpOn(m, _tpIn); return; }
           // 只接受当前请求 id 的回复；过期回复（超时后才到）直接丢弃
           if ((m.type === "result" || m.type === "error") && m.id === slot.cur && slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r(m); }
         };
@@ -4269,6 +4276,7 @@ const PRAIPool = {
           slot.alive = false; resolve(null);
           if (slot.nnResolve) { const r = slot.nnResolve; slot.nnResolve = null; r(null); }
           if (slot.resolve) { const r = slot.resolve; slot.resolve = null; slot.cur = null; r({ type: "error", message: String((e && e.message) || e) }); }
+          if (slot.tpOn) slot.tpOn({ type: "error", id: slot.tpId, message: String((e && e.message) || e) });   // TP：该 worker 在途批次作废
         };
         try { w.postMessage({ type: "init", staticData, nnUrl: null, knobs }); }
         catch (e) { console.warn("[ai-worker] init postMessage failed:", (e && e.message) || e); resolve(null); } // 如 DataCloneError：仅此 slot 作废
@@ -4384,6 +4392,198 @@ const PRAIPool = {
     if (!merged.size) return got[0].idx; // 根只有 ≤1 个合法角色等退化情形：worker 已直接给出索引
     return PRSim.selectRootRole(Array.from(merged.values()), st, opts);
   },
+  // ---- 树并行（TP，第三轮 Stage 3；固定设计与验收见 AI_STRENGTH §18.2 补充 C，§18.3 为何要它）----
+  // 根并行的问题（§18.3 实测）：K 棵树只在牌堆洗牌上不同、叶 rollout 确定 → 合并后几乎不增信息，4 个 worker ≈ 1.2 个核。
+  // 树并行：主线程持有**唯一一棵树**（与单树同款 PUCT、同一 C、同一 selectRootRole），worker 只做一次迭代里与树无关的部分
+  // （确定化 + 沿路径按角色名重放 + 无先验节点处算先验并选子 + hybrid 叶评估，见 sim.js tpEvalPath），回传各座位叶值。
+  //
+  // 节点 = { N, Q, children: Map(角色名 → 节点，按合法序插入), P, legalNames(含同名重复), legalCount, ch, vl }
+  //   · 根：合法名 / chooser 直接取自 st（角色卡公开 → 与任何确定化相同），children 预先按合法序建好（根统计顺序 = 单树 Map 插入序）；
+  //     根的 P 与单树一样在「第一次穿过」时由 worker 在确定化状态上算（先验可能依赖确定化后的状态，主线程不代算）。
+  //   · 其余节点：第一次有路径穿过它时由 worker 回传 P / 合法名 / chooser，主线程以**首个**回传为准（§18.2 补充 C）。
+  // 选择（主线程）：与 sim.js 逐字同式 v = q + C·Pn·sqrt(N_parent+1)/(1+N_child)，Pn 缺省 1/合法数（含重复），q = N? Q/N : 0，严格 > 取首个。
+  //   虚拟损失（§18.2 补充 C）：每条在途路径在其经过的每个节点（含根、含末端节点）+1 次访问、+0 回报；上面公式里的 N 一律用 N+vl
+  //   （父侧的 N_parent 也是）→ 同一批/其它 worker 的在途路径会被「稀释」到别的分支，而不改任何已完成的统计。
+  //   路径终止：① 选中的子节点 N==0 且无在途访问 → 扩展（worker 重放后直接叶评估）；② 走到一个还没有 P 的节点 → 无先验请求
+  //   （worker 在该处算 P 并用同一 PUCT、主线程发来的 N、全 0 子节点选一个子，再叶评估）。
+  // 回传（与单树 treeRoot.N++; for visited: N++, Q += leafEval(chooser) 同序）：根 N++，然后按路径顺序每个已访问子节点 N++、Q += vals[chooser]；
+  //   worker 重放途中终局 → 只回传实际到达的前缀（与单树「循环遇终局即停」同）。
+  // 预算：maxIters 是**每个 worker** 的份额，合计 K·maxIters 条路径（TP4×N 与 RP4×N 花同样的算力）；每条消息 B=2 条路径，
+  //   每个 worker 同时只有一条在途消息（回来一条就补发一条），直到份额发完或 budgetMs 截止；之后等在途回复（至多 timeoutMs）。
+  //   超时 → 用已回传的部分统计照常选角（ok:true、iters 如实少于目标），**绝不**转去重跑根并行；一条都没有才抛错（调用方显式回退并记账）。
+  // 确定性：K=1、B=1、无虚拟损失时与 ismctsPickRoleIdx（同 seed）逐位相同（tests/tp_test.js ①）；FakeWorker（FIFO 微任务）下
+  //   K=4 也逐次可复现（②）。浏览器里消息到达顺序依赖真实调度 → 不逐位可复现（与根并行同，统计上等价）。
+  // tpOpts（仅测试/诊断用，生产调用不传）：{ B, virtualLoss:false, seedBase }。
+  async pickRoleTreeParallel(st, mode, opts, timeoutMs, tpOpts) {
+    tpOpts = tpOpts || {};
+    opts = opts || {};
+    const ok = await this.ensure();
+    if (!ok || !this._slots.length) throw new Error("ai-worker pool unavailable");
+    if (mode !== "alpha") throw new Error("tree-parallel: alpha mode only");   // UCT 档（L4/L5）无先验，TP 不适用 → 保持根并行
+    if (!this.nn) throw new Error("ai-worker NN unavailable");
+    if (window._l6ValueNet && !this.vnet) throw new Error("ai-worker value net unavailable");
+    const id = ++this._reqId;
+    const _t0 = Date.now();
+    const _pnow = (typeof performance !== "undefined" && performance && typeof performance.now === "function") ? () => performance.now() : () => Date.now();
+    const slots = this._slots, K = slots.length;
+    this.lastStats = { reqId: id, mode: "alpha-tp", ok: false, K: 0, poolK: K, perWorker: [], iters: 0, errors: [], ms: 0 };
+    const B = tpOpts.B > 0 ? Math.floor(tpOpts.B) : 2;
+    const useVL = tpOpts.virtualLoss !== false;
+    // C 在主线程按 sim.js 同一规则解析后显式下发 → worker 的 PUCT（无先验节点处）与主线程用同一个常数
+    const C = opts.C || (window._mctsC != null ? window._mctsC : 1.0);
+    const maxIters = opts.maxIters || 20000, budgetMs = opts.budgetMs || 1500;   // 与 ismctsPickRoleIdx 同默认
+    const rootCh = PRSim.currentChooser(st);
+    const rootLegal = PRSim.legalRoleIdxs(st);
+    // 退化情形与单树同：无人可选 → -1；≤1 个合法角色 → 直接给出（不动用 worker）
+    if (rootCh < 0 || rootLegal.length <= 1) {
+      this.lastIters = 0;
+      this.lastStats = { reqId: id, mode: "alpha-tp", ok: true, K: 0, poolK: K, perWorker: slots.map(() => 0), iters: 0, errors: [], ms: Date.now() - _t0, merged: [] };
+      return rootCh < 0 ? -1 : rootLegal[0];
+    }
+    const mk = () => ({ N: 0, Q: 0, children: null, P: null, legalNames: null, legalCount: 0, ch: -1, vl: 0 });
+    const rootNode = mk();
+    rootNode.children = new Map();
+    for (const i of rootLegal) { const nm = st.roleCards[i].name; if (!rootNode.children.has(nm)) rootNode.children.set(nm, mk()); }
+
+    // 选一条路径（纯主线程；不取随机数）
+    const selectPath = () => {
+      const nodes = [rootNode], names = [];
+      let node = rootNode;
+      for (;;) {
+        if (!node.P) return { nodes, names, pless: true, N: node.N + node.vl };
+        const Np = node.N + node.vl;
+        let chosen = null, bestV = -Infinity;
+        for (const nm of node.legalNames) {
+          const c = node.children.get(nm), cN = c.N + c.vl;
+          const Pn = (node.P[nm] != null) ? node.P[nm] : (1 / node.legalCount);
+          const q = cN === 0 ? 0 : c.Q / cN;
+          const v = q + C * Pn * Math.sqrt(Np + 1) / (1 + cN);
+          if (v > bestV) { bestV = v; chosen = nm; }
+        }
+        if (chosen === null) chosen = node.legalNames[0];   // 仅 NaN 先验这种病态情形（单树此时会直接崩）
+        const child = node.children.get(chosen);
+        names.push(chosen); nodes.push(child);
+        if (child.N === 0 && child.vl === 0) return { nodes, names, pless: false, N: 0 };
+        node = child;
+      }
+    };
+    const cnt = { pless: 0, plessDup: 0, truncated: 0, midTrunc: 0, mismatch: 0, batches: 0 };
+    // 主线程耗时记账（审查意见：mainMs 只含选择+回传，漏掉了 postMessage 序列化 / ev.data 反序列化 / 消息分派，
+    // 真 Chromium 里这些是 mainMs 的 2–4 倍）：
+    //   mainMs     = 只算 selectPath + 回传（树操作本身，算法开销）；
+    //   postMs     = tppaths 的 postMessage（结构化克隆序列化）；
+    //   handlerMs  = 全部 TP 主线程切片之和：起步切片（tpinit ×K + 首轮派发）+ 每条回复的完整处理
+    //                （从 onmessage 入口、读 ev.data 之前起算 → 含反序列化、回传、补发及其 postMessage）；
+    //   maxSliceMs = 其中最长的单个切片（浏览器审计「主线程无 >250 ms 脚本长任务」要看的是它，不是均值）。
+    let mainMs = 0, postMs = 0, handlerMs = 0, maxSliceMs = 0;
+    // 回传一条已完成路径：先把 worker 回传的无先验节点信息落到树上，再按单树顺序回传
+    const backup = (p, r) => {
+      const reached = Math.max(0, Math.min(r.reached | 0, p.names.length));
+      if (reached < p.names.length || (p.pless && !r.pl)) cnt.truncated++;
+      // 路径中途（末端节点之前）撞终局：只回传前缀。与上面的 truncated 分开计 —— truncated 还包括「无先验末端节点本身即终局」
+      // 这种不涉及前缀截断的情形；tests/tp_test.js ① 要求确有 midTrunc>0 的局面，才算把前缀回传钉住了（审查意见 1）
+      if (reached < p.names.length) cnt.midTrunc++;
+      if (r.stop === "mismatch") cnt.mismatch++;
+      const visited = [];
+      for (let j = 0; j < reached; j++) visited.push(p.nodes[j + 1]);
+      if (p.pless && r.pl && reached === p.names.length) {
+        const node = p.nodes[p.nodes.length - 1];
+        if (!node.P) {
+          node.P = r.pl.P || {}; node.legalNames = r.pl.names; node.legalCount = r.pl.names.length; node.ch = r.pl.ch;
+          if (!node.children) node.children = new Map();   // 根的子表已按 st 的合法序预建（统计顺序），不覆盖
+          for (const nm of r.pl.names) if (!node.children.has(nm)) node.children.set(nm, mk());   // 合法序插入 = 单树 Map 序
+        } else cnt.plessDup++;   // 另一条在途路径先把 P 带回来了：以首个为准，本条只贡献它那次扩展
+        let g = node.children.get(r.pl.chosen);
+        if (!g) { cnt.mismatch++; g = mk(); node.children.set(r.pl.chosen, g); }
+        visited.push(g);
+      }
+      rootNode.N++;
+      for (let j = 0; j < visited.length; j++) { const c = visited[j]; c.N++; c.Q += r.vals[r.chs[j]]; }
+    };
+
+    const state = Object.assign({}, st); delete state.rnd;   // 函数不能 structured-clone；worker 侧按 seed 自建 RNG
+    const knobs = this._knobs();
+    const tables = this._tables();
+    const seedBase = (tpOpts.seedBase != null) ? (tpOpts.seedBase >>> 0) : ((Math.random() * 0x100000000) >>> 0);   // 与根并行同式
+    const wopts = Object.assign({}, opts, { C });
+    const perWorker = slots.map(() => 0);
+    const inflight = slots.map(() => null);   // 每个 worker 至多一条在途消息：[{nodes, names, pless, N}, ...]
+    const dead = slots.map(s => !s.alive);
+    const errs = [];
+    const target = dead.filter(d => !d).length * maxIters;   // 份额按起步时活着的 worker 计
+    let issued = 0, done = 0, nInflight = 0, stopIssuing = false, finished = false;
+    let finish = null;
+    const allDone = new Promise(r => { finish = r; });
+    const release = (batch) => { if (useVL) for (const p of batch) for (const nd of p.nodes) nd.vl--; };
+    const dispatch = (k) => {
+      if (dead[k] || inflight[k] || stopIssuing || finished) return;
+      if (Date.now() - _t0 >= budgetMs) { stopIssuing = true; return; }
+      const n = Math.min(B, target - issued);
+      if (n <= 0) return;
+      const t = _pnow();
+      const batch = [];
+      for (let b = 0; b < n; b++) {
+        const p = selectPath();
+        if (useVL) for (const nd of p.nodes) nd.vl++;   // 在途：+1 访问 +0 回报（下一条路径即可看见）
+        if (p.pless) cnt.pless++;
+        batch.push(p);
+      }
+      mainMs += _pnow() - t;
+      issued += n; inflight[k] = batch; nInflight++; cnt.batches++;
+      const tp0 = _pnow();
+      try { slots[k].w.postMessage({ type: "tppaths", id, reqs: batch.map(p => ({ path: p.names, pless: p.pless, N: p.N })) }); postMs += _pnow() - tp0; }
+      catch (e) { release(batch); issued -= n; inflight[k] = null; nInflight--; dead[k] = true; errs.push(String((e && e.message) || e)); }
+    };
+    // 给所有空闲的活 worker 补发（稳态下只有刚回复的那个空闲；有 worker 出错时，它丢掉的份额由其余 worker 接着跑）
+    const pump = () => { for (let k = 0; k < K; k++) dispatch(k); if (nInflight === 0 && !finished) { finished = true; finish(); } };
+    const onReply = (k, m, tIn) => {
+      const batch = inflight[k];
+      if (!batch || finished) return;
+      inflight[k] = null; nInflight--;
+      const t = _pnow();
+      const tSlice = tIn > 0 ? tIn : t;   // tIn = onmessage 入口时刻（读 ev.data 之前）
+      release(batch);
+      if (m && m.type === "tpresult" && Array.isArray(m.results) && m.results.length === batch.length) {
+        for (let b = 0; b < batch.length; b++) backup(batch[b], m.results[b]);   // 批内按发出顺序 = 该 worker 消耗随机流的顺序
+        perWorker[k] += batch.length; done += batch.length;
+      } else {
+        errs.push((m && m.message) || "bad tpresult"); dead[k] = true; issued -= batch.length;   // 丢失的路径退回份额
+      }
+      mainMs += _pnow() - t;
+      pump();
+      const sl = _pnow() - tSlice; handlerMs += sl; if (sl > maxSliceMs) maxSliceMs = sl;
+    };
+    const tStart = _pnow();
+    slots.forEach((slot, k) => {
+      if (dead[k]) return;
+      slot.tpId = id; slot.tpOn = (m, tIn) => onReply(k, m, tIn); slot.tpClock = _pnow;
+      try { slot.w.postMessage({ type: "tpinit", id, state, mode, opts: wopts, seed: (seedBase + k * 0x9E3779B9) >>> 0, knobs, tables }); }
+      catch (e) { slot.tpId = null; slot.tpOn = null; dead[k] = true; errs.push(String((e && e.message) || e)); }
+    });
+    pump();
+    { const sl = _pnow() - tStart; handlerMs += sl; if (sl > maxSliceMs) maxSliceMs = sl; }   // 起步切片（tpinit 带整个状态+表）
+    const tmo = timeoutMs != null ? timeoutMs : (window._aiPoolTimeoutMs > 0 ? window._aiPoolTimeoutMs : budgetMs * 1.5 + 3000);
+    let timer = null, timedOut = false;
+    await Promise.race([allDone, new Promise(r => { timer = setTimeout(() => { timedOut = true; r(); }, tmo); })]);
+    if (timer) clearTimeout(timer);
+    finished = true;
+    for (const slot of slots) if (slot.tpId === id) { slot.tpId = null; slot.tpOn = null; slot.tpClock = null; }   // 之后到达的回复一律丢弃
+    const lost = inflight.reduce((a, b) => a + (b ? b.length : 0), 0);
+    if (errs.length) console.warn(`[ai-worker] tree-parallel: ${errs.length} worker error(s): ${errs.join("; ")}`);
+    if (!done) throw new Error("ai-worker tree-parallel: no result" + (errs.length ? " (" + errs.join("; ") + ")" : timedOut ? " (timeout)" : ""));
+    const stats = [];
+    for (const [nm, c] of rootNode.children) stats.push({ nm, N: c.N, Q: c.Q });
+    // 在途虚拟损失残留（只在超时时非 0）：供测试核对记账
+    let vlLeft = 0;
+    const walk = (nd) => { vlLeft += nd.vl; if (nd.children) for (const c of nd.children.values()) walk(c); };
+    walk(rootNode);
+    this.lastIters = done;
+    this.lastStats = { reqId: id, mode: "alpha-tp", ok: true, K: perWorker.filter(x => x > 0).length, poolK: K, perWorker, iters: done, target,
+      errors: errs.slice(), ms: Date.now() - _t0, merged: stats, timedOut, lostInFlight: lost, B, virtualLoss: useVL,
+      mainMs, postMs, handlerMs, maxSliceMs,
+      plessReqs: cnt.pless, plessDup: cnt.plessDup, truncated: cnt.truncated, midTrunc: cnt.midTrunc, mismatch: cnt.mismatch, batches: cnt.batches, vlLeft, rootN: rootNode.N };
+    return PRSim.selectRootRole(stats, st, opts);   // 与单树同一规则（argmax N + 可选近平局温度采样）
+  },
 };
 
 // ---- 异步版角色选择（走 worker 池）：与同步版逻辑镜像；池不可用或出错时回退到同步函数 ----
@@ -4445,7 +4645,9 @@ async function alphazeroPickRoleAsync(p, available) {
       rolloutFrac: l6LeafOpts().rolloutFrac,
       // evalLeafFn=evalLeafNN / priorPolicyFn=NN policy → 合法角色分布 / evalLeafVecFn(价值网, 按 _l6ValueNet 旋钮)：由 worker 按 mode='alpha' 重建
     };
-    const ri = await PRAIPool.pickRoleParallel(st, "alpha", opts);
+    // 树并行（opt-in window._l6TreePar，默认关——须先过 §18.2 补充 C 的 η 验收 + 伤害检查 + 浏览器审计才改默认）。
+    // 只给 L6（alpha 档）用；L4/L5 的 UCT 搜索保持根并行。TP 超时返回部分统计，不会转去跑根并行。
+    const ri = window._l6TreePar ? await PRAIPool.pickRoleTreeParallel(st, "alpha", opts) : await PRAIPool.pickRoleParallel(st, "alpha", opts);
     if (ri == null || ri < 0) return ismctsPickRoleAsync(p, available, "expert");
     const name = st.roleCards[ri].name;
     const idx = available.findIndex(r => r.name === name);
@@ -4460,7 +4662,8 @@ async function alphazeroPickRoleAsync(p, available) {
 // 注意 level5Reactive 内的对手预测递归与 netplay 的 aiDefaultFor 仍调用同步 aiPickRole。
 // 主循环入口：选角 + 决策日志（window._aiDecisionLog，环形 1000 条）。日志只用 Date.now()/数组 push，
 // 不碰随机数与控制流 → Node 评测逐位不变。path='pool' 表示本决策最后一次池搜索成功；L6 决策若最后一次
-// 池搜索不是 'alpha' 模式（alphazeroPickRoleAsync 的失败分支会转去 expert 池 / 同步 L5），记 fallback=true。
+// 池搜索不是 'alpha'（根并行）或 'alpha-tp'（树并行，window._l6TreePar）模式（alphazeroPickRoleAsync 的失败分支
+// 会转去 expert 池 / 同步 L5），记 fallback=true。
 async function aiPickRoleAsync(p, available) {
   const t0 = Date.now(), r0 = PRAIPool._reqId;
   const res = await aiPickRoleAsyncCore(p, available);
@@ -4474,7 +4677,11 @@ function logAiDecision(p, available, r0, t0) {
   log.push({ t: t0, seat: p.idx, lvl, turn: (typeof G !== "undefined" && G) ? G.turnNumber : null, legal: available.length,
     path: usedPool ? (s.ok ? "pool" : "pool-failed") : "sync", mode: usedPool ? s.mode : null,
     K: usedPool ? s.K : 0, poolK: PRAIPool.K, perWorker: usedPool ? s.perWorker : null, ms: Date.now() - t0,
-    fallback: lvl === 6 && usedPool && (!s.ok || s.mode !== "alpha"),
+    // 审查意见 4：一次决策中途丢了一个 worker（其份额由别的 worker 补跑，K/iters 看起来都满）或超时只拿到部分统计，
+    // 以前在日志里与干净决策无法区分 → 显式记下迭代数/目标、worker 错误数与是否超时（根并行无 target/timedOut → null/false）
+    iters: usedPool ? (s.iters != null ? s.iters : null) : null, target: usedPool && s.target != null ? s.target : null,
+    errors: usedPool && s.errors ? s.errors.length : 0, timedOut: !!(usedPool && s.timedOut),
+    fallback: lvl === 6 && usedPool && (!s.ok || (s.mode !== "alpha" && s.mode !== "alpha-tp")),   // 'alpha-tp' = L6 树并行，不是回退
     // 池可用却没走池（人格直选 / worker 无 NN 回退同步等）：单独标出，交由审计判断是否属于回退
     syncWhilePool: lvl >= 4 && !usedPool && PRAIPool.available() });
   if (log.length > 1000) log.splice(0, log.length - 1000);

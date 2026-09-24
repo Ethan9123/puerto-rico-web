@@ -51,6 +51,10 @@ const CRN = process.env.EVAL_CRN === '1';
 // N/Q → selectRootRole），worker 用 tools/_sandbox.js 的 FakeWorker 在各自 vm 上下文里跑；3×L5 对手仍走同步路径
 // （与 A 臂完全相同）。每个 ≥2 合法角色的 L6 决策都断言：本次池搜索成功、合并了 K 个回复、每个 worker 恰好
 // alphaIters 次迭代——否则记入 meta.l6.rpBad（该臂无效）。
+// 树并行（第三轮 Stage 3，AI_STRENGTH §18.2 补充 C）：再加 L6_KNOBS='{"_l6TreePar":true}' → L6 走同一个池的
+// PRAIPool.pickRoleTreeParallel（主线程一棵树 + K 个 FakeWorker 做路径评估）。此时每个 ≥2 合法角色的 L6 决策断言：
+// 本次池搜索成功、mode='alpha-tp'、K 个 worker 都有贡献、合计迭代 == K·alphaIters（每 worker 份额 alphaIters，与 RP4×N 同算力）、
+// 未超时、无 worker 错误（出错 worker 的份额会被其余 worker 补跑，K/合计看起来仍满）——否则同样记入 meta.l6.rpBad（该臂无效）。
 const RP_K = process.env.EVAL_RP_K ? parseInt(process.env.EVAL_RP_K) : 0;
 // EVAL_HARVEST=<file.jsonl>（第三轮 Stage 2 诊断用）：每个 ≥2 合法角色的 L6 选角决策，把当时的
 // buildSimState(G) 快照追加一行 {g, seat, k, st}。buildSimState 无副作用、不取随机数 → 对局逐字节不变。
@@ -114,6 +118,11 @@ const L6_SOLVER_CAP = process.env.L6_SOLVER_CAP ? parseFloat(process.env.L6_SOLV
 // 默认 {} = 基础局，与既有基线逐字节一致。
 const MODS = process.env.MODS ? JSON.parse(process.env.MODS) : {};
 const KNOBS = process.env.L6_KNOBS ? JSON.parse(process.env.L6_KNOBS) : null;
+if (KNOBS && KNOBS._l6TreePar && !(RP_K > 0)) {
+  // 没有 worker 池时 L6 走同步单树 → 「TP 臂」会静默等于 A 臂
+  console.error('ERROR L6_KNOBS._l6TreePar 需要 EVAL_RP_K=K（树并行只存在于 worker 池路径）');
+  process.exit(1);
+}
 if (KNOBS && KNOBS._aiThinkBudget) {
   const b = KNOBS._aiThinkBudget;
   if (!(b.alphaMs > 0 && b.expertMs > 0 && b.alphaIters > 0 && b.expertIters > 0)) {
@@ -192,11 +201,17 @@ const src = `(async () => {
         if (s && s.reqId > r0) my.iters = (s.perWorker || []).reduce((a, b) => a + b, 0);
         if (available.length >= 2) {
           let bad = null;
+          const tp = !!window._l6TreePar;
           if (!s || !(s.reqId > r0)) bad = 'no-pool-call';
           else if (!s.ok) bad = 'pool-failed';
-          else if (s.mode !== 'alpha') bad = 'mode-' + s.mode;
+          else if (s.mode !== (tp ? 'alpha-tp' : 'alpha')) bad = 'mode-' + s.mode;
           else if (s.K !== ${RP_K}) bad = 'K=' + s.K;
-          else if (!s.perWorker.every(x => x === want)) bad = 'iters=' + s.perWorker.join('/');
+          // RP：每个 worker 恰好 alphaIters；TP：份额动态分配（谁先回谁先补），只要求合计 == K·alphaIters 且未超时
+          else if (!tp && !s.perWorker.every(x => x === want)) bad = 'iters=' + s.perWorker.join('/');
+          else if (tp && (s.iters !== ${RP_K} * want || s.perWorker.reduce((a, b) => a + b, 0) !== s.iters)) bad = 'tp-iters=' + s.iters + '[' + s.perWorker.join('/') + ']';
+          else if (tp && (s.timedOut || s.mismatch)) bad = 'tp-' + (s.timedOut ? 'timeout' : 'mismatch=' + s.mismatch);
+          // 中途有 worker 出错：其份额被别的 worker 补跑，K 与合计迭代都仍「满」→ 必须单独判（审查意见 4）
+          else if (tp && s.errors && s.errors.length) bad = 'tp-errors=' + s.errors.length;
           if (bad) { gm.l6.rpBad = (gm.l6.rpBad || 0) + 1; (gm.l6.rpWhy = gm.l6.rpWhy || []).push(bad); }
         }
       }` : ''}
@@ -237,6 +252,7 @@ const src = `(async () => {
     }
     __writeRow(JSON.stringify(row));
     gm.ms = Date.now() - tg; gm.crn = ${CRN ? 'true' : 'false'}; gm.rpK = ${RP_K};
+    if (window._l6TreePar && ${RP_K} > 0) gm.tp = true;     // 仅 TP 臂才写 → 其它臂的 meta 行形状不变
     __writeMeta(JSON.stringify(gm));
     done++;
     if (done % 5 === 0) __progress('[progress] ' + done + '/' + (${G_END} - ${G_START}) + ' games');

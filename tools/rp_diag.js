@@ -23,6 +23,14 @@
 //   2) 选局面：node tools/rp_diag.js select h-*.jsonl --games 75 --per 2 --out states.jsonl
 //   3) 跑搜索：ENGINE_ROOT=/home/user/pr-wt/<sha> node tools/rp_diag.js run states.jsonl --shard k/M --out part-k.jsonl [--N 400,1600]
 //   4) 报告：node tools/rp_diag.js report part-*.jsonl [--boot 2000]
+//
+// 第 3 阶段（树并行 TP，AI_STRENGTH §18.2 补充 C 的 η 验收）：
+//   3') ENGINE_ROOT=/home/user/pr-wt/<TP 工作树> node tools/rp_diag.js run-tp states.jsonl --shard k/M --out tp-part-k.jsonl [--N 400,1600]
+//       对同一批局面、同一 N 列表跑 TP4×N：**真实** PRAIPool.pickRoleTreeParallel（game.js）+ 4 个 FakeWorker（ai_worker.js 真实代码，
+//       FIFO 微任务 → 确定性），合计 4N 次迭代；replicate r 的 seedBase = fnv1a('rpdiag|<id>|<N>|<r>')（与 run 的 RP 同一式 →
+//       worker k 的随机流种子与 RP 的 worker k 相同）。行与 run 同键（id/g/j/legal/byN[N]），只含 res.TP = [{nm, iters, merged}] ×2。
+//   4') report 同时接受 run 的分片与 run-tp 的分片（按 id 合并；同一配置重复 → 报错）：TP 的指标与 η 用**原分片**的
+//       S_N / S_4N / oracle 计算（与 RP/RPdiv 同一自助抽样），另给一行 TP 判定（N=1600、两个指标 η 90% 下界都 ≥ 0.75 才算过）。
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -126,10 +134,86 @@ async function cmdRun(statesFile) {
   console.log(`[run] shard ${shK}/${shM}: ${n} new states -> ${out}`);
 }
 
+// ---------------------------------------------------------------- run-tp（第 3 阶段：树并行 TP4×N）
+async function cmdRunTP(statesFile) {
+  const ROOT = process.env.ENGINE_ROOT || path.resolve(__dirname, '..');
+  const { createSandbox, createFakeWorkerClass } = require(path.join(ROOT, 'tools/_sandbox.js'));
+  // worker 不设 forceJS → ai_worker.js 照常 importScripts('nn_wasm.js') → 与 run 的主线程搜索同一 wasm-simd 前向（数值一致，下面核对）
+  const FW = createFakeWorkerClass({ repoRoot: ROOT, mathSeed: SEED_TAG });
+  const { sandbox: sb, load, run } = createSandbox({
+    repoRoot: ROOT,
+    beforeLoad: s => {
+      s.Worker = FW;
+      s.navigator.hardwareConcurrency = K + 1;              // game.js: 池大小 = min(_aiWorkersK||8, cores−1)
+      s.location = Object.assign({}, s.location, { href: 'http://localhost/', origin: 'http://localhost', host: 'localhost', hostname: 'localhost', protocol: 'http:' });
+      s.performance = { now: () => Number(process.hrtime.bigint()) / 1e6 };   // 主线程开销计时（lastStats.mainMs）
+    },
+  });
+  for (const f of ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'nn_wasm.js', 'sim_nn.js']) {
+    if (f === 'nn_wasm.js' && !fs.existsSync(path.join(ROOT, f))) continue;
+    load(f);
+  }
+  const S = sb.PRSim, Pool = run('PRAIPool');
+  if (typeof Pool.pickRoleTreeParallel !== 'function') throw new Error(`ENGINE_ROOT=${ROOT} 的 game.js 没有 PRAIPool.pickRoleTreeParallel`);
+  await S.loadNetwork(path.join(ROOT, 'mcts_value_nn.json'));   // 只为下面的后端/数值核对（主线程不搜索）
+  run(`window._aiWorkersK = ${K}; window._aiPoolTimeoutMs = 1e9;`);
+  const up = await Pool.ensure(), nn = up && await Pool.ensureNN();
+  if (!nn || Pool.K !== K) throw new Error(`worker 池未就绪：ok=${up} nn=${nn} K=${Pool.K}（要求 ${K}）`);
+  const Ns = argOpt('--N', '400,1600').split(',').map(Number);
+  const [shK, shM] = argOpt('--shard', '0/1').split('/').map(Number);
+  const out = argOpt('--out', `rp_diag-tp-part${shK}.jsonl`);
+  const states = readJsonl(statesFile).filter((_, i) => i % shM === shK);
+  // 后端与数值核对：TP 的 η 要与 run 的 S_N/S_4N/oracle（主线程 wasm-simd）可比 → worker 的先验必须与主线程逐位相同
+  if (states.length) {
+    const st0 = states[0].st, ch = S.currentChooser(st0);
+    const mainB = S.nnBackend(), a = S.networkEval(st0, ch);
+    for (const slot of Pool._slots) {
+      const W = slot.w._wsb.PRSim, b = W.networkEval(JSON.parse(JSON.stringify(st0)), ch);
+      if (W.nnBackend() !== mainB || JSON.stringify(Array.from(a.policy)) !== JSON.stringify(Array.from(b.policy)))
+        throw new Error(`worker NN 后端/数值与主线程不同：main=${mainB} worker=${W.nnBackend()}`);
+    }
+    console.log(`[run-tp] NN backend main=worker=${mainB}; policy identical on ${states[0].id}`);
+  }
+  const done = new Set(fs.existsSync(out) ? readJsonl(out).map(r => r.id) : []);
+  const fd = fs.openSync(out, 'a');
+  const base = { budgetMs: 1e9, C: 1.5, truncate: 999, rolloutFrac: 0 };   // 与 run 同（= 部署的 L6 选项）
+  const nameOf = (st, i) => (i != null && i >= 0 && st.roleCards[i]) ? st.roleCards[i].name : null;
+  let n = 0, mainMs = 0, hMs = 0, maxSl = 0, dup = 0, its = 0;
+  for (const rec of states) {
+    if (done.has(rec.id)) continue;
+    const st0 = rec.st; st0.rnd = Math.random;   // 占位：TP 主线程只用它取合法集与 selectRootRole（无温度采样 → 不取随机数）
+    if (S.currentChooser(st0) < 0 || S.legalRoleIdxs(st0).length < 2) throw new Error(`${rec.id}: 不是 ≥2 合法角色的决策局面`);
+    const row = { id: rec.id, g: rec.g, j: rec.j, legal: S.legalRoleIdxs(st0).map(i => st0.roleCards[i].name), byN: {} };
+    for (const N of Ns) {
+      const res = { TP: [] };
+      for (let r = 0; r < 2; r++) {
+        const sb0 = fnv1a(`rpdiag|${rec.id}|${N}|${r}`);
+        const t0 = process.hrtime.bigint();
+        const idx = await Pool.pickRoleTreeParallel(st0, 'alpha', Object.assign({}, base, { maxIters: N }), 1e9, { seedBase: sb0 });
+        const s = Pool.lastStats;
+        // 有效性：必须恰好 4N 次迭代、4 个 worker 都有贡献、无错误/超时/名字不符——否则这一行不能进 η
+        if (!s || !s.ok || s.iters !== K * N || s.K !== K || s.errors.length || s.timedOut || s.mismatch)
+          throw new Error(`${rec.id} N=${N} r=${r}: TP 记账异常 ${JSON.stringify(s && { ok: s.ok, iters: s.iters, K: s.K, errors: s.errors, timedOut: s.timedOut, mismatch: s.mismatch })}`);
+        res.TP.push({ nm: nameOf(st0, idx), iters: s.perWorker, merged: s.merged, ms: Number(process.hrtime.bigint() - t0) / 1e6, mainMs: s.mainMs, handlerMs: s.handlerMs, maxSliceMs: s.maxSliceMs, pless: s.plessReqs, plessDup: s.plessDup, midTrunc: s.midTrunc });
+        mainMs += s.mainMs; hMs += s.handlerMs; its += s.iters; dup += s.plessDup; if (s.maxSliceMs > maxSl) maxSl = s.maxSliceMs;
+      }
+      row.byN[N] = res;
+    }
+    fs.writeSync(fd, JSON.stringify(row) + '\n');
+    n++;
+    console.log(`[run-tp] ${rec.id} done (${n} this run)`);
+  }
+  fs.closeSync(fd);
+  for (const s of Pool._slots) { try { s.w.terminate(); } catch (e) {} }
+  console.log(`[run-tp] shard ${shK}/${shM}: ${n} new states -> ${out}` + (its ? `; main-thread (Node FakeWorker, indicative only) select+backup ${(1000 * mainMs / its).toFixed(1)} µs/iter, full handler slices ${(1000 * hMs / its).toFixed(1)} µs/iter, max slice ${maxSl.toFixed(1)} ms; plessDup ${dup}/${its} (${(100 * dup / its).toFixed(1)}%) over ${its} iters` : ''));
+  // ↑ select+backup 只是树操作；完整切片另含 postMessage 序列化 / 消息分派（浏览器里还有 ev.data 反序列化，真 Chromium 实测是前者的 2–4 倍）
+}
+
 // ---------------------------------------------------------------- report
 const CFGS = ['S_N', 'RP', 'RPdiv', 'S_4N'];
 function perState(row, N) {
   const res = row.byN[N]; if (!res) return null;
+  if (!res.oracle || !res.S_N || !res.S_4N) throw new Error(`${row.id} N=${N}: 缺 oracle/S_N/S_4N（TP 分片必须与 run 的原分片一起给）`);
   const pool = new Map();
   for (const o of res.oracle) for (const s of o.stats) { const e = pool.get(s.nm) || { N: 0, Q: 0 }; e.N += s.N; e.Q += s.Q; pool.set(s.nm, e); }
   const val = new Map(); let minV = Infinity;
@@ -139,7 +223,8 @@ function perState(row, N) {
   const oracleAgree = res.oracle[0].nm === res.oracle[1].nm;
   const oArg = res.oracle[0].nm;
   const m = {};
-  for (const c of CFGS) {
+  for (const c of CFGS.concat(['TP'])) {
+    if (!res[c]) continue;                  // TP 只在给了 run-tp 分片时存在
     const picks = res[c].map(x => x.nm);
     m[c] = {
       regret: picks.reduce((a, nm) => a + (bestV - vOf(nm)), 0) / picks.length,
@@ -151,8 +236,17 @@ function perState(row, N) {
 function cmdReport(files) {
   const B = parseInt(argOpt('--boot', '2000'));
   const expect = parseInt(argOpt('--expect', '150'));
-  const rows = []; const seen = new Set();
-  for (const f of files) for (const r of readJsonl(f)) { if (seen.has(r.id)) throw new Error(`重复局面 ${r.id}`); seen.add(r.id); rows.push(r); }
+  // 按 id 合并 run 与 run-tp 的分片：同一 id 可出现在两类分片里，但同一 (N, 配置) 只能出现一次（重复 → 报错，与旧版「重复局面」同义）。
+  // 行顺序 = 首次出现的顺序 → 只给 run 分片时与旧版逐行相同（RP/RPdiv 的点估计与自助区间逐位不变）。
+  const rows = []; const byId = new Map();
+  for (const f of files) for (const r of readJsonl(f)) {
+    const e = byId.get(r.id);
+    if (!e) { byId.set(r.id, r); rows.push(r); continue; }
+    for (const N of Object.keys(r.byN)) {
+      const a = e.byN[N] || (e.byN[N] = {});
+      for (const k of Object.keys(r.byN[N])) { if (k in a) throw new Error(`重复局面 ${r.id}（N=${N} 的 ${k} 出现两次）`); a[k] = r.byN[N][k]; }
+    }
+  }
   if (rows.length !== expect) console.log(`⚠ 局面数 ${rows.length} ≠ 预期 ${expect} —— 结果不可作门槛判定`);
   const Ns = Object.keys(rows[0].byN).map(Number).sort((a, b) => a - b);
   const out = { states: rows.length, byN: {} };
@@ -172,15 +266,22 @@ function cmdReport(files) {
       return den > 0 ? num / den : NaN;
     };
     const rnd = mulberry32(0xB007 ^ N);
+    // TP 只在**每个**局面都有 TP 行时参与（部分覆盖 → 不给 TP 数字，免得在子集上算出误导的 η）
+    const tpN = ps.filter(p => p.m.TP).length;
+    const hasTP = tpN > 0 && tpN === ps.length;
+    if (tpN > 0 && !hasTP) console.log(`⚠ N=${N}: 只有 ${tpN}/${ps.length} 个局面有 TP 行 —— 不计算 TP`);
+    const cfgs = hasTP ? CFGS.concat(['TP']) : CFGS, cmp = hasTP ? ['RP', 'RPdiv', 'TP'] : ['RP', 'RPdiv'];
     const res = { N, states: ps.length, oracleAgreeStates: ps.filter(p => p.oracleAgree).length, metrics: {} };
+    if (hasTP) res.tpStates = tpN;
     for (const key of ['regret', 'agree']) {
-      const point = {}; for (const c of CFGS) point[c] = metric(ps, key, c);
-      const etas = { RP: [], RPdiv: [] }; let undef = 0;
+      const point = {}; for (const c of cfgs) point[c] = metric(ps, key, c);
+      // 同一组自助样本同时给 RP/RPdiv/TP 算 η（抽样只取决于局号 → 加 TP 不改变 RP/RPdiv 的区间）
+      const etas = {}; for (const c of cmp) etas[c] = []; let undef = 0;
       for (let b = 0; b < B; b++) {
         const sample = [];
         for (let i = 0; i < games.length; i++) sample.push(...byG.get(games[Math.floor(rnd() * games.length)]));
         let bad = false;
-        for (const c of ['RP', 'RPdiv']) { const e = eta(sample, key, c); if (isNaN(e)) bad = true; etas[c].push(e); }
+        for (const c of cmp) { const e = eta(sample, key, c); if (isNaN(e)) bad = true; etas[c].push(e); }
         if (bad) undef++;
       }
       const ci = arr => {
@@ -188,10 +289,9 @@ function cmdReport(files) {
         const hi = arr.map(e => isNaN(e) ? Infinity : e).sort((a, b) => a - b);
         return [lo[Math.floor(0.05 * arr.length)], hi[Math.ceil(0.95 * arr.length) - 1]];
       };
-      res.metrics[key] = {
-        point, etaPoint: { RP: eta(ps, key, 'RP'), RPdiv: eta(ps, key, 'RPdiv') },
-        eta90: { RP: ci(etas.RP), RPdiv: ci(etas.RPdiv) }, undefinedBootFrac: undef / B,
-      };
+      const etaPoint = {}, eta90 = {};
+      for (const c of cmp) { etaPoint[c] = eta(ps, key, c); eta90[c] = ci(etas[c]); }
+      res.metrics[key] = { point, etaPoint, eta90, undefinedBootFrac: undef / B };
     }
     out.byN[N] = res;
   }
@@ -202,6 +302,11 @@ function cmdReport(files) {
     const rpdivShip = both(m => m.eta90.RPdiv[0] >= 0.75);
     const buildTP = both(m => m.eta90.RP[1] < 0.75 && m.eta90.RPdiv[1] < 0.75);
     out.verdict = rpdivShip ? 'RPDIV (subject to Stage 3 harm check)' : buildTP ? 'BUILD TP (Stage 3)' : 'KEEP RP';
+    // 第 3 阶段 TP 验收（§18.2 补充 C）：N=1600、两个指标的 TP η 90% 下界都 ≥ 0.75 才算过（仍需伤害检查 + 浏览器审计才改默认）
+    if (g.metrics.regret.eta90.TP) {
+      const tpPass = both(m => m.eta90.TP[0] >= 0.75);
+      out.tpVerdict = (tpPass ? 'TP PASS' : 'TP FAIL') + ` (N=1600 eta90 lower: regret ${g.metrics.regret.eta90.TP[0]}, agree ${g.metrics.agree.eta90.TP[0]}; need both >= 0.75)`;
+    }
   }
   console.log(JSON.stringify(out, (k, v) => (v === Infinity ? '+inf' : v === -Infinity ? '-inf' : (typeof v === 'number' && isNaN(v)) ? 'undef' : v), 2));
 }
@@ -210,5 +315,6 @@ const cmd = process.argv[2];
 const pos = process.argv.slice(3).filter((a, i, arr) => !a.startsWith('--') && !(i > 0 && arr[i - 1].startsWith('--')));
 if (cmd === 'select') cmdSelect(pos);
 else if (cmd === 'run') cmdRun(pos[0]).catch(e => { console.error(e); process.exit(1); });
+else if (cmd === 'run-tp') cmdRunTP(pos[0]).catch(e => { console.error(e); process.exit(1); });
 else if (cmd === 'report') cmdReport(pos);
-else { console.error('usage: rp_diag.js select|run|report ...'); process.exit(1); }
+else { console.error('usage: rp_diag.js select|run|run-tp|report ...'); process.exit(1); }

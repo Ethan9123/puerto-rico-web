@@ -1551,6 +1551,138 @@
     return ri != null ? ri : (rootLegal.length ? rootLegal[0] : -1);
   }
 
+  // ---------- 树并行（TP，第三轮 Stage 3；固定设计见 AI_STRENGTH §18.2 补充 C）----------
+  // 为什么要它：§18.3 实测根并行 4 个 worker ≈ 1.2 个核（各树只在牌堆洗牌上不同、叶 rollout 确定，合并后几乎不增信息）。
+  // 树并行把「树」留在主线程（game.js PRAIPool.pickRoleTreeParallel），worker 只做单树一次迭代里**与树无关**的那部分：
+  //   确定化 → 沿主线程选好的路径按角色名重放 → (无先验节点处) 算先验并用同一 PUCT 选一个子 → 叶评估。
+  // 本函数就是那部分的逐行复刻；K=1、B=1、无虚拟损失时，主线程 + 本函数 == ismctsPickRoleIdx **逐位相同**
+  // （tests/tp_test.js ① 钉住，任何漂移即红）。ismctsPickRoleIdx 本身一行未动 → 默认路径逐字节不变。
+  //
+  //   rootState : worker 为本次决策缓存的根状态（整次决策共用一条 rnd 流，与单树同：rootState.rnd 即那条流）
+  //   req       : { path:[角色名...], pless:bool, N:number }
+  //               path  = 主线程从根往下选出的子节点名（每一步都是主线程已知先验的节点上的 PUCT 选择）
+  //               pless = 路径末端节点在主线程上还没有先验 P → 由本函数在确定化状态上算 P 并选子节点（扩展）
+  //               N     = 该无先验节点在主线程上的访问数（含在途虚拟损失）；其子节点此时必然全为 0 访问
+  //   opts      : searchOptsForMode('alpha', ...) 重建后的选项（C 由主线程解析好后下发，两侧一致）
+  //   rnd       : 可选；给出则设为 rootState.rnd（worker 端在 tpinit 时已设好，这里只是方便直接调用）
+  // 返回 { reached, stop, chs, vals, pl }：
+  //   reached = 实际重放了几步（路径中途终局/无人可选/合法集不含该名 → 在该处截断，只回传前缀——与单树「循环遇终局即停」同）
+  //   chs     = 每一步的选择者座位（含无先验节点处本函数选的那一步）→ 主线程回传 Q 时用 vals[chs[j]]，与单树 visited.chooser 同
+  //   vals    = 叶值，**每个座位**一个（与单树 leafEval(seat) 同一个闭包、同一个 double）
+  //   pl      = 无先验节点的 { P, names(合法名，按合法序、含同名重复), ch, chosen }；未到达/终局则为 null
+  function tpEvalPath(rootState, req, opts, rnd) {
+    if (rnd) rootState.rnd = rnd;
+    opts = opts || {};
+    // 以下取值与 ismctsPickRoleIdx 开头逐字相同（同一默认值、同一钳制）
+    const C = opts.C || (root._mctsC != null ? root._mctsC : 1.0);
+    const valueW = opts.valueW || null;
+    const truncate = opts.truncate != null ? opts.truncate : 6;
+    const evalLeafFn = opts.evalLeafFn || null;
+    const evalLeafVecFn = opts.evalLeafVecFn || null;
+    const priorPolicyFn = opts.priorPolicyFn || null;
+    const rolloutFrac = (opts.rolloutFrac > 0) ? Math.min(1, opts.rolloutFrac) : 0;
+    const leafEps = (opts.leafEps > 0) ? Math.min(1, opts.leafEps) : 0;
+    // 树并行只为 L6（PUCT）设计：UCT 分支的「未访问=+∞」无先验可言，主线程也不会为它发请求
+    if (!priorPolicyFn) throw new Error("tpEvalPath: tree-parallel requires PUCT (priorPolicyFn / alpha mode)");
+    // 确定化：与单树每次迭代开头完全相同（clone + 用 rootState.rnd 洗未知牌堆）→ 同一条流、同样的消耗
+    const st = determinize(rootState);
+    const path = req.path || [];
+    const chs = [];
+    let reached = 0, stop = null;
+    for (let j = 0; j < path.length; j++) {
+      // 与单树 while(!isTerminal) / ch<0 break / legal 空 break 同序判定
+      if (isTerminal(st)) { stop = "terminal"; break; }
+      const ch = currentChooser(st);
+      if (ch < 0) { stop = "nochooser"; break; }
+      const legal = legalRoleIdxs(st);
+      if (legal.length === 0) { stop = "nolegal"; break; }
+      // 名字 → **首个**同名合法下标：单树里同名角色（5 人局两张 Prospector）共用一个子节点、PUCT 值相同，
+      // 严格 > 使 chosenI 停在同名的首个下标上 → 这里必须同样取首个（两张卡上的钱可能不同，取错即分叉）
+      const nm = path[j];
+      let ri = -1;
+      for (const i of legal) if (st.roleCards[i].name === nm) { ri = i; break; }
+      // 角色卡公开 → 合法名集只由路径决定，理论上不会缺；真缺了就当截断并上报（主线程计数，绝不静默）
+      if (ri < 0) { stop = "mismatch"; break; }
+      chs.push(ch);
+      applyRole(st, ri);
+      reached++;
+    }
+    let pl = null;
+    if (req.pless && stop === null && !isTerminal(st)) {
+      const ch = currentChooser(st);
+      const legal = ch >= 0 ? legalRoleIdxs(st) : [];
+      if (ch < 0) stop = "nochooser";
+      else if (legal.length === 0) stop = "nolegal";
+      else {
+        // 先验：与单树「节点第一次被穿过时算一次」同一调用、同一 try/catch → {} 语义
+        let P;
+        try { P = priorPolicyFn(st, ch) || {}; } catch (e) { P = {}; }
+        // 此节点在单树里此刻刚建好子节点 → 子节点全 0 访问；父访问数用主线程发来的 N。
+        // 公式与单树逐字相同（q=0、c.N=0 也照原式写，保证同一 double）；严格 > 取首个。
+        // （子节点全 0 时 sqrt(N+1) 对所有候选是同一个正因子 → 选择其实与 N 无关；照发 N 是为了与单树同式、便于核对。）
+        const N = req.N || 0;
+        let chosen = null, chosenI = -1, bestV = -Infinity;
+        const names = [];
+        for (const i of legal) {
+          const nm = st.roleCards[i].name;
+          names.push(nm);
+          const cN = 0;
+          const Pn = (P && P[nm] != null) ? P[nm] : (1 / legal.length);
+          const q = 0;
+          const v = q + C * Pn * Math.sqrt(N + 1) / (1 + cN);
+          if (v > bestV) { bestV = v; chosen = nm; chosenI = i; }
+        }
+        chs.push(ch);
+        applyRole(st, chosenI >= 0 ? chosenI : undefined);
+        pl = { P, names, ch, chosen };
+      }
+    } else if (req.pless && stop === null) {
+      stop = "terminal";   // 无先验节点本身就是终局：单树在此直接叶评估（不建子、不算先验）
+    }
+    // 叶评估：与 ismctsPickRoleIdx 的 hybrid 叶逐行相同（useNet 判定、截断推进、leafEps、终局 rewardFn、
+    // 向量版/标量版 NN、evalLeaf 回退），随机数都取 rootState.rnd → 与单树同序消耗
+    let leafEval;
+    const useNet = (evalLeafFn || evalLeafVecFn) &&
+      (rolloutFrac <= 0 || (rootState.rnd ? rootState.rnd() : Math.random()) >= rolloutFrac);
+    if (useNet) {
+      let steps = 0;
+      while (!isTerminal(st) && steps++ < truncate) {
+        const ch = currentChooser(st); if (ch < 0) break;
+        const legal = legalRoleIdxs(st); if (!legal.length) break;
+        let ri;
+        if (leafEps > 0 && (rootState.rnd ? rootState.rnd() : Math.random()) < leafEps) ri = legal[Math.floor((rootState.rnd ? rootState.rnd() : Math.random()) * legal.length)];
+        else ri = heuristicPickRole(st, ch, legal);
+        applyRole(st, ri);
+      }
+      if (isTerminal(st)) {
+        leafEval = rewardFn(st);
+      } else {
+        let vecEval = null;
+        if (evalLeafVecFn) { try { vecEval = evalLeafVecFn(st); } catch (e) { vecEval = null; } }
+        if (vecEval) {
+          leafEval = vecEval;
+        } else if (evalLeafFn) {
+          leafEval = (persp) => {
+            try {
+              const v = evalLeafFn(st, persp);
+              if (typeof v !== "number" || !isFinite(v)) return 0;
+              return Math.max(-1, Math.min(1, v));
+            } catch (e) { return 0; }
+          };
+        } else {
+          leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+        }
+      }
+    } else {
+      leafEval = evalLeaf(st, valueW, truncate, rootState.rnd);
+    }
+    // 每个座位一个值（叶评估闭包都是纯函数：同一状态同一视角 → 同一 double，调用次数不影响结果）。
+    // 主线程只取路径上各选择者的那几个；全给是为了主线程不必另外知道选择者即可回传。
+    const vals = [];
+    for (let s = 0; s < st.numPlayers; s++) vals.push(leafEval(s));
+    return { reached, stop, chs, vals, pl };
+  }
+
   // 按"档位"重建 ismctsPickRoleIdx 的函数型选项（evalLeafFn / priorPolicyFn 不能跨线程传递，
   // worker 侧据此重建；与 game.js ismctsPickRole/alphazeroPickRole 内联写法逐字对齐）。
   //   mode: "hard"  → evalLeafFn = econReward（截断前瞻 + 手写经济评估）
@@ -1913,7 +2045,7 @@
   const API = {
     newState, clone, applyRole, legalRoleIdxs, currentChooser, isTerminal,
     finalScore, specialVPs, rolloutToEnd, heuristicPickRole, reward, econEval, econReward,
-    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, phaseOf, totalColonists, productionCapacity,
+    ismctsPickRoleIdx, selectRootRole, searchOptsForMode, tpEvalPath, phaseOf, totalColonists, productionCapacity,
     extractFeatures, evalValue, FEATURE_DIM,
     azDecision, azApply, azPlayHeuristic, azHeuristicAction, AZ_PASS, AZ_QUARRY,
     _internal: { doSettler, doMayor, doBuilder, doCraftsman, doTrader, doCaptain, reallocate, pickPlantation,

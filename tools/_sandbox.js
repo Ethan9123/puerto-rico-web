@@ -164,9 +164,12 @@ function createSandbox(opts = {}) {
   vm.createContext(sandbox);
   if (typeof opts.beforeLoad === 'function') opts.beforeLoad(sandbox);
 
+  // opts.transform(file, src) → src'：仅测试用的源码变异钩子（反向验证：在不改仓库文件的前提下把某一行改坏，确认测试会红）
   const load = (file) => {
     const full = path.isAbsolute(file) ? file : path.join(repoRoot, file);
-    return vm.runInContext(fs.readFileSync(full, 'utf8'), sandbox, { filename: file });
+    let src = fs.readFileSync(full, 'utf8');
+    if (typeof opts.transform === 'function') src = opts.transform(file, src);
+    return vm.runInContext(src, sandbox, { filename: file });
   };
   const run = (src, filename) => vm.runInContext(src, sandbox, filename ? { filename } : undefined);
   return { sandbox, load, run, repoRoot };
@@ -195,6 +198,7 @@ function loadEngine(opts = {}) {
 // 双向消息都经 structuredClone + queueMicrotask 投递（FIFO、确定性，与浏览器的异步投递同构）。
 // opts.forceJS: 在 worker 全局设 _nnForceJS（NN 前向走 JS 后端，与评测主线程数值一致）。
 // opts.mathSeed: worker 上下文的 Math.random 用带种子的 PRNG（搜索路径本就只用 st.rnd；这只是防御）。
+// opts.transform: 透传给 worker 沙盒的 createSandbox（仅测试的源码变异钩子，见上）。
 // worker 的同步搜索会在微任务里跑完 → K 个 worker 串行执行，总墙钟 = K × 单个，行为与浏览器一致。
 function createFakeWorkerClass(opts = {}) {
   const repoRoot = opts.repoRoot || DEFAULT_REPO_ROOT;
@@ -205,7 +209,7 @@ function createFakeWorkerClass(opts = {}) {
       this.onmessage = null; this.onerror = null; this._dead = false;
       const me = this;
       const { sandbox: wsb, load } = createSandbox({
-        repoRoot,
+        repoRoot, transform: opts.transform,
         extraGlobals: {
           postMessage: (m) => {
             const c = structuredClone(m);
