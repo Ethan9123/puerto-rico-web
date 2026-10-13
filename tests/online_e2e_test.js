@@ -19,26 +19,12 @@ const path = require('path');
 const http = require('http');
 const ROOT = path.join(__dirname, '..');
 
-const CHROME_CANDIDATES = [
-  '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-  '/opt/pw-browsers/chromium/chrome-linux/chrome',
-];
-function findChrome() {
-  for (const c of CHROME_CANDIDATES) if (fs.existsSync(c)) return c;
-  const dir = '/opt/pw-browsers';
-  if (fs.existsSync(dir)) {
-    for (const d of fs.readdirSync(dir)) {
-      const p = path.join(dir, d, 'chrome-linux', 'chrome');
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
+const {findChrome} = require('./browser_runtime.js');
 
 let chromium;
 try { ({ chromium } = require('playwright')); }
 catch (e) { console.log('skipped: playwright 未安装（npm i -D playwright）'); process.exit(2); }
-const CHROME = findChrome();
+const CHROME = findChrome(chromium);
 if (!CHROME) { console.log('skipped: 找不到预装 Chromium（/opt/pw-browsers）'); process.exit(2); }
 
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css' };

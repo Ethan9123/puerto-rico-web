@@ -21,6 +21,10 @@ directory = ".site"
 binding = "ASSETS"
 run_worker_first = ["/rooms/*"]
 
+[build]
+command = "node tools/build-site.js"
+watch_dir = ["worker"]
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "PuertoRoom"

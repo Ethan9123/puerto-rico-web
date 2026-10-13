@@ -51,5 +51,18 @@ const connect = (role, name, auth) => call('connect', {auth, meta: {role, name, 
   const reset = (await call('poll?auth=' + g.auth + '&since=0')).data;
   assert.equal(reset.reset, true);
   assert.equal(reset.latest.snap._seq, 181);
+  const owners = {1: g.token};
+  await new Promise(resolve => setTimeout(resolve, 1050));
+  await call('send', {auth: h.auth, id: 'owners', message: {type: 'state', snap: {_seq: 200, _seatOwners: owners}}});
+  await call('send', {auth: h.auth, id: 'pending', message: {type: 'input-request', reqId: 'pending-1', seat: 1}});
+  const pending = (await connect('guest', 'resume-prompt', g.auth)).data;
+  assert.equal(pending.pending.reqId, 'pending-1');
+  await call('send', {auth: g.auth, id: 'answer', message: {type: 'input-response', reqId: 'pending-1', value: 0}});
+  assert.equal((await connect('guest', 'answered', g.auth)).data.pending, null);
+  assert.equal((await call('send', {auth: h.auth, id: 'oversize', message: {type: 'state', snap: '鸟'.repeat(200000)}})).status, 413);
+  for (let i = 0; i < 20; i++) assert.equal((await call('send', {auth: h.auth, id: 'large-' + i, message: {type: 'state', snap: {_seq: 300 + i, text: '鸟'.repeat(30000)}}})).status, 200);
+  const large = (await call('poll?auth=' + g.auth + '&since=' + pending.seq)).data;
+  assert.equal(large.reset, true, 'large histories must be pruned before reaching the storage limit');
+  assert.equal(large.latest.snap._seq, 319);
   console.log('ROOMS OK: create/join, authentication, sender validation, deduplication, long poll, reconnect, presence, gap recovery');
 })().catch(e => { console.error(e); process.exitCode = 1; });

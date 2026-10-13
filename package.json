@@ -9,7 +9,6 @@
     "dev:online": "wrangler dev --port 8898",
     "deploy": "wrangler deploy",
     "test:rooms": "node tests/cloudflare_rooms_test.js && node tests/cloudflare_transport_test.js",
-    "predev:online": "node tools/build-site.js",
-    "predeploy": "node tools/build-site.js"
+    "test:online:game": "node tests/cloudflare_game_e2e_test.js"
   }
 }

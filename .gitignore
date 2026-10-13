@@ -5,6 +5,7 @@ Thumbs.db
 node_modules/
 .wrangler/
 .site/
+tests/artifacts/
 __pycache__/
 *.pyc
 

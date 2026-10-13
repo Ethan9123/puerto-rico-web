@@ -2,6 +2,9 @@ const reply = (body, status = 200) => new Response(JSON.stringify(body), {status
 const HOST_MESSAGES = new Set(['state', 'gameover', 'input-request', 'takeover', 'reclaimed']);
 const GUEST_MESSAGES = new Set(['input-response', 'reclaim']);
 const ALIVE = 30000;
+const MAX_BODY_BYTES = 500000;
+const MAX_HISTORY_BYTES = 600000;
+const bytes = value => new TextEncoder().encode(JSON.stringify(value)).length;
 
 export class PuertoRoom {
   constructor(ctx) {
@@ -18,19 +21,34 @@ export class PuertoRoom {
   emit(from, message) {
     this.data.events.push({seq: ++this.data.seq, from, message});
     this.data.events = this.data.events.slice(-80);
+    while (this.data.events.length > 1 && bytes(this.data.events) > MAX_HISTORY_BYTES) this.data.events.shift();
     for (const wake of this.waiters) wake();
     this.waiters.clear();
   }
   presence() { return this.data.members.filter(m => Date.now() - m.seen < ALIVE).map(m => m.meta); }
-  async alarm() { if (Date.now() >= this.data.expires) { await this.ctx.storage.deleteAll(); this.data = {members: [], seq: 0, events: [], latest: null, expires: 0}; } }
+  async alarm() { if (Date.now() >= this.data.expires) { await this.ctx.storage.deleteAll(); this.data = {members: [], seq: 0, events: [], latest: null, pending: null, expires: 0}; } }
   async fetch(req) {
     const url = new URL(req.url);
     const action = url.pathname.split('/').pop();
     if (req.method === 'OPTIONS') return new Response(null, {headers: {'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'Content-Type'}});
     let body = {};
     if (req.method === 'POST') {
-      const raw = await req.text();
-      if (raw.length > 650000) return reply({error: '消息过大'}, 413);
+      const reader = req.body?.getReader();
+      const chunks = [];
+      let size = 0;
+      let oversized = false;
+      if (reader) while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_BODY_BYTES) { oversized = true; chunks.length = 0; }
+        if (!oversized) chunks.push(value);
+      }
+      if (oversized) return reply({error: '消息过大'}, 413);
+      const buffer = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
+      const raw = new TextDecoder().decode(buffer);
       try { body = JSON.parse(raw); } catch { return reply({error: '消息格式错误'}, 400); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return reply({error: '消息格式错误'}, 400);
     }
