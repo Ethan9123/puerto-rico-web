@@ -26,7 +26,7 @@ const fast = p => p.evaluate(() => {
   window._aiThinkBudget = {L4: 30, L5: 30, hardIters: 10, hardMs: 30, expertIters: 20, expertMs: 40};
 });
 const onClock = p => p.locator('#np-guest-turn').count();
-async function until(fn, ms = 10000) {
+async function until(fn, ms = 20000) {
   const end = Date.now() + ms;
   while (!await fn()) { if (Date.now() > end) throw new Error('condition timed out'); await new Promise(r => setTimeout(r, 100)); }
 }
@@ -38,7 +38,7 @@ async function until(fn, ms = 10000) {
   const [host, guest] = await Promise.all(contexts.map(c => c.newPage()));
   const errors = [];
   for (const p of [host, guest]) p.on('pageerror', e => errors.push(e.message));
-  await contexts[0].addInitScript(() => { window._netGraceMs = 1500; window._netIdleMs = 30000; window._fastSpectator = true; });
+  await contexts[0].addInitScript(() => { window._netGraceMs = 1500; window._netIdleMs = 180000; window._fastSpectator = true; });
   let reloadedGuest = false, reloadedHost = false, tookOver = false, actions = 0;
   try {
     await host.goto(base);
@@ -79,6 +79,12 @@ async function until(fn, ms = 10000) {
       if (reloadedHost && !tookOver && await onClock(guest)) {
         await guest.evaluate(() => PR_SESSION.close());
         await until(() => host.evaluate(() => !!G._takenOverSeats?.[1]));
+        const originalToken = await guest.evaluate(() => PR_SESSION.token);
+        await host.evaluate(() => saveGame());
+        await host.reload();
+        await until(() => host.evaluate(() => typeof G !== 'undefined' && !!G && PRNetPlay.role() === 'host' && !!G._resumed));
+        await fast(host);
+        assert.equal(await host.evaluate(() => PRNetPlay._debug()._seatTokens[1]), originalToken, 'original owner must survive host reload during takeover');
         await guest.reload();
         await until(() => guest.locator('#game-screen').isVisible());
         await until(() => host.evaluate(() => !G._takenOverSeats?.[1]));

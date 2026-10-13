@@ -47,9 +47,9 @@
     // 座位归属改用【稳定令牌】为键：刷新/重连 clientId 会变、token 不变 → 房主据 token 自动接回原座。
     _myToken = (opts.myToken) || (_session && _session.token) || _myId;
     _seatOwners = opts.seatOwners || {};            // seat -> token（当前人类归属）
-    _seatTokens = Object.assign({}, _seatOwners);   // seat -> token（开局原始归属，掉线/接管后保留，供自动认领）
+    _seatTokens = Object.assign({}, opts.seatTokens || _seatOwners); // 原始归属须跨房主续局保存，AI 接管会删当前归属。
     _online = !!opts.online;
-    _takenOver = {};
+    _takenOver = Object.assign({}, opts.takenOver || {});
     clearPending();
     clearLossTimers(); _lastTokens = presentTokens();
     _guestBusy = false;
@@ -295,6 +295,7 @@
     p.isHuman = true; p._remote = token; p._aiLevel = null;
     if (meta && meta.name) p.name = meta.name;
     _seatOwners[seat] = token; _seatTokens[seat] = token;
+    g._seatTokens = Object.assign({}, _seatTokens);
     delete _takenOver[seat];
     delete g._takenOverSeats[seat];
     try { if (g.logEvent) g.logEvent(`↩️ ${p.name} 重连，自动回到座位 ${seat + 1}（不再 AI 代打）`, "role"); } catch (e) {}
@@ -411,6 +412,7 @@
     p.name = msg.name || p.name;          // 用认领者自己的名字
     _seatOwners[seat] = token;            // 之后该座位的输入按令牌路由给这位客人
     _seatTokens[seat] = token;            // 记为新原主 → 之后他掉线也能自动认领回来
+    g._seatTokens = Object.assign({}, _seatTokens);
     delete _takenOver[seat];
     delete g._takenOverSeats[seat];
     const verb = wasTakeover ? "收回" : "坐下顶替 AI 补位";

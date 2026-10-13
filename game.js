@@ -1611,6 +1611,7 @@ function startGame(netOpts) {
     // 把被客人占据的座位改回人类（远程），其余保持 AI；座位 0 是房主本地人类
     G._online = true;
     G._seatOwners = netOpts.seatOwners;
+    G._seatTokens = Object.assign({}, netOpts.seatOwners);
     for (const s in netOpts.seatOwners) {
       const seat = +s, p = G.players[seat];
       if (!p) continue;

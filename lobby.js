@@ -164,7 +164,7 @@
       if (!saved) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>（没有可续的对局，可直接开新局）。"; return; }
       if (typeof restoreGame !== "function" || !restoreGame(saved)) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>；上一局存档已失效。"; return; }
       const seatOwners = (typeof G !== "undefined" && G && G._seatOwners) || {};
-      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, myToken: session.token, myId: session.clientId, online: true });
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, seatTokens: G._seatTokens, takenOver: G._takenOverSeats, myToken: session.token, myId: session.clientId, online: true });
       if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
       if (typeof resumeGame === "function") resumeGame(saved, true);
       try { if (typeof G !== "undefined" && G && G.logEvent) G.logEvent("🔄 房主重连，对局从存档继续", "role"); } catch (e) {}
