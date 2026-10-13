@@ -1,0 +1,34 @@
+# Cloudflare 联机房间
+
+联机站点的 `/rooms/:code/connect|poll|send|leave` 由 Worker 路由至每房间一个 SQLite Durable Object。客户端 `room-transport.js` 通过 HTTP 长轮询收取消息、POST 发送消息；不使用 Supabase。其余站点继续通过 `rooms-config.js` 连接主站房间后端，双击离线包则用本机多标签传输。
+
+仍由房主浏览器运行游戏规则和 AI，房主页面需要保持打开。此次替换的是消息传输与房间服务，不是服务器规则引擎移植。
+
+## 运行与部署
+
+```text
+npm install
+npm run dev:online
+# 打开 http://127.0.0.1:8898/，用两个标签建房、加入、开始
+npm run test:rooms
+npm run deploy
+```
+
+开发和部署命令会先执行 `tools/build-site.js`，将网页资源复制到 `.site`；这样 Wrangler 的临时目录与房间数据库不会被当作网页资源上传，也不会触发循环重载。修改网页脚本后需重新运行该脚本；修改 Worker 源码会自动重载。
+
+部署使用根目录 `wrangler.toml`：保持现有 Worker 名称、域名和训练 KV，新增 `ROOMS` 绑定及 `rooms-v1` SQLite 类迁移。Cloudflare 构建若直接运行 `npx wrangler deploy`，应把构建命令设为 `node tools/build-site.js`；也可以直接使用 `npm run deploy`。
+
+## 身份、同步与恢复
+
+- 初次加入由服务器生成公开座位 token 与独立私密会话凭据；凭据存在每标签 sessionStorage。presence 与事件响应不包含别人的私密凭据。
+- 房主首次占用房间后，其他人不能重新申请房主；同标签刷新持凭据恢复。关闭整个标签会失去 sessionStorage，需要重新加入并认领座位。
+- 客人只能发送应答与认领；服务器覆盖发送者 token，不能冒充其他座位。房主只能发送状态、选择请求、托管、认领结果与结算。
+- 发送等待服务器确认，同一次网络重试使用同一消息编号，服务器去重。事件流有顺序编号；掉线按编号补发，超过 80 条保留窗口则从最新快照及尚未完成的输入请求恢复。
+- 同一成员每秒最多 30 条消息，每房间最多 24 个历史成员；持续轮询的成员视为在线，30 秒没有轮询视为离线。已有前端的掉线宽限与 AI 托管继续工作。
+- 房间会话、消息与快照持久化；最后一次连接/发送/离开后 24 小时过期。房间恢复不等于服务器能够独立运行牌局，仍需房主回来运行原有存档。
+
+## 验证
+
+`tests/cloudflare_rooms_test.js` 连接本机实际 Wrangler 服务，验证房间不存在、建房加入、房主防抢占、鉴权、伪造消息拒绝、发送者绑定、重试去重、长轮询唤醒、刷新恢复、离开 presence 及事件缺口恢复。
+
+已有 `tests/online_e2e_test.js` 保留离线多标签游戏回归，配置拦截已改为 `rooms-config.js`；不再包含 Supabase 模拟客户端。该脚本仍依赖 Playwright 与其约定的 Chromium 安装路径。

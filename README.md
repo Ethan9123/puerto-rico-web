@@ -43,8 +43,8 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 
 ## 👥 和朋友联机
 
-> 不用注册、不用装东西。房主的浏览器跑真引擎，其他人通过 Supabase Realtime 实时同步；
-> 网页版已内嵌自托管的联机组件 `vendor/supabase.js`（不再依赖第三方 CDN；`npm run vendor:supabase` 更新）。**下列行为都在真实浏览器里端到端验证过**（`tests/online_e2e_test.js`）。
+> 不用注册、不用装东西。房主的浏览器跑真引擎，其他人通过网站自带的 Cloudflare 房间服务实时同步；
+> 联机使用 Worker + SQLite Durable Object，每个房间独立保存身份、事件与最新快照；HTTP 长轮询收取消息，不依赖 Supabase 或第三方 CDN。
 
 **开一局**
 1. 房主：设置页 → 「🌐 联机对战」→ **创建房间**，得到 4 位房间码和邀请链接（「复制链接」）。
@@ -61,7 +61,7 @@ GitHub Pages / Vercel / Cloudflare 在国内**都不稳**（边缘 IP 被 GFW �
 
 **已知限制**
 - 房主的页面必须保持打开——引擎只在房主浏览器里跑。
-- 国内直连 Supabase 可能不稳（同 GitHub Pages 的情况）；本机多标签测试不需要网络。
+- 网络需要能访问联机站点；离线文件仍提供本机多标签测试模式。
 - 联机局的存档与单机「继续上一局」互不干扰。
 - 房间码固定 4 位（不含易混的 0/O/1/I/L）。
 

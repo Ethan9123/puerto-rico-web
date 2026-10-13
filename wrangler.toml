@@ -6,6 +6,7 @@ name = "puerto-rico-web"
 compatibility_date = "2026-06-16"
 main = "worker/index.js"
 
+
 # ── 自定义域名 ───────────────────────────────────────────────────────────
 # puerto-rico.try-board-game.uk 指向本 Worker（含联机；邀请链接用 location.origin 自动跟随）。
 # 前提：try-board-game.uk 已作为 zone 托管在同一 Cloudflare 账号下（已确认）。
@@ -16,8 +17,18 @@ routes = [
 ]
 
 [assets]
-directory = "."
+directory = ".site"
 binding = "ASSETS"
+run_worker_first = ["/rooms/*"]
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "PuertoRoom"
+
+[[migrations]]
+tag = "rooms-v1"
+new_sqlite_classes = ["PuertoRoom"]
+
 
 # ── 训练数据收集（真人对局）后端 ─────────────────────────────────────────
 # 已启用：绑定 KV 命名空间 PR_TRACES，/collect 入库、/dump 取回、/stats 统计。
@@ -26,3 +37,7 @@ binding = "ASSETS"
 [[kv_namespaces]]
 binding = "PR_TRACES"
 id = "3da4d4a9bae449d88f7aa1cf4a477aee"
+
+[observability]
+enabled = true
+redact_query_string = true

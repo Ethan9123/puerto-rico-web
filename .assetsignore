@@ -1,5 +1,7 @@
 # 部署到 Cloudflare Pages 时排除非网页文件（保持线上目录干净）
 .git
+.wrangler
+node_modules
 .github
 tests
 tools

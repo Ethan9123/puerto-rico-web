@@ -24,7 +24,7 @@
   }
 
   function showRoom(panel, code, role) {
-    const mode = PRNet.crossDevice() ? "跨设备 (Supabase)" : "本机多标签 (本地测试)";
+    const mode = PRNet.crossDevice() ? "跨设备 (Cloudflare)" : "本机多标签 (本地测试)";
     panel.querySelector(".lobby-actions").classList.add("hidden");
     const room = panel.querySelector(".lobby-room");
     room.classList.remove("hidden");
@@ -105,6 +105,8 @@
     // 联机失败一律走这里：此前用原生 alert()，在手机上生硬、还会把 `[object Event]` 直接甩给用户。
     // 项目本来就有 showToast（game.js:764），复用它；showToast 不可用时才退回 alert。
     function netError(prefix, e) {
+      const hint = panel.querySelector(".lobby-actions .lobby-hint");
+      if (hint) hint.textContent = prefix + "：" + ((e && e.message) || "连接失败，请稍后重试");
       const msg = (e && e.message) || (typeof e === "string" ? e : "") || "未知错误";
       if (typeof showToast === "function") {
         showToast('<div class="t-title">⚠️ ' + prefix + '</div><div class="t-sub">' + msg + "</div>", { kind: "role", duration: 5000 });
@@ -196,7 +198,7 @@
       el("div", { class: "lobby-actions" }, [
         el("div", { class: "lobby-row" }, [btnCreate]),
         el("div", { class: "lobby-row" }, [codeInput, btnJoin]),
-        el("div", { class: "lobby-hint", html: PRNet.crossDevice() ? "已连 Supabase：可跨设备对战。" : "未配置 Supabase：当前为<b>本机多标签</b>测试模式（同一浏览器开两个标签可联机）。" }),
+        el("div", { class: "lobby-hint", html: PRNet.crossDevice() ? "联机服务已配置，创建或加入房间后连接。" : "离线模式：当前为<b>本机多标签</b>测试模式（同一浏览器开两个标签可联机）。" }),
       ]),
       el("div", { class: "lobby-room hidden" }, [
         el("div", { class: "lobby-row" }, [el("span", null, ["房间码："]), el("b", { class: "lobby-code", style: "font-size:22px;letter-spacing:3px;color:#f3c969" }, ["----"])]),
@@ -232,6 +234,7 @@
     try { invited = new URLSearchParams(location.search).get("room"); } catch (e) {}
     try { reconnectRoom = sessionStorage.getItem("prnet_room"); } catch (e) {}
     let reconnectRole = null; try { reconnectRole = sessionStorage.getItem("prnet_role"); } catch (e) {}
+    if (invited && reconnectRoom && invited.toUpperCase().trim() === reconnectRoom.toUpperCase().trim()) invited = null;
     if (reconnectRoom && !invited && reconnectRole === "host") {
       codeInput.value = reconnectRoom.toUpperCase().trim().slice(0, 4);
       if (hint) hint.innerHTML = "🔄 正在以房主身份重开房间 <b style='color:#f3c969'>" + codeInput.value + "</b>……";

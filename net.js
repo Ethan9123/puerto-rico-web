@@ -5,7 +5,7 @@
 // 状态、轮到自己时把动作发回房主。本文件只负责“传输 + 房间 + 谁在房里”，与游戏引擎解耦。
 //
 // 两种传输，按配置自动选择：
-//   SupabaseTransport — 跨设备：supabase-js 广播频道 + presence（需 window.PR_SUPABASE={url,key}）
+//   PRRoomTransport — 跨设备：Cloudflare HTTP 长轮询（window.PR_ROOMS_URL）
 //   LocalTransport    — 同浏览器多标签：localStorage 事件，用于本地两标签自测（无需任何后端）
 //
 // 对外 API：
@@ -15,28 +15,12 @@
 // ============================================================
 (function (root) {
   "use strict";
-  const SUBSCRIBE_TIMEOUT_MS = 12000; // 订阅实时频道的上限（含 WebSocket 建连）
   const JOIN_WAIT_MS = 10000;         // 等房主出现在 presence 里的上限（弱网下 3.5s 太短）
-  const SEND_ACK_TIMEOUT_MS = 5000;   // 广播送达确认（ack）的等待上限；超时按发送失败处理，由上层决定重试
   const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // 去掉易混的 0/O/1/I/L
   function makeCode(n) { let s = ""; for (let i = 0; i < (n || 4); i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]; return s; }
   function makeId() { return (Date.now().toString(36) + Math.random().toString(36).slice(2, 8)); }
-  function hasSupabase() { return !!(root.PR_SUPABASE && root.PR_SUPABASE.url && root.PR_SUPABASE.key); }
+  function hasRooms() { return !!root.PR_ROOMS_URL && typeof root.PRRoomTransport === "function"; }
 
-  // 带超时的脚本加载。<script> 的 onerror 在被代理/拦截的网络下不一定触发，
-  // 没有超时就会永久挂起（正是「按钮永远变灰、零提示」那类成因）。
-  function loadScript(src, timeoutMs) {
-    return new Promise((res, rej) => {
-      const el = document.createElement("script");
-      let done = false;
-      const finish = (fn, arg) => { if (done) return; done = true; clearTimeout(timer); fn(arg); };
-      const timer = setTimeout(() => finish(rej, new Error("加载超时：" + src)), timeoutMs || 15000);
-      el.src = src;
-      el.onload = () => finish(res);
-      el.onerror = () => finish(rej, new Error("加载失败：" + src));
-      document.head.appendChild(el);
-    });
-  }
   // 稳定身份令牌：按房间码存【sessionStorage】（每标签页独立）。
   //   - 刷新/断网重连：同一标签 sessionStorage 不变 → token 不变 → 房主据 token 自动接回原座位；
   //   - 同浏览器多标签：每标签各自独立 → 房主和客人 token 不会相同（localStorage 会相同，故弃用）；
@@ -85,92 +69,8 @@
     };
   }
 
-  // ---------- SupabaseTransport：广播频道 + presence（跨设备） ----------
-  let _supaClient = null;
-  async function supa() {
-    if (_supaClient) return _supaClient;
-    if (!root.supabase || !root.supabase.createClient) {
-      // supabase-js 优先走**同源自托管**副本 vendor/supabase.js（`npm run vendor:supabase` 更新）。
-      // 此前只从 jsdelivr 动态加载，CDN 一旦不可达联机就整个用不了——而 README/CN-ACCESS.md
-      // 记录过 GFW 下 CDN 不稳定，jsdelivr 正是最常被挡的那类。实测在受限网络下
-      // 报的是 `创建房间失败：[object Event]`，用户完全无从判断。
-      // 自托管与游戏本体同源：游戏能打开，库就能加载。CDN 仅作兜底。
-      const sources = ["vendor/supabase.js", "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"];
-      let lastErr = null;
-      for (const src of sources) {
-        try {
-          await loadScript(src, 15000);
-          if (root.supabase && root.supabase.createClient) { lastErr = null; break; }
-          lastErr = new Error("脚本已加载但未导出 supabase：" + src);
-        } catch (e) { lastErr = e; }
-      }
-      if (lastErr || !root.supabase || !root.supabase.createClient) {
-        throw new Error("联机组件加载失败（已尝试本地副本与 CDN）。请检查网络后重试。");
-      }
-    }
-    _supaClient = root.supabase.createClient(root.PR_SUPABASE.url, root.PR_SUPABASE.key, { realtime: { params: { eventsPerSecond: 20 } } });
-    return _supaClient;
-  }
-  function SupabaseTransport(room, clientId) {
-    let ch = null, onMsg = null, onPres = null, _onVisible = null;
-    function presList() {
-      const st = ch ? ch.presenceState() : {};
-      const out = [];
-      for (const k in st) for (const m of st[k]) out.push(m);
-      return out.sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
-    }
-    return {
-      async open(meta, cb) {
-        onMsg = cb.onMessage; onPres = cb.onPresence;
-        const client = await supa();
-        // ack:true → ch.send() 等服务端确认后才落定为 'ok'（ack:false 时 supabase-js 会**立刻** resolve 'ok'，发没发出去无从得知）。
-        // 此前 ack:false + 上层 catch(e){} 把所有发送失败吞掉：客人出手可能根本没送达，UI 却已关闭，3 分钟后被 AI 顶替。
-        ch = client.channel("pr:" + room, { config: { broadcast: { self: false, ack: true }, presence: { key: clientId } } });
-        ch.on("broadcast", { event: "msg" }, (e) => onMsg && onMsg(e.payload));
-        ch.on("presence", { event: "sync" }, () => onPres && onPres(presList()));
-        // ⚠ 曾经这里只处理 SUBSCRIBED。Supabase 同样会回调 CHANNEL_ERROR / TIMED_OUT / CLOSED，
-        // 那三种既不 resolve 也不 reject，且没有超时 → PRNet.host() 永不落定 →
-        // lobby 的 catch 永不执行 → 「创建房间」按钮永久变灰且零提示。
-        await new Promise((res, rej) => {
-          let done = false;
-          const finish = (fn, arg) => { if (done) return; done = true; clearTimeout(timer); fn(arg); };
-          const timer = setTimeout(() => finish(rej, new Error("连接实时服务超时（网络不稳定或被拦截）")), SUBSCRIBE_TIMEOUT_MS);
-          ch.subscribe((status, err) => {
-            if (done) {
-              // 首次落定之后，supabase-js 在 socket 断开/重连时会再次回调：把它上报给会话层
-              //（客人横幅 / 房主 toast），重连成功时重新 track，否则别人的 presence 里会没有我。
-              if (status === "SUBSCRIBED") { try { ch.track(meta); } catch (e) {} }
-              if (cb.onStatus) { try { cb.onStatus(status, err && err.message); } catch (e) {} }
-              return;
-            }
-            if (status === "SUBSCRIBED") { try { ch.track(meta); } catch (e) {} finish(res); }
-            else if (status === "CHANNEL_ERROR") finish(rej, new Error("实时频道错误：" + ((err && err.message) || "未知原因")));
-            else if (status === "TIMED_OUT") finish(rej, new Error("连接实时服务超时"));
-            else if (status === "CLOSED") finish(rej, new Error("实时连接已关闭"));
-          });
-        });
-        // iOS Safari freezes backgrounded tabs → re-track presence on tab focus to clear ghost records
-        _onVisible = () => { if (document.visibilityState === "visible" && ch) ch.track(meta); };
-        document.addEventListener("visibilitychange", _onVisible);
-      },
-      send(msg) {
-        if (!ch) return Promise.resolve("error");
-        // supabase-js v2 的 send() 返回 Promise<'ok'|'error'|'timed out'>（vendor/supabase.js 实读：频道已加入走 push + ack，
-        // 未加入则退回 HTTP POST /realtime/v1/api/broadcast；两条路返回值形态相同）。
-        try { return Promise.resolve(ch.send({ type: "broadcast", event: "msg", payload: msg }, { timeout: SEND_ACK_TIMEOUT_MS })).then((s) => s || "ok", () => "error"); }
-        catch (e) { return Promise.resolve("error"); }
-      },
-      presence() { return presList(); },
-      updateMeta(meta) { if (ch) ch.track(meta); },
-      close() {
-        if (_onVisible) { document.removeEventListener("visibilitychange", _onVisible); _onVisible = null; }
-        if (ch) { try { ch.unsubscribe(); } catch (e) {} ch = null; }
-      },
-    };
-  }
-
   function makeTransport(room, clientId) {
-    return hasSupabase() ? SupabaseTransport(room, clientId) : LocalTransport(room, clientId);
+    return hasRooms() ? root.PRRoomTransport(room, clientId) : LocalTransport(room, clientId);
   }
 
   // 客人加入前确认房间里确实有房主。两种传输都是「按需创建」频道/命名空间，open() 对任何
@@ -188,22 +88,23 @@
 
   async function startSession(code, role, opts) {
     const clientId = makeId();
-    const token = (opts && opts.token) || roomToken(code); // 稳定身份（跨刷新/重连）
+    let token = (opts && opts.token) || roomToken(code); // 稳定身份（跨刷新/重连）
     const transport = makeTransport(code, clientId);
     let presence = [];
     const meta = { clientId, token, name: (opts && opts.name) || "玩家", role, joinedAt: Date.now() };
     // 本端连接状态上报（此前完全没有：客人断了网，横幅照旧「联机中」，只是棋盘不动）。
-    // 两个来源：传输层（Supabase 频道 CLOSED/CHANNEL_ERROR/TIMED_OUT/重新 SUBSCRIBED）
+    // 两个来源：传输层（Cloudflare 频道 CLOSED/CHANNEL_ERROR/TIMED_OUT/重新 SUBSCRIBED）
     // 与浏览器 offline/online 事件（传输无关，LocalTransport 也能触发，便于测试）。
     const report = (status, detail) => { if (opts && opts.onStatus) { try { opts.onStatus(status, detail); } catch (e) {} } };
     const onOffline = () => report("OFFLINE", "浏览器离线");
     const onOnline = () => report("ONLINE");
     if (typeof window !== "undefined" && window.addEventListener) { window.addEventListener("offline", onOffline); window.addEventListener("online", onOnline); }
-    await transport.open(meta, {
+    const opened = await transport.open(meta, {
       onMessage: (msg) => { if (opts && opts.onMessage) opts.onMessage(msg); },
       onPresence: (list) => { presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
       onStatus: report,
     });
+    if (opened && opened.token) token = opened.token;
     if (role === "guest") {
       // 此前固定 3500 ms，且超时一律报「房间不存在」。但这段时间要覆盖 WebSocket 连接 +
       // 频道订阅 + 首次 presence 同步，手机弱网下健康房间也会超时 → 用户看到的是**错误的诊断**。
@@ -218,7 +119,7 @@
     }
     return {
       code, role, clientId, token,
-      transport: hasSupabase() ? "supabase" : "local",
+      transport: hasRooms() ? "cloudflare" : "local",
       // 统一返回 Promise<'ok'|'error'|'timed out'>，永不 reject：调用方按返回值决定重试 / 提示
       send: (obj) => { let r; try { r = transport.send(obj); } catch (e) { return Promise.resolve("error"); } return Promise.resolve(r).then((s) => (s == null ? "ok" : s), () => "error"); },
       presence: () => transport.presence ? transport.presence() : presence,
@@ -231,8 +132,8 @@
   }
 
   const PRNet = {
-    available: () => true,                 // LocalTransport 总可用；Supabase 视配置
-    crossDevice: () => hasSupabase(),       // 是否已配 Supabase（真跨设备）
+    available: () => true,                 // LocalTransport 总可用；Cloudflare 视配置
+    crossDevice: () => hasRooms(),       // 是否已配 Cloudflare（真跨设备）
     makeCode, roomToken,
     host(opts) { const code = (opts && opts.code) || makeCode(4); return startSession(code, "host", opts); },
     join(code, opts) { return startSession(String(code || "").toUpperCase().trim(), "guest", opts); },
