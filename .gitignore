@@ -3,6 +3,9 @@
 Thumbs.db
 *.log
 node_modules/
+.wrangler/
+.site/
+tests/artifacts/
 __pycache__/
 *.pyc
 

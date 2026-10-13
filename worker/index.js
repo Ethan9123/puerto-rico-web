@@ -35,12 +35,29 @@ function json(obj, status = 200) {
   return cors(new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } }));
 }
 
+export { PuertoRoom } from './rooms.js';
+const roomCreates = new Map();
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname;
     if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
     try {
+      const room = p.match(/^\/rooms\/([ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4})\/(connect|poll|send|leave)$/);
+      if (room) {
+        if (!env.ROOMS) return json({error: '房间服务未启用'}, 503);
+        if (room[2] === 'connect' && request.method === 'POST') {
+          const ip = request.headers.get('CF-Connecting-IP');
+          if (ip) {
+            const now = Date.now();
+            if (roomCreates.size > 5000) for (const [k, v] of roomCreates) if (v.until < now) roomCreates.delete(k);
+            let bucket = roomCreates.get(ip);
+            if (!bucket || bucket.until < now) roomCreates.set(ip, (bucket = {until: now + 60000, count: 0}));
+            if (++bucket.count > 60) return json({error: '连接太频繁，请一分钟后重试'}, 429);
+          }
+        }
+        return env.ROOMS.get(env.ROOMS.idFromName(room[1])).fetch(request);
+      }
       if (p === "/collect" && request.method === "POST") return await handleCollect(request, env);
       if (p === "/dump" && request.method === "GET") return await handleDump(url, env);
       if (p === "/stats" && request.method === "GET") return await handleStats(url, env);

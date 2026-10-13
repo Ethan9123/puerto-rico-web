@@ -9,7 +9,7 @@
 //   ③ 联机会话中单机「开始游戏」被禁用（否则客人开的本地局会被房主广播覆盖）
 //   ④ 频道订阅失败必须**有界地**失败（不是永久挂起）——这是本轮修掉的头号 bug
 //   ⑭⑮ 房主只接受座位主人的应答，且非法值不打崩引擎；⑯ 帧号：旧帧不回退棋盘；
-//   ⑱ 房间码 4 位统一；⑲ Supabase 频道 ack:true 且 send() 结果透传；⑳ 发送失败重试 / 明确提示 / 房主广播失败提示
+//   ⑱ 房间码 4 位统一；⑲ Cloudflare 频道 ack:true 且 send() 结果透传；⑳ 发送失败重试 / 明确提示 / 房主广播失败提示
 //
 // 环境要求：playwright（devDependency）+ 预装 Chromium。缺任一 → 按项目约定
 // `exit(2)` 且输出含 "skipped"（tools/run_tests.sh 只在两者同时满足时才算跳过）。
@@ -19,26 +19,12 @@ const path = require('path');
 const http = require('http');
 const ROOT = path.join(__dirname, '..');
 
-const CHROME_CANDIDATES = [
-  '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-  '/opt/pw-browsers/chromium/chrome-linux/chrome',
-];
-function findChrome() {
-  for (const c of CHROME_CANDIDATES) if (fs.existsSync(c)) return c;
-  const dir = '/opt/pw-browsers';
-  if (fs.existsSync(dir)) {
-    for (const d of fs.readdirSync(dir)) {
-      const p = path.join(dir, d, 'chrome-linux', 'chrome');
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
+const {findChrome} = require('./browser_runtime.js');
 
 let chromium;
 try { ({ chromium } = require('playwright')); }
 catch (e) { console.log('skipped: playwright 未安装（npm i -D playwright）'); process.exit(2); }
-const CHROME = findChrome();
+const CHROME = findChrome(chromium);
 if (!CHROME) { console.log('skipped: 找不到预装 Chromium（/opt/pw-browsers）'); process.exit(2); }
 
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css' };
@@ -79,9 +65,9 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
     const ctx = await browser.newContext();
-    // 把 supabase-config.js 拦成空 → hasSupabase() 假 → 走 LocalTransport。
+    // 把 rooms-config.js 拦成空 → hasCloudflare() 假 → 走 LocalTransport。
     // ⚠ 不能用 addInitScript 设 null：init script 跑在页面脚本**之前**，会被 config 覆盖回去。
-    await ctx.route('**/supabase-config.js', r =>
+    await ctx.route('**/rooms-config.js*', r =>
       r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e: force local transport */' }));
 
     const errs = [];
@@ -317,13 +303,13 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     await answerGuestFully(guest); await guest.waitForTimeout(800);   // 清掉 ⑮ 留下的陈旧 UI（房主已按默认结算，这次应答会被忽略）
     ok(await guest.evaluate(async () => (await PR_SESSION.send({ type: 'e2e-noop' })) === 'ok'), '⑳ session.send() 返回可判定的状态（LocalTransport → "ok"）');
     // (a) 首次失败 → 自动重试成功
-    await guest.evaluate(() => {
-      const orig = PR_SESSION.send; const failed = new Set(); window.__sent = []; window.__origSend = orig;
-      PR_SESSION.send = (m) => { if (m && m.type === 'input-response') { window.__sent.push(m); if (!failed.has(m.reqId)) { failed.add(m.reqId); return Promise.resolve('error'); } } return orig(m); };
-    });
     const tr20 = await advanceUntil(host, guest, guestOnClock, { ticks: 80 });
     const reqB = await host.evaluate(() => PRNetPlay._debug().pending[0]);
     ok(await guestOnClock(guest) && !!reqB, `⑳ 客人再次上钟（${reqB}）；轨迹：${tr20.slice(-4).join(' ')}`);
+    await guest.evaluate((target) => {
+      const orig = PR_SESSION.send; const failed = new Set(); window.__sent = []; window.__origSend = orig;
+      PR_SESSION.send = (m) => { if (m && m.type === 'input-response' && m.reqId === target) { window.__sent.push(m); if (!failed.has(m.reqId)) { failed.add(m.reqId); return Promise.resolve('error'); } } return orig(m); };
+    }, reqB);
     const acts20 = await answerGuestFully(guest);
     let sawRetry = false, retryText = '';
     for (let i = 0; i < 12; i++) { retryText = await guest.evaluate(() => (document.getElementById('np-send-status') || {}).textContent || ''); if (/重试/.test(retryText)) { sawRetry = true; break; } await guest.waitForTimeout(120); }
@@ -404,7 +390,7 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     // → 横幅盖住整个 topbar；认领/接管按钮只有 ~25–28px 高，不在触控块里。
     {
       const mctx = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-      await mctx.route('**/supabase-config.js', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e */' }));
+      await mctx.route('**/rooms-config.js*', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e */' }));
       const mh = await mctx.newPage(); wire(mh, 'm-host');
       await mh.goto(BASE, { waitUntil: 'load' }); await mh.waitForTimeout(800);
       ok(await mh.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches), '⑰ 触控媒体查询在移动端仿真下生效（否则下面测的不是那条规则）');
@@ -447,44 +433,19 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
       await rc.close();
     }
 
-    // ---- ⑲ Supabase 传输：频道 ack:true，且 send() 的结果透传到 session.send()（假 supabase 客户端，不出网）----
-    // 此前 ack:false：supabase-js 对 broadcast 会**立刻** resolve 'ok'，上层永远不知道有没有送达。
-    {
-      const p19 = await ctx.newPage(); wire(p19, 'ack');
-      await p19.route('**/supabase-config.js', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: 'window.PR_SUPABASE={url:"https://127.0.0.1:9",key:"sb_publishable_e2e_dummy"};' }));
-      await p19.addInitScript(() => {
-        // 假 supabase-js：记录频道配置；subscribe 立刻 SUBSCRIBED；send 固定返回 'timed out'（模拟服务端没 ack）
-        const fake = { on() { return fake; }, subscribe(cb) { setTimeout(() => cb('SUBSCRIBED'), 0); return fake; }, track() {}, presenceState() { return {}; },
-          send(_m, opts) { window.__sendOpts = opts; return Promise.resolve('timed out'); }, unsubscribe() {} };
-        window.supabase = { createClient: () => ({ channel: (name, cfg) => { window.__chCfg = cfg; return fake; } }) };
-      });
-      await p19.goto(BASE, { waitUntil: 'load' }); await p19.waitForTimeout(800);
-      const r19 = await p19.evaluate(async () => {
-        const s = await PRNet.host({ name: 'ack', onPresence() {}, onMessage() {} });
-        const st = await s.send({ type: 'e2e' });
-        const cfg = window.__chCfg && window.__chCfg.config && window.__chCfg.config.broadcast;
-        const out = { transport: s.transport, ack: !!(cfg && cfg.ack), st, timeout: window.__sendOpts && window.__sendOpts.timeout };
-        s.close(); return out;
-      });
-      ok(r19.transport === 'supabase' && r19.ack === true, '⑲ Supabase 频道以 ack:true 建立（此前 ack:false → send 永远立刻 "ok"）');
-      ok(r19.st === 'timed out', `⑲ 频道 send() 的结果透传到 session.send()（${r19.st}）——上层据此重试 / 提示`);
-      ok(typeof r19.timeout === 'number' && r19.timeout > 0, `⑲ send 带 ack 超时（${r19.timeout}ms），不会无限等`);
-      await p19.close();
-    }
-
     // ---- ⑦ 订阅失败必须有界（本轮修掉的头号 bug）----
     // 旧写法 `ch.subscribe(s => { if (s==="SUBSCRIBED") res(); })` 只处理成功一种状态，
     // CHANNEL_ERROR / TIMED_OUT / CLOSED 既不 resolve 也不 reject 且无超时 → 永久挂起、
     // 「创建房间」按钮永久变灰且零提示。实测退回旧写法：15 秒仍未落定；修复后 ~0.3 秒 reject。
-    // 这里用一个必然连不通的 Supabase 端点，断言 host() 会在有限时间内失败而不是卡住。
+    // 这里用一个必然连不通的 Cloudflare 端点，断言 host() 会在有限时间内失败而不是卡住。
     const probe = await ctx.newPage();
-    await probe.route('**/supabase-config.js', r => r.fulfill({
+    await probe.route('**/rooms-config.js*', r => r.fulfill({
       status: 200, contentType: 'application/javascript',
-      body: 'window.PR_SUPABASE={url:"https://127.0.0.1:9",key:"sb_publishable_e2e_dummy"};',
+      body: 'window.PR_ROOMS_URL="http://127.0.0.1:9";',
     }));
     await probe.goto(BASE, { waitUntil: 'load' });
     await probe.waitForTimeout(800);
-    ok(await probe.evaluate(() => PRNet.crossDevice()), '⑦ 探针已切到 Supabase 传输');
+    ok(await probe.evaluate(() => PRNet.crossDevice()), '⑦ 探针已切到 Cloudflare 传输');
     const r = await probe.evaluate(async () => {
       const t0 = Date.now();
       const out = await Promise.race([

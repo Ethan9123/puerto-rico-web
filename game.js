@@ -389,7 +389,7 @@ class Game {
     };
   }
 
-  constructor(numPlayers, humanName, expansion, buccaneer) {
+  constructor(numPlayers, humanName, expansion, buccaneer, localSeat = 0) {
     this.numPlayers = numPlayers;
     // —— 5 个独立扩展模块开关（可任意组合）；旧字符串经 normalizeModules 映射为累积集合 ——
     const mods = Game.normalizeModules(expansion, buccaneer);
@@ -422,7 +422,7 @@ class Game {
     BLD_BY_ID[16].cost = this.balanceMode ? 7 : 8;
     this.players = [];
     for (let i = 0; i < numPlayers; i++) {
-      this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
+      this.players.push(this.newPlayer(i, i === localSeat ? humanName : `电脑P${i}`, i === localSeat));
     }
     this.governor = Math.floor(Math.random() * numPlayers);
     this.currentRoleIdx = -1;
@@ -1303,7 +1303,7 @@ function castColorMaybe() { return Math.random() < 0.22 ? ` ${castPick(CAST_COLO
 function isLocalHuman(p, i) {
   if (typeof PRNetPlay !== "undefined" && PRNetPlay.isOnline()) {
     const ms = PRNetPlay.mySeat();
-    return ms >= 0 ? i === ms : !p._remote;
+    return p.isHuman && (ms >= 0 ? i === ms : !p._remote);
   }
   return p.isHuman;
 }
@@ -1575,10 +1575,9 @@ function commentaryPostRole(me, pred, chosenRole) {
 }
 
 function startGame(netOpts) {
-  // 联机房主开局：netOpts = { online, seatOwners:{seat:clientId}, names:{seat:name} }
-  // v1 仅基础规则（扩展联机留到 Phase 3.1）；座位 0 = 房主本地，seatOwners 中的座位 = 远程客人，其余 = AI
+  // 联机房主开局：hostSeat 是本地座位，seatOwners 是远程座位，其余为机器人。
   const online = !!(netOpts && netOpts.online && netOpts.seatOwners);
-  const n = parseInt(document.getElementById("player-count").value);
+  const n = online && netOpts.numPlayers ? netOpts.numPlayers : parseInt(document.getElementById("player-count").value);
   const name = document.getElementById("player-name").value || "玩家";
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = !online && (n >= 2) && !!document.getElementById("all-ai")?.checked;
@@ -1591,7 +1590,7 @@ function startGame(netOpts) {
     buccaneer:     !!document.getElementById("mod-buccaneer")?.checked,
     balance:       !!document.getElementById("mod-balance")?.checked,
   };
-  G = new Game(n, name, mods); // 第 4 参省略，海盗已在 mods 内
+  G = new Game(n, name, mods, undefined, online ? (netOpts.hostSeat ?? 0) : 0);
   G.expansionType = mods;
   let needsNN = false;
   // 读取每个 CPU 的独立难度
@@ -1610,7 +1609,11 @@ function startGame(netOpts) {
   if (online) {
     // 把被客人占据的座位改回人类（远程），其余保持 AI；座位 0 是房主本地人类
     G._online = true;
+    G._hostSeat = Number.isInteger(netOpts.hostSeat) ? netOpts.hostSeat : 0;
     G._seatOwners = netOpts.seatOwners;
+    G._seatTokens = Object.assign({}, netOpts.seatOwners);
+    G.players.forEach((p, i) => { p.isHuman = i === G._hostSeat; p._remote = null; p.name = p.isHuman ? name : `电脑P${i}`; });
+    delete G.players[G._hostSeat]._aiLevel;
     for (const s in netOpts.seatOwners) {
       const seat = +s, p = G.players[seat];
       if (!p) continue;
@@ -1621,15 +1624,18 @@ function startGame(netOpts) {
     // 人不满：空座位一律用【专业级(专家 L5)】AI 补齐（与掉线/挂机接管同档），并登记为
     // 「可认领」——后来的人进房间能直接坐下顶替这些 AI（复用重连认领那套）。
     G._takenOverSeats = G._takenOverSeats || {};
+    needsNN = false;
     let aiFill = 0;
     G.players.forEach((p, i) => {
-      if (p.isHuman || i === 0) return;     // 真人 / 房主本地座位跳过
-      p._aiLevel = 5;                        // 专业级
+      if (p.isHuman) return;
+      p._aiLevel = netOpts.botLevel || 5;
+      if (p._aiLevel === 6) needsNN = true;
       if (!p._dna) loadDNA(p, i);
       G._takenOverSeats[i] = "AI 补位";       // 进广播 → 客人可「认领座位」顶替
       aiFill++;
     });
-    if (aiFill > 0) G.logEvent(`🤖 人数不足，${aiFill} 个空位由专业级 AI 补位（有人进房可认领顶替）`, "role");
+    if (aiFill > 0) G.logEvent(`🤖 ${aiFill} 个机器人加入（L${netOpts.botLevel || 5}，有人进房可认领顶替）`, "role");
+    G.logEvent(`🪑 本局房主位于座位 ${G._hostSeat + 1}${netOpts.randomSeats ? '，座位已随机分配' : ''}`, "role");
   }
   window._allAIMode = !!allAI;
   window._liveCastOn = !!document.getElementById("live-cast")?.checked; // 人机对战实况解说开关
