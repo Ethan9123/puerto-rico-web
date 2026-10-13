@@ -26,6 +26,7 @@
 
   let _session = null;      // PRNet session
   let _role = null;         // 'host' | 'guest'
+  let _hostSeat = 0;
   let _online = false;      // 是否处于联机对局
   let _seatOwners = {};     // { seatIdx: token } —— 远程客人掌控的座位（按稳定令牌）
   let _seatTokens = {};     // { seatIdx: token } —— 开局原始归属（接管后仍保留，供重连自动认领）
@@ -43,6 +44,7 @@
   function setup(opts) {
     _session = opts.session || null;
     _role = opts.role || (_session && _session.role) || null;
+    _hostSeat = Number.isInteger(opts.hostSeat) ? opts.hostSeat : 0;
     _myId = (opts.myId) || (_session && _session.clientId) || null;
     // 座位归属改用【稳定令牌】为键：刷新/重连 clientId 会变、token 不变 → 房主据 token 自动接回原座。
     _myToken = (opts.myToken) || (_session && _session.token) || _myId;
@@ -318,6 +320,7 @@
 
   // ---------- 客人侧：收到自己座位的请求 → 跑本地 UI → 回传 ----------
   function mySeat() {
+    if (_role === 'host' && _online) return _hostSeat;
     for (const s in _seatOwners) if (_seatOwners[s] === _myToken) return +s;
     return -1;
   }

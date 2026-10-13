@@ -22,6 +22,7 @@
       seq = data.seq;
       list = data.presence || [];
       callbacks.onPresence(list);
+      if (data.config) callbacks.onMessage(data.config);
       if (data.latest) callbacks.onMessage(data.latest);
       if (data.pending) callbacks.onMessage(data.pending);
       for (const e of data.events || []) if (e.message) callbacks.onMessage(e.message);

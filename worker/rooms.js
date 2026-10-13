@@ -1,5 +1,5 @@
 const reply = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*'}});
-const HOST_MESSAGES = new Set(['state', 'gameover', 'input-request', 'takeover', 'reclaimed']);
+const HOST_MESSAGES = new Set(['state', 'gameover', 'input-request', 'takeover', 'reclaimed', 'room-config']);
 const GUEST_MESSAGES = new Set(['input-response', 'reclaim']);
 const ALIVE = 30000;
 const MAX_BODY_BYTES = 500000;
@@ -70,7 +70,7 @@ export class PuertoRoom {
       member.seen = Date.now();
       this.emit('', null);
       await this.save();
-      return reply({auth: member.auth, token: member.meta.token, seq: this.data.seq, presence: this.presence(), latest: meta.role === 'guest' ? this.data.latest : null, pending: meta.role === 'guest' ? this.data.pending : null});
+      return reply({auth: member.auth, token: member.meta.token, seq: this.data.seq, presence: this.presence(), config: this.data.config, latest: meta.role === 'guest' ? this.data.latest : null, pending: meta.role === 'guest' ? this.data.pending : null});
     }
     const auth = req.method === 'POST' ? body.auth : url.searchParams.get('auth');
     const member = this.data.members.find(m => m.auth === auth && typeof auth === 'string');
@@ -80,7 +80,7 @@ export class PuertoRoom {
       if (!Number.isSafeInteger(since) || since < 0 || since > this.data.seq) return reply({error: '事件编号错误'}, 400);
       member.seen = Date.now();
       const oldest = this.data.events[0]?.seq || this.data.seq;
-      if (since < oldest - 1) return reply({seq: this.data.seq, presence: this.presence(), events: [], latest: member.meta.role === 'guest' ? this.data.latest : null, pending: member.meta.role === 'guest' ? this.data.pending : null, reset: true});
+      if (since < oldest - 1) return reply({seq: this.data.seq, presence: this.presence(), events: [], config: this.data.config, latest: member.meta.role === 'guest' ? this.data.latest : null, pending: member.meta.role === 'guest' ? this.data.pending : null, reset: true});
       if (since === this.data.seq) await new Promise(resolve => {
         const wake = () => { clearTimeout(timer); this.waiters.delete(wake); resolve(); };
         const timer = setTimeout(wake, 10000);
@@ -98,9 +98,14 @@ export class PuertoRoom {
       if (now - (member.bucketAt || 0) > 1000) { member.bucketAt = now; member.count = 0; }
       if (++member.count > 30) return reply({error: '操作太快，请稍后重试'}, 429);
       member.seen = now;
-      const clean = {...msg};
+      let clean = {...msg};
+      if (clean.type === 'room-config') {
+        if (!Number.isInteger(clean.humans) || clean.humans < 1 || clean.humans > 24 || !Number.isInteger(clean.bots) || clean.bots < 0 || clean.bots > 4 || !Number.isInteger(clean.botLevel) || clean.botLevel < 1 || clean.botLevel > 6 || typeof clean.randomSeats !== 'boolean') return reply({error: '房间设置无效'}, 400);
+        clean = {type: 'room-config', humans: clean.humans, bots: clean.bots, botLevel: clean.botLevel, randomSeats: clean.randomSeats};
+      }
       if (member.meta.role === 'guest') { clean.token = member.meta.token; clean.name = member.meta.name; }
       if (clean.type === 'state' || clean.type === 'gameover') this.data.latest = clean;
+      if (clean.type === 'room-config') this.data.config = clean;
       if (clean.type === 'input-request') this.data.pending = clean;
       if ((clean.type === 'input-response' && clean.reqId === this.data.pending?.reqId && this.data.latest?.snap?._seatOwners?.[this.data.pending.seat] === member.meta.token) || clean.type === 'takeover' || clean.type === 'gameover') this.data.pending = null;
       member.ids.push(body.id); member.ids = member.ids.slice(-100);

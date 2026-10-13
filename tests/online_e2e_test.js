@@ -67,7 +67,7 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     const ctx = await browser.newContext();
     // 把 rooms-config.js 拦成空 → hasCloudflare() 假 → 走 LocalTransport。
     // ⚠ 不能用 addInitScript 设 null：init script 跑在页面脚本**之前**，会被 config 覆盖回去。
-    await ctx.route('**/rooms-config.js', r =>
+    await ctx.route('**/rooms-config.js*', r =>
       r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e: force local transport */' }));
 
     const errs = [];
@@ -303,13 +303,13 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     await answerGuestFully(guest); await guest.waitForTimeout(800);   // 清掉 ⑮ 留下的陈旧 UI（房主已按默认结算，这次应答会被忽略）
     ok(await guest.evaluate(async () => (await PR_SESSION.send({ type: 'e2e-noop' })) === 'ok'), '⑳ session.send() 返回可判定的状态（LocalTransport → "ok"）');
     // (a) 首次失败 → 自动重试成功
-    await guest.evaluate(() => {
-      const orig = PR_SESSION.send; const failed = new Set(); window.__sent = []; window.__origSend = orig;
-      PR_SESSION.send = (m) => { if (m && m.type === 'input-response') { window.__sent.push(m); if (!failed.has(m.reqId)) { failed.add(m.reqId); return Promise.resolve('error'); } } return orig(m); };
-    });
     const tr20 = await advanceUntil(host, guest, guestOnClock, { ticks: 80 });
     const reqB = await host.evaluate(() => PRNetPlay._debug().pending[0]);
     ok(await guestOnClock(guest) && !!reqB, `⑳ 客人再次上钟（${reqB}）；轨迹：${tr20.slice(-4).join(' ')}`);
+    await guest.evaluate((target) => {
+      const orig = PR_SESSION.send; const failed = new Set(); window.__sent = []; window.__origSend = orig;
+      PR_SESSION.send = (m) => { if (m && m.type === 'input-response' && m.reqId === target) { window.__sent.push(m); if (!failed.has(m.reqId)) { failed.add(m.reqId); return Promise.resolve('error'); } } return orig(m); };
+    }, reqB);
     const acts20 = await answerGuestFully(guest);
     let sawRetry = false, retryText = '';
     for (let i = 0; i < 12; i++) { retryText = await guest.evaluate(() => (document.getElementById('np-send-status') || {}).textContent || ''); if (/重试/.test(retryText)) { sawRetry = true; break; } await guest.waitForTimeout(120); }
@@ -390,7 +390,7 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     // → 横幅盖住整个 topbar；认领/接管按钮只有 ~25–28px 高，不在触控块里。
     {
       const mctx = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-      await mctx.route('**/rooms-config.js', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e */' }));
+      await mctx.route('**/rooms-config.js*', r => r.fulfill({ status: 200, contentType: 'application/javascript', body: '/* e2e */' }));
       const mh = await mctx.newPage(); wire(mh, 'm-host');
       await mh.goto(BASE, { waitUntil: 'load' }); await mh.waitForTimeout(800);
       ok(await mh.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches), '⑰ 触控媒体查询在移动端仿真下生效（否则下面测的不是那条规则）');
@@ -439,7 +439,7 @@ const ok = (c, m) => { if (c) console.log('  ok ' + m); else { fails++; console.
     // 「创建房间」按钮永久变灰且零提示。实测退回旧写法：15 秒仍未落定；修复后 ~0.3 秒 reject。
     // 这里用一个必然连不通的 Cloudflare 端点，断言 host() 会在有限时间内失败而不是卡住。
     const probe = await ctx.newPage();
-    await probe.route('**/rooms-config.js', r => r.fulfill({
+    await probe.route('**/rooms-config.js*', r => r.fulfill({
       status: 200, contentType: 'application/javascript',
       body: 'window.PR_ROOMS_URL="http://127.0.0.1:9";',
     }));

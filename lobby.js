@@ -32,6 +32,14 @@
     room.querySelector(".lobby-mode").textContent = mode;
     // 房主可「开始对战」；客人显示「等待房主开始 → 自动进入观战」
     const isHost = role === "host";
+    if (isHost) try {
+      const saved = JSON.parse(sessionStorage.getItem('prroom_settings_' + code) || 'null');
+      if (saved) {
+        room.querySelector('#room-bots').value = saved.bots;
+        room.querySelector('#room-bot-level').value = saved.level;
+        room.querySelector('#room-random-seats').checked = saved.random === true;
+      }
+    } catch (e) {}
     const startWrap = room.querySelector(".lobby-host-start");
     const waitHint = room.querySelector(".lobby-guest-wait");
     if (startWrap) startWrap.classList.toggle("hidden", !isHost);
@@ -67,6 +75,32 @@
     const playersList = el("div", { class: "lobby-players" });
     // 房间码统一 4 位（net.js makeCode(4)）。此前生成 4 / 输入框 maxlength 6 / 校验 <4 / 截断 6 三处不一致。
     const codeInput = el("input", { class: "lobby-join-code", maxlength: "4", placeholder: "房间码", autocapitalize: "characters", autocomplete: "off", style: "text-transform:uppercase;width:120px" });
+    const botCount = el('select', {id: 'room-bots'}, [el('option', {value: 'auto'}, ['按总人数补齐']), ...Array.from({length: 5}, (_, i) => el('option', {value: String(i)}, [`${i} 个`]))]);
+    const botLevel = el('select', {id: 'room-bot-level'}, ['入门', '进化', '普通', '困难', '专家', '宗师'].map((name, i) => el('option', {value: String(i + 1)}, [`L${i + 1} ${name}`])));
+    botLevel.value = '3';
+    const randomSeats = el('input', {id: 'room-random-seats', type: 'checkbox'});
+    const settingsSummary = el('div', {class: 'lobby-hint room-settings'});
+    let lastSettings = '';
+    const peopleCount = () => 1 + new Set((session?.presence() || []).filter(p => p.role === 'guest').map(p => p.token)).size;
+    const currentBots = () => botCount.value === 'auto' ? Math.max(0, Number(document.getElementById('player-count').value) - peopleCount()) : Number(botCount.value);
+    function publishSettings() {
+      if (!session || session.role !== 'host') return;
+      if (!document.getElementById('game-screen').classList.contains('hidden')) return;
+      try { sessionStorage.setItem('prroom_settings_' + session.code, JSON.stringify({bots: botCount.value, level: botLevel.value, random: randomSeats.checked})); } catch (e) {}
+      const config = {type: 'room-config', humans: peopleCount(), bots: currentBots(), botLevel: Number(botLevel.value), randomSeats: randomSeats.checked};
+      settingsSummary.textContent = `${config.humans} 位真人 + ${config.bots} 个机器人（L${config.botLevel}） · ${config.randomSeats ? '随机座位' : '按加入顺序入座'} · 最多 5 个座位`;
+      const key = JSON.stringify(config);
+      if (key !== lastSettings) { lastSettings = key; session.send(config); }
+    }
+    const addBot = el('button', {type: 'button', class: 'qs-btn'}, ['＋ 添加机器人']);
+    const removeBot = el('button', {type: 'button', class: 'qs-btn'}, ['− 移除机器人']);
+    addBot.onclick = () => {
+      if (peopleCount() + currentBots() >= 5) { netError('无法添加机器人', new Error('最多 5 个座位，请减少机器人数量')); return; }
+      botCount.value = String(currentBots() + 1); publishSettings();
+    };
+    removeBot.onclick = () => { botCount.value = String(Math.max(0, currentBots() - 1)); publishSettings(); };
+    botCount.onchange = botLevel.onchange = randomSeats.onchange = publishSettings;
+    document.getElementById('player-count').addEventListener('change', publishSettings);
 
     let _prevPresence = 0;
     const onPresence = (list) => {
@@ -76,6 +110,7 @@
       // 房主：有新客人进房（人数增加）→ 立即推一帧当前状态，让新人马上看到棋盘（观战/认领）
       if (session && session.role === "host" && list.length > _prevPresence && typeof PRSpectate !== "undefined" && PRSpectate.isHosting && PRSpectate.isHosting()) PRSpectate.pushNow();
       _prevPresence = list.length;
+      publishSettings();
       // 客人：把房主名字告诉观战层（横幅显示）；房主断线 / 重连时更新横幅
       if (session && session.role === "guest" && typeof PRSpectate !== "undefined") {
         const host = list.find((m) => m && m.role === "host");
@@ -98,6 +133,7 @@
     };
     // 收到广播：input-request/response（远程出手）→ PRNetPlay；state/gameover（观战）→ PRSpectate
     const onMessage = (msg) => {
+      if (msg?.type === 'room-config') settingsSummary.textContent = `${msg.humans} 位真人 + ${msg.bots} 个机器人（L${msg.botLevel}） · ${msg.randomSeats ? '随机座位' : '按加入顺序入座'} · 最多 5 个座位`;
       if (typeof PRNetPlay !== "undefined") PRNetPlay.handleMessage(msg);
       if (typeof PRSpectate !== "undefined") PRSpectate.handleMessage(msg);
     };
@@ -125,6 +161,7 @@
         try { sessionStorage.setItem("prnet_room", session.code); sessionStorage.setItem("prnet_role", "host"); sessionStorage.setItem("prnet_name", myName()); } catch (e) {}
         setLocalStartEnabled(false);   // 联机会话期间禁掉单机「开始游戏」，见下
         showRoom(panel, session.code, session.role);
+        publishSettings();
       } catch (e) {
         netError("创建房间失败", e);
       } finally {
@@ -164,7 +201,7 @@
       if (!saved) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>（没有可续的对局，可直接开新局）。"; return; }
       if (typeof restoreGame !== "function" || !restoreGame(saved)) { if (hint) hint.innerHTML = "🔄 已重开房间 <b style='color:#f3c969'>" + session.code + "</b>；上一局存档已失效。"; return; }
       const seatOwners = (typeof G !== "undefined" && G && G._seatOwners) || {};
-      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, seatTokens: G._seatTokens, takenOver: G._takenOverSeats, myToken: session.token, myId: session.clientId, online: true });
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, hostSeat: G._hostSeat, seatTokens: G._seatTokens, takenOver: G._takenOverSeats, myToken: session.token, myId: session.clientId, online: true });
       if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
       if (typeof resumeGame === "function") resumeGame(saved, true);
       try { if (typeof G !== "undefined" && G && G.logEvent) G.logEvent("🔄 房主重连，对局从存档继续", "role"); } catch (e) {}
@@ -173,14 +210,14 @@
     const btnHostStart = el("button", { class: "qs-btn lobby-btn lobby-start-btn", type: "button" }, ["▶ 开始对战（房主）"]);
     btnHostStart.onclick = () => {
       if (!session || session.role !== "host") return;
-      const n = parseInt((document.getElementById("player-count") || {}).value) || 3;
       const guests = (session.presence ? session.presence() : []).filter((m) => m && m.role === "guest" && m.token);
-      const seatOwners = {}, names = {}, seen = {};
-      let seat = 1;
-      for (const g of guests) { if (seat >= n) break; if (seen[g.token]) continue; seen[g.token] = 1; seatOwners[seat] = g.token; names[seat] = g.name || ("玩家" + (seat + 1)); seat++; } // 座位归属按稳定令牌
-      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, myToken: session.token, myId: session.clientId, online: true });
+      let plan;
+      try { plan = PRRoomPlan({host: {token: session.token, name: myName()}, guests, total: Number(document.getElementById('player-count').value), bots: botCount.value, randomSeats: randomSeats.checked}); }
+      catch (e) { netError('无法开始对战', e); return; }
+      const {seatOwners, hostSeat} = plan;
+      if (typeof PRNetPlay !== "undefined") PRNetPlay.setup({ session, role: "host", seatOwners, hostSeat, myToken: session.token, myId: session.clientId, online: true });
       if (typeof PRSpectate !== "undefined") PRSpectate.startHosting(session);
-      if (typeof startGame === "function") startGame({ online: true, seatOwners, names }); // render() 会广播首帧
+      if (typeof startGame === "function") startGame({...plan, online: true, botLevel: Number(botLevel.value), randomSeats: randomSeats.checked});
     };
     const btnLeave = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["离开房间"]);
     btnLeave.onclick = () => {
@@ -210,8 +247,14 @@
         ]),
         el("div", { class: "lobby-row" }, ["在房间里："]),
         playersList,
-        el("div", { class: "lobby-row lobby-host-start hidden" }, [btnHostStart]),
-        el("div", { class: "lobby-hint lobby-host-start hidden" }, ["用上方设置（人数/扩展）开一局；在场客人按加入顺序分到座位，人数不足的空位由专业级 AI 补位（有人进房可认领顶替）。"]),
+        settingsSummary,
+        el("div", { class: "lobby-host-start hidden" }, [
+          el('div', {class: 'lobby-row'}, [el('label', null, ['机器人：', botCount]), addBot, removeBot]),
+          el('div', {class: 'lobby-row'}, [el('label', null, ['机器人难度：', botLevel])]),
+          el('label', null, [randomSeats, ' 随机座位（含房主、朋友和机器人）']),
+          el('div', {class: 'lobby-row'}, [btnHostStart]),
+          el('div', {class: 'lobby-hint'}, ['人数按真人和机器人合计，最多 5 人；机器人可在开局后由新朋友认领。'])
+        ]),
         el("div", { class: "lobby-hint lobby-guest-wait hidden" }, ["⏳ 等待房主开始……开始后你将自动进入<b>实时观战</b>。"]),
         el("div", { class: "lobby-row" }, [btnLeave]),
       ]),

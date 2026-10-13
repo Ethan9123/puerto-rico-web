@@ -39,7 +39,8 @@ async function until(fn, ms = 20000) {
   const errors = [];
   for (const p of [host, guest]) p.on('pageerror', e => errors.push(e.message));
   await contexts[0].addInitScript(() => { window._netGraceMs = 1500; window._netIdleMs = 180000; window._fastSpectator = true; });
-  let reloadedGuest = false, reloadedHost = false, tookOver = false, actions = 0;
+  let reloadedGuest = false, reloadedHost = false, tookOver = false, actions = 0, guestSeat;
+  const randomSeats = process.env.ROOM_RANDOM_TEST === '1';
   try {
     await host.goto(base);
     await host.locator('#player-count').selectOption('3');
@@ -53,9 +54,27 @@ async function until(fn, ms = 20000) {
     await guest.getByRole('button', {name: '加入', exact: true}).click();
     await guest.locator('.lobby-code').waitFor({state: 'visible'});
     await until(() => host.evaluate(() => PR_SESSION.presence().length === 2));
+    await host.locator('#room-bots').selectOption('1');
+    await host.getByRole('button', {name: '＋ 添加机器人', exact: true}).click();
+    assert.equal(await host.locator('#room-bots').inputValue(), '2');
+    await host.getByRole('button', {name: '− 移除机器人', exact: true}).click();
+    assert.equal(await host.locator('#room-bots').inputValue(), '1');
+    await host.locator('#room-bot-level').selectOption('3');
+    if (randomSeats) {
+      await host.locator('#room-random-seats').check();
+      await host.evaluate(() => { const plan = PRRoomPlan; window.PRRoomPlan = args => plan(args, () => 0); });
+    }
+    await until(() => guest.locator('.room-settings').innerText().then(s => s.includes('2 位真人 + 1 个机器人（L3）')));
+    fs.mkdirSync(artifacts, {recursive: true});
+    await host.locator('#lobby-panel').screenshot({path: path.join(artifacts, 'room-settings.png')});
     await host.getByRole('button', {name: '▶ 开始对战（房主）', exact: true}).click();
     await fast(host);
     await until(() => guest.locator('#game-screen').isVisible());
+    guestSeat = await guest.evaluate(() => PRNetPlay.mySeat());
+    const setup = await host.evaluate(() => ({seat: PRNetPlay.mySeat(), hostSeat: G._hostSeat, bots: G.players.filter(p => !p.isHuman).map(p => p._aiLevel)}));
+    assert.deepEqual(setup.bots, [3]);
+    assert.equal(setup.seat, setup.hostSeat);
+    if (randomSeats) { assert.equal(setup.hostSeat, 2); assert.equal(guestSeat, 0); }
     console.log('GAME: independent browser contexts created/joined the Cloudflare room');
     const deadline = Date.now() + 240000;
     let nextLog = Date.now() + 20000;
@@ -65,7 +84,7 @@ async function until(fn, ms = 20000) {
         await guest.reload();
         await until(() => guest.locator('#game-screen').isVisible());
         await until(() => onClock(guest));
-        assert.equal(await guest.evaluate(() => PRNetPlay.mySeat()), 1);
+        assert.equal(await guest.evaluate(() => PRNetPlay.mySeat()), guestSeat);
         reloadedGuest = true;
         console.log('GAME: invitation reload recovered seat and pending input');
       }
@@ -73,21 +92,22 @@ async function until(fn, ms = 20000) {
         await host.reload();
         await until(() => host.evaluate(() => typeof G !== 'undefined' && !!G && PRNetPlay.role() === 'host' && !!G._resumed));
         await fast(host);
+        assert.equal(await host.evaluate(() => PRNetPlay.mySeat()), setup.hostSeat);
         reloadedHost = true;
         console.log('GAME: host reload recovered room and saved game');
       }
       if (reloadedHost && !tookOver && await onClock(guest)) {
         await guest.evaluate(() => PR_SESSION.close());
-        await until(() => host.evaluate(() => !!G._takenOverSeats?.[1]));
+        await until(() => host.evaluate(seat => !!G._takenOverSeats?.[seat], guestSeat));
         const originalToken = await guest.evaluate(() => PR_SESSION.token);
         await host.evaluate(() => saveGame());
         await host.reload();
         await until(() => host.evaluate(() => typeof G !== 'undefined' && !!G && PRNetPlay.role() === 'host' && !!G._resumed));
         await fast(host);
-        assert.equal(await host.evaluate(() => PRNetPlay._debug()._seatTokens[1]), originalToken, 'original owner must survive host reload during takeover');
+        assert.equal(await host.evaluate(seat => PRNetPlay._debug()._seatTokens[seat], guestSeat), originalToken, 'original owner must survive host reload during takeover');
         await guest.reload();
         await until(() => guest.locator('#game-screen').isVisible());
-        await until(() => host.evaluate(() => !G._takenOverSeats?.[1]));
+        await until(() => host.evaluate(seat => !G._takenOverSeats?.[seat], guestSeat));
         tookOver = true;
         console.log('GAME: disconnected guest replaced by AI, then reclaimed original seat');
       }

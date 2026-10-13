@@ -17,6 +17,11 @@ const connect = (role, name, auth) => call('connect', {auth, meta: {role, name, 
   const g = (await connect('guest', 'guest')).data;
   assert.equal(g.presence.length, 2);
   assert.ok(!JSON.stringify(g.presence).includes(h.auth), 'presence must not expose credentials');
+  const config = {type: 'room-config', humans: 2, bots: 1, botLevel: 3, randomSeats: true};
+  assert.equal((await call('send', {auth: g.auth, id: 'guest-settings', message: config})).status, 403);
+  assert.equal((await call('send', {auth: h.auth, id: 'bad-settings', message: {...config, bots: 9}})).status, 400);
+  assert.equal((await call('send', {auth: h.auth, id: 'settings', message: config})).status, 200);
+  assert.deepEqual((await connect('guest', 'guest-settings-resume', g.auth)).data.config, config);
   assert.equal((await call('send', {auth: 'bad', id: 'bad', message: {type: 'state'}})).status, 401);
   assert.equal((await call('send', {auth: g.auth, id: 'forge', message: {type: 'state'}})).status, 403);
   const input = {auth: g.auth, id: 'input-1', message: {type: 'input-response', reqId: 'r1', token: h.token, value: 2}};
