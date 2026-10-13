@@ -36,6 +36,7 @@
   const _pending = {};      // host: { reqId: {resolve, seat} }
   let _reqSeq = 0;
   let _guestBusy = false;   // guest: 是否正在做一次远程输入（其间不要被 state 广播打断）
+  let _guestRequest = null;
 
   // G 是 game.js 的词法全局（let），不是 window.G —— 自由变量 G 能跨脚本读到正确绑定，window.G 不能。
   function game() { return (typeof G !== "undefined" && G) ? G : null; }
@@ -55,8 +56,9 @@
     clearPending();
     clearLossTimers(); _lastTokens = presentTokens();
     _guestBusy = false;
+    _guestRequest = null;
   }
-  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; removeOverlay(); removeReclaimUI(); clearPending(); clearLossTimers(); }
+  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; _guestRequest = null; removeOverlay(); removeReclaimUI(); clearPending(); clearLossTimers(); }
 
   function presentTokens() {
     try { return (_session && _session.presence ? _session.presence() : []).map((m) => m && m.token).filter(Boolean); }
@@ -327,6 +329,8 @@
   async function onInputRequest(msg) {
     if (_role !== "guest") return;
     if (_seatOwners[msg.seat] !== _myToken) return;   // 不是我的座位（按令牌），忽略
+    if (_guestBusy && _guestRequest === msg.reqId) return;
+    _guestRequest = msg.reqId;
     // 先把房主随请求附带的最新状态套进来，保证选项 UI 与房主一致
     if (msg.snap && typeof PRSpectate !== "undefined" && PRSpectate.applyState) {
       _guestBusy = false; PRSpectate.applyState(msg.snap);
@@ -335,7 +339,8 @@
     guestTurnStart(msg.deadline);                   // 通知 + 倒计时（P2）
     let value = null;
     try { value = await localRun(msg.kind, Object.assign({ seat: msg.seat }, msg.payload)); }
-    finally { _guestBusy = false; guestTurnEnd(); }
+    finally { if (_guestRequest === msg.reqId) { _guestBusy = false; guestTurnEnd(); } }
+    if (_guestRequest !== msg.reqId) return; // 旧选择结束时，新请求可能已接替它，不能清掉新提示或回传旧应答。
     // 回传带 token：房主据此校验「应答者就是该座位的主人」（P5-1）。重复送达是幂等的（房主对未知 reqId 忽略），
     // 所以「其实送到了但 ack 丢了」的重试不会造成双重应答。
     sendStatus("📤 正在把你的操作发给房主……");
@@ -343,6 +348,7 @@
       delays: [1500],
       onFail: (i, s, willRetry) => { if (willRetry) sendStatus("⚠️ 发送失败（" + s + "），正在重试……", true); },
     });
+    if (_guestRequest !== msg.reqId) return;
     if (st === "ok") { sendStatus(null); return; }
     // 重试仍失败：明确告诉玩家「没送到」，而不是让他以为已经走完了这步
     sendStatus("❌ 网络不通：你的操作没有送达房主（" + st + "）。请检查网络；房主侧会先等你，超时才交给 AI 代打。", true);
@@ -455,6 +461,7 @@
   // 客人侧：自己的座位被房主 AI 接管 → 退出输入态、横幅改为「已被接管」（之后纯观战）
   function onTakenOver(msg) {
     if (msg.seat !== mySeat()) return;
+    _guestRequest = null;
     _guestBusy = false;
     delete _seatOwners[msg.seat]; // 本端也撤掉归属：不再期待该座位的请求
     // 清掉客人手里没答完的决策 UI（弹窗 / 棋盘选择高亮）。用 cancelPendingSelect 而非
