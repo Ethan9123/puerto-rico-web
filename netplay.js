@@ -58,7 +58,7 @@
     _guestBusy = false;
     _guestRequest = null;
   }
-  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; _guestRequest = null; removeOverlay(); removeReclaimUI(); clearPending(); clearLossTimers(); }
+  function teardown() { _online = false; _session = null; _seatOwners = {}; _seatTokens = {}; _takenOver = {}; _guestBusy = false; _guestRequest = null; guestTurnEnd(); sendStatus(null); removeOverlay(); removeReclaimUI(); clearPending(); clearLossTimers(); }
 
   function presentTokens() {
     try { return (_session && _session.presence ? _session.presence() : []).map((m) => m && m.token).filter(Boolean); }
@@ -411,6 +411,10 @@
   function onReclaim(msg) { // 房主侧（手动认领，多为「顶替 AI 补位」）。可认领 = 在 G._takenOverSeats 里。
     const g = game(); if (!g) return;
     const seat = msg.seat, token = msg.token;
+    if (!_online || g.gameOver || !Number.isInteger(seat)) return;
+    if (Object.values(_seatOwners).includes(token)) return;
+    const member = presenceByToken(token);
+    if (!member || member.role !== 'guest') return;
     const claimable = g._takenOverSeats && g._takenOverSeats[seat];
     if (!claimable || !token) return;     // 该座位不可认领（已被别人认领 / 非 AI 空位）
     const p = g.players[seat]; if (!p || p.isHuman) return;
@@ -418,7 +422,7 @@
     p.isHuman = true;
     p._remote = token;
     p._aiLevel = null;
-    p.name = msg.name || p.name;          // 用认领者自己的名字
+    p.name = member.name || p.name;
     _seatOwners[seat] = token;            // 之后该座位的输入按令牌路由给这位客人
     _seatTokens[seat] = token;            // 记为新原主 → 之后他掉线也能自动认领回来
     g._seatTokens = Object.assign({}, _seatTokens);
@@ -463,6 +467,8 @@
     if (msg.seat !== mySeat()) return;
     _guestRequest = null;
     _guestBusy = false;
+    guestTurnEnd();
+    sendStatus(null);
     delete _seatOwners[msg.seat]; // 本端也撤掉归属：不再期待该座位的请求
     // 清掉客人手里没答完的决策 UI（弹窗 / 棋盘选择高亮）。用 cancelPendingSelect 而非
     // resolveBoardSelect(null)——后者会把 null 传进 humanPickRole 等下游导致崩溃。

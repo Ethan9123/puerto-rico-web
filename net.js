@@ -95,28 +95,41 @@
     // 本端连接状态上报（此前完全没有：客人断了网，横幅照旧「联机中」，只是棋盘不动）。
     // 两个来源：传输层（Cloudflare 频道 CLOSED/CHANNEL_ERROR/TIMED_OUT/重新 SUBSCRIBED）
     // 与浏览器 offline/online 事件（传输无关，LocalTransport 也能触发，便于测试）。
-    const report = (status, detail) => { if (opts && opts.onStatus) { try { opts.onStatus(status, detail); } catch (e) {} } };
+    let closed = false, ready = false;
+    const report = (status, detail) => { if (!closed && opts && opts.onStatus) { try { opts.onStatus(status, detail); } catch (e) {} } };
     const onOffline = () => report("OFFLINE", "浏览器离线");
-    const onOnline = () => report("ONLINE");
+    const onOnline = () => { report("ONLINE"); if (transport.reconnect) transport.reconnect(); else report("SUBSCRIBED"); };
     if (typeof window !== "undefined" && window.addEventListener) { window.addEventListener("offline", onOffline); window.addEventListener("online", onOnline); }
-    const opened = await transport.open(meta, {
-      onMessage: (msg) => { if (opts && opts.onMessage) opts.onMessage(msg); },
-      onPresence: (list) => { presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
-      onStatus: report,
-    });
-    if (opened && opened.token) token = opened.token;
-    if (role === "guest") {
-      // 此前固定 3500 ms，且超时一律报「房间不存在」。但这段时间要覆盖 WebSocket 连接 +
-      // 频道订阅 + 首次 presence 同步，手机弱网下健康房间也会超时 → 用户看到的是**错误的诊断**。
-      // 现在放宽到 JOIN_WAIT_MS，并把「等不到」与「码不对」的措辞分开。
-      const ok = await waitForHost(transport, clientId, JOIN_WAIT_MS);
-      if (!ok) {
-        try { transport.close(); } catch (e) {}
-        const err = new Error("没等到房主上线。可能是房间码不对，或网络较慢——请核对房间码后重试。");
-        err.code = "NO_HOST";
-        throw err;
-      }
+    const messages = [];
+    function close() {
+      if (closed) return;
+      closed = true;
+      messages.length = 0;
+      if (typeof window !== "undefined" && window.removeEventListener) { window.removeEventListener("offline", onOffline); window.removeEventListener("online", onOnline); }
+      transport.close();
     }
+    try {
+      const opened = await transport.open(meta, {
+        onMessage: (msg) => { if (closed) return; if (!ready) messages.push(msg); else if (opts && opts.onMessage) opts.onMessage(msg); },
+        onPresence: (list) => { if (closed) return; presence = list; if (opts && opts.onPresence) opts.onPresence(list); },
+        onStatus: report,
+      });
+      if (opened && opened.token) token = opened.token;
+      if (role === "guest") {
+        const ok = await waitForHost(transport, clientId, JOIN_WAIT_MS);
+        if (!ok) {
+          const err = new Error("没等到房主上线。可能是房间码不对，或网络较慢——请核对房间码后重试。");
+          err.code = "NO_HOST";
+          throw err;
+        }
+      }
+    } catch (e) { close(); throw e; }
+    // 让调用方先保存 session，再应用连接时收到的快照和未完成输入。
+    setTimeout(() => {
+      if (closed) return;
+      ready = true;
+      for (const msg of messages.splice(0)) if (opts && opts.onMessage) opts.onMessage(msg);
+    }, 0);
     return {
       code, role, clientId, token,
       transport: hasRooms() ? "cloudflare" : "local",
@@ -124,10 +137,7 @@
       send: (obj) => { let r; try { r = transport.send(obj); } catch (e) { return Promise.resolve("error"); } return Promise.resolve(r).then((s) => (s == null ? "ok" : s), () => "error"); },
       presence: () => transport.presence ? transport.presence() : presence,
       updateMeta: (m) => transport.updateMeta && transport.updateMeta(Object.assign(meta, m)),
-      close: () => {
-        if (typeof window !== "undefined" && window.removeEventListener) { window.removeEventListener("offline", onOffline); window.removeEventListener("online", onOnline); }
-        transport.close();
-      },
+      close,
     };
   }
 

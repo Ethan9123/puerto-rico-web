@@ -126,8 +126,13 @@
   // 横幅照旧写着「🌐 联机中」，棋盘只是静静不动——分不清是对手在想还是自己早就掉了。
   function onConnStatus(status, detail) {
     if (!guestSession) return;
-    if (status === "SUBSCRIBED" || status === "ONLINE") {
+    if (status === "SUBSCRIBED") {
       if (_connLost) { _connLost = false; banner(_lastBanner || "🌐 已重新连上，等待下一帧……"); }
+      return;
+    }
+    if (status === "ONLINE") {
+      _connLost = true;
+      banner('🔄 网络已恢复，正在确认房间连接……', true);
       return;
     }
     if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "OFFLINE") {
