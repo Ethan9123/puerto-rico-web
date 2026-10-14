@@ -14,9 +14,12 @@
         const res = await fetch(base + '/' + path, body === undefined ? {signal: controller.signal} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: controller.signal});
         let data;
         try { data = await res.json(); } catch { throw new Error('房间服务未启用，请使用联机站点地址'); }
-        if (!res.ok) throw new Error(data.error || '房间服务连接失败');
+        if (!res.ok) { const error = new Error(data.error || '房间服务连接失败'); error.status = res.status; throw error; }
         return data;
       } finally { clearTimeout(timeout); if (signal) signal.removeEventListener('abort', abort); }
+    }
+    function disconnected(error) {
+      if (connected) { connected = false; callbacks.onStatus?.('CHANNEL_ERROR', error.message); }
     }
     function apply(data) {
       seq = data.seq;
@@ -38,9 +41,9 @@
         timer = setTimeout(poll, 100);
       } catch (e) {
         if (stopped) return;
-        connected = false; callbacks.onStatus?.('CHANNEL_ERROR', e.message);
+        disconnected(e);
         timer = setTimeout(poll, 2000);
-      }
+      } finally { polling = null; }
     }
     return {
       async open(meta, cb) {
@@ -58,14 +61,24 @@
         const id = clientId + ':' + (++sendSeq);
         for (let attempt = 0; attempt < 2; attempt++) {
           try { await call('send', {auth, id, message}); return 'ok'; }
-          catch (e) { if (attempt === 1) { callbacks.onStatus?.('CHANNEL_ERROR', e.message); return 'error'; } }
+          catch (e) {
+            if (stopped || (e.status >= 400 && e.status < 500 && e.status !== 429)) return 'error';
+            if (attempt === 1) { disconnected(e); return 'error'; }
+          }
         }
       },
       presence() { return list; },
       updateMeta(meta) { metadata = meta; },
+      reconnect() {
+        if (stopped) return;
+        connected = false;
+        // 已有轮询继续确认连接，避免并行轮询导致事件重复。
+        if (!polling) { clearTimeout(timer); timer = setTimeout(poll, 0); }
+      },
       close() {
+        if (stopped) return;
         stopped = true; clearTimeout(timer); polling?.abort();
-        call('leave', {auth}).catch(() => {});
+        if (auth) call('leave', {auth}).catch(() => {});
       },
     };
   };
