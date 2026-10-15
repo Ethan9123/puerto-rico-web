@@ -4,9 +4,20 @@
 //   ③ 因子化续局确实回到角色边界（azDecision type==="role"）或终局 —— 保证价值网在训练分布内
 //   ④ 安全闸：az 可建集合与 options 不一致时回退 null
 //   ⑤ 非 4 人局 / 扩展局 / 网未加载 → null
+//
+// ⚠ 第三轮更正：② ⑥ 此前是**空洞**的——手搓的 options（原价、前 8 栋）与 az 重建的可建集合永远对不上，
+//   安全闸直接返回 null，而 ② 显式接受 null、⑥ 靠 JS 强制转换 `null>=0 && null<n === true` 通过，
+//   评估代码一次都没跑到。现在：Math 带种子（局面可复现）、options 用 doBuilder 同一函数 buildBuilderOptions
+//   构造、断言 Number.isInteger，并用探针计数证明评估代码确实执行了（反向验证：换回手搓 options → 红）。
 'use strict';
 const { loadEngine } = require('../tools/_sandbox.js');
-const { sandbox, PRSim: S, run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'nn_wasm.js', 'sim_nn.js'] });
+function mulberry32(a) { return function () { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const SEEDED = {}; for (const k of Object.getOwnPropertyNames(Math)) SEEDED[k] = Math[k];
+let _r = mulberry32(20260923); SEEDED.random = () => _r();
+const { sandbox, PRSim: S, run } = loadEngine({ files: ['ai_dna.js', 'game.js', 'sim.js', 'sim_features.js', 'nn_wasm.js', 'sim_nn.js'], beforeLoad: sb => { sb.Math = SEEDED; } });
+const OPTS_SRC = process.env.VNET_TEST_OLD_OPTS   // 反向验证开关：用旧的手搓 options
+  ? `BUILDINGS.filter(b => (G.buildingStock[b.id]||0) > 0 && b.cost <= p.money + 3).slice(0,8).map(b => ({ b, cost: b.cost }))`
+  : `buildBuilderOptions(p, true)`;
 let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m); } };
 
 (async () => {
@@ -68,18 +79,21 @@ let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m);
       const p = G.players[0];
       const bcard = G.roleCards.find(r => r.name === 'Builder');
       bcard.taken = true; bcard.takenBy = 0;      // 模拟 Builder 已被 0 号选走
-      const opts = BUILDINGS.filter(b => (G.buildingStock[b.id]||0) > 0 && b.cost <= p.money + 3).slice(0,8).map(b => ({ b, cost: b.cost }));
+      const opts = ${OPTS_SRC};
       if (!opts.length) return 'NO_OPTIONS';
+      let evals = 0; const _e = PRSim.evalLeafVecNN; PRSim.evalLeafVecNN = function () { evals++; return _e.apply(this, arguments); };
       const a = vnetPickBuilding(p, opts, true);
       const b = vnetPickBuilding(p, opts, true);
-      return JSON.stringify({ a, b, n: opts.length });
+      PRSim.evalLeafVecNN = _e;
+      return JSON.stringify({ a, b, n: opts.length, evals });
     })()`;
     const raw = run(probe);
     if (raw === 'NO_OPTIONS') { console.log('② 跳过（无可建选项）'); }
     else {
-      const { a, b, n } = JSON.parse(raw);
-      console.log(`② vnetPickBuilding → ${a} (候选 ${n})，重复调用 → ${b}`);
-      ok(a === null || a === -1 || (a >= 0 && a < n), `② 返回值须为 null/-1/合法下标，实际 ${a}`);
+      const { a, b, n, evals } = JSON.parse(raw);
+      console.log(`② vnetPickBuilding → ${a} (候选 ${n})，重复调用 → ${b}，价值网评估 ${evals} 次`);
+      ok(Number.isInteger(a) && (a === -1 || (a >= 0 && a < n)), `② 返回值须为 -1 或合法下标（不接受 null），实际 ${a}`);
+      ok(evals > 0, `② 非空洞：价值网评估确实被调用（${evals} 次）`);
       ok(a === b, '② 同状态两次调用结果一致（确定性）');
       calls.push(a);
     }
@@ -123,21 +137,24 @@ let fails = 0; const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m);
       window._l6BuildEval = 'rollout'; window._l6VnetBuildSamples = 2;
       const p = G.players[0];
       const bc = G.roleCards.find(r => r.name === 'Builder'); bc.taken = true; bc.takenBy = 0;
-      const opts = BUILDINGS.filter(b => (G.buildingStock[b.id]||0) > 0 && b.cost <= p.money + 3).slice(0,8).map(b => ({ b, cost: b.cost }));
+      const opts = ${OPTS_SRC};
       if (!opts.length) { window._l6BuildEval = 'vnet'; return 'NO_OPTIONS'; }
+      let rolls = 0; const _ro = PRSim.rolloutToEnd; PRSim.rolloutToEnd = function () { rolls++; return _ro.apply(this, arguments); };
       const a = vnetPickBuilding(p, opts, true);
       const b = vnetPickBuilding(p, opts, true);
       // 网卸载后 rollout 模式仍应可用（不依赖 NN）
       PRSim.unloadNetwork();
       const c = vnetPickBuilding(p, opts, true);
       window._l6BuildEval = 'vnet'; window._l6VnetBuildSamples = 1;
-      return JSON.stringify({ a, b, c, n: opts.length });
+      PRSim.rolloutToEnd = _ro;
+      return JSON.stringify({ a, b, c, n: opts.length, rolls });
     })()`);
     if (raw === 'NO_OPTIONS') console.log('⑥ 跳过（无可建选项）');
     else {
-      const { a, b, c, n } = JSON.parse(raw);
-      console.log(`⑥ rollout 评估器 → ${a}（候选 ${n}，K=2），重复 → ${b}，卸载 NN 后 → ${c}`);
-      ok(a === -1 || (a >= 0 && a < n), `⑥ 返回合法下标或 PASS，实际 ${a}`);
+      const { a, b, c, n, rolls } = JSON.parse(raw);
+      console.log(`⑥ rollout 评估器 → ${a}（候选 ${n}，K=2），重复 → ${b}，卸载 NN 后 → ${c}，rollout ${rolls} 次`);
+      ok(Number.isInteger(a) && (a === -1 || (a >= 0 && a < n)), `⑥ 返回合法下标或 PASS（不接受 null），实际 ${a}`);
+      ok(rolls > 0, `⑥ 非空洞：rollout 评估确实执行（${rolls} 次）`);
       ok(a === b, '⑥ 同状态两次调用一致（公共随机数 → 确定性）');
       ok(c === a, '⑥ rollout 模式不依赖 NN（卸载后结果不变）');
     }

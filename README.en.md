@@ -47,9 +47,9 @@ Fully offline and permanent: no network, no local server, no installation. Every
 
 Pick "AI think time" on the setup screen (this is the search budget for Expert L5 / Grandmaster L6):
 - 🚀 **Fast** (0.1s) — for watching AI-vs-AI
-- ⚖️ **Normal** (1.5s)
+- ⚖️ **Normal** (2.5–3s)
 - 🧠 **Deep** (6s · default) — 2-round lookahead
-- 💎 **Extreme** (10s) — strongly recommended for playing against the AI
+- 💎 **Extreme** (12s) — strongly recommended for playing against the AI
 
 Hard / Expert / Grandmaster AIs **analyse the human's threats in real time** (goods count, affordable large-violet buildings, best sale price, production capacity, open worker slots) and pre-emptively grab roles to counter them.
 
