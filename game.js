@@ -6650,7 +6650,7 @@ async function endGame() {
     );
   }
   showModal(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body, [
-    { label: isSolo ? "再挑战一次" : "再玩一局", fn: () => location.reload(), primary: true },
+    { label: G._online ? "返回大厅" : isSolo ? "再挑战一次" : "再玩一局", fn: () => G._online && window.PRRoomLobby ? PRRoomLobby.returnToLobby() : location.reload(), primary: true },
   ]);
   // 联机观战：把终局画面 + 结算面板广播给客人（非房主时 no-op）
   if (typeof PRSpectate !== "undefined") PRSpectate.onHostGameOver(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body);

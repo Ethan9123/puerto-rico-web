@@ -1,6 +1,6 @@
 # 用 Cloudflare 在线托管（无需 ICP 备案）
 
-本项目是**纯前端静态站点**（`index.html` + `game.js` + 样式与 AI 数据都在浏览器里运行，没有后端）。
+本项目的游戏规则与 AI 在浏览器里运行，联机房间由 **Worker + SQLite Durable Object** 提供。完整运行、公开访问和测试步骤见 [ROOMS.md](ROOMS.md)。
 托管在 **Cloudflare**（Workers + 静态资源）上，节点都在中国大陆境外，因此**不触发 ICP 备案要求**——
 备案只对「服务器位于中国大陆境内」的站点强制。境外托管面向公众访问是合法且常见的做法。
 
@@ -28,8 +28,7 @@ Cloudflare 现已统一为 **Workers + 静态资源** 的 Git 流程：
 4. **Create / Deploy**，约 1 分钟后得到地址 `https://puerto-rico-web.<子域>.workers.dev` —— 打开即可在线玩。
 5. 之后每次推送到 `main`，Cloudflare 会自动重新部署（非生产分支用 `npx wrangler versions upload` 出预览版）。
 
-> 关键点：`wrangler.toml` 用的是 `[assets] directory = "."`，所以 `npx wrangler deploy` 会以
-> 「仅静态资源 Worker」形式部署，自动在 `/` 提供 `index.html`，无需写任何 Worker 脚本。
+> `wrangler.toml` 的自定义构建会将网页资源整理到 `.site`，再随 `worker/index.js` 一起部署；`/rooms/*` 由房间服务处理，其余网页资源由静态资源绑定提供。
 
 ---
 

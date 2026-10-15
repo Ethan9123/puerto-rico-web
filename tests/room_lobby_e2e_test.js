@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {findChrome} = require('./browser_runtime.js');
+const {findChrome, assertRoomSite} = require('./browser_runtime.js');
 let chromium;
 try { ({chromium} = require('playwright')); } catch { console.log('skipped: playwright 未安装'); process.exit(2); }
 const executablePath = findChrome(chromium);
@@ -12,7 +12,7 @@ async function until(fn) {
   while (!await fn()) { if (Date.now() > deadline) throw new Error('lobby condition timed out'); await new Promise(r => setTimeout(r, 100)); }
 }
 (async () => {
-  try { await fetch(base, {signal: AbortSignal.timeout(2000)}); }
+  try { await assertRoomSite(base); }
   catch (e) { if (!process.env.ROOMS_TEST_BASE) { console.log('skipped: 本机房间服务未启动'); process.exit(2); } throw e; }
   const browser = await chromium.launch({executablePath});
   const hostContext = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true});

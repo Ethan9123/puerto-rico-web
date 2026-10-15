@@ -38,6 +38,8 @@ const connect = (role, name, auth) => call('connect', {auth, meta: {role, name, 
   const rejoined = (await connect('guest', 'guest-reloaded', g.auth)).data;
   assert.equal(rejoined.token, g.token);
   assert.equal(rejoined.latest.snap._seq, 42);
+  await call('send', {auth: h.auth, id: 'late-state', message: {type: 'state', snap: {_seq: 41, players: []}}});
+  assert.equal((await connect('guest', 'after-late-state', g.auth)).data.latest.snap._seq, 42, 'late HTTP state must not roll back reconnect state');
   const rh = (await connect('host', 'host-reloaded', h.auth)).data;
   assert.equal(rh.token, h.token);
   assert.equal((await connect('guest', 'stolen-role', h.auth)).status, 403);
@@ -69,5 +71,12 @@ const connect = (role, name, auth) => call('connect', {auth, meta: {role, name, 
   const large = (await call('poll?auth=' + g.auth + '&since=' + pending.seq)).data;
   assert.equal(large.reset, true, 'large histories must be pruned before reaching the storage limit');
   assert.equal(large.latest.snap._seq, 319);
+  await new Promise(resolve => setTimeout(resolve, 1050));
+  await call('send', {auth: h.auth, id: 'finish', message: {type: 'gameover', snap: {_seq: 320, gameOver: true}, body: '结算'}});
+  await call('send', {auth: h.auth, id: 'late-after-finish', message: {type: 'state', snap: {_seq: 318}}});
+  const finished = (await connect('guest', 'finished', g.auth)).data;
+  assert.equal(finished.latest.type, 'gameover');
+  assert.equal(finished.latest.snap._seq, 320);
+  assert.equal(finished.pending, null);
   console.log('ROOMS OK: create/join, authentication, sender validation, deduplication, long poll, reconnect, presence, gap recovery');
 })().catch(e => { console.error(e); process.exitCode = 1; });

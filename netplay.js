@@ -326,10 +326,25 @@
     for (const s in _seatOwners) if (_seatOwners[s] === _myToken) return +s;
     return -1;
   }
+  function cancelGuestInput() {
+    _guestRequest = null; _guestBusy = false;
+    guestTurnEnd(); sendStatus(null);
+    try { if (typeof root.cancelPendingSelect === 'function') root.cancelPendingSelect(); } catch (e) {}
+    try { if (typeof hideModal === 'function') hideModal(); } catch (e) {}
+  }
+  function syncGuestState(snap) {
+    if (_role !== 'guest' || !snap._online || !snap._seatOwners) return;
+    const previousSeat = mySeat();
+    _seatOwners = Object.assign({}, snap._seatOwners);
+    if (snap.gameOver || (previousSeat >= 0 && previousSeat !== mySeat())) cancelGuestInput();
+  }
   async function onInputRequest(msg) {
     if (_role !== "guest") return;
+    if (msg.snap && typeof PRSpectate !== 'undefined') PRSpectate.applyState(msg.snap);
+    if (game()?.gameOver) return;
     if (_seatOwners[msg.seat] !== _myToken) return;   // 不是我的座位（按令牌），忽略
     if (_guestBusy && _guestRequest === msg.reqId) return;
+    if (_guestBusy) cancelGuestInput();
     _guestRequest = msg.reqId;
     // 先把房主随请求附带的最新状态套进来，保证选项 UI 与房主一致
     if (msg.snap && typeof PRSpectate !== "undefined" && PRSpectate.applyState) {
@@ -339,7 +354,12 @@
     guestTurnStart(msg.deadline);                   // 通知 + 倒计时（P2）
     let value = null;
     try { value = await localRun(msg.kind, Object.assign({ seat: msg.seat }, msg.payload)); }
-    finally { if (_guestRequest === msg.reqId) { _guestBusy = false; guestTurnEnd(); } }
+    finally {
+      if (_guestRequest === msg.reqId) {
+        _guestBusy = false; guestTurnEnd();
+        if (typeof PRSpectate !== 'undefined') PRSpectate.flushQueuedState();
+      }
+    }
     if (_guestRequest !== msg.reqId) return; // 旧选择结束时，新请求可能已接替它，不能清掉新提示或回传旧应答。
     // 回传带 token：房主据此校验「应答者就是该座位的主人」（P5-1）。重复送达是幂等的（房主对未知 reqId 忽略），
     // 所以「其实送到了但 ack 丢了」的重试不会造成双重应答。
@@ -444,8 +464,8 @@
   // 客人观战时刷新「认领座位」栏：自己无座位 且 存在被接管的座位 → 列出可认领按钮
   function refreshReclaimUI() {
     if (_role !== "guest" || !_online) return removeReclaimUI();
-    if (mySeat() >= 0) return removeReclaimUI();       // 我已有座位，无需认领
     const g = game();
+    if (mySeat() >= 0 || g?.gameOver) return removeReclaimUI();
     const tos = g && g._takenOverSeats ? g._takenOverSeats : null;
     const seats = tos ? Object.keys(tos) : [];
     if (!seats.length) return removeReclaimUI();
@@ -465,15 +485,8 @@
   // 客人侧：自己的座位被房主 AI 接管 → 退出输入态、横幅改为「已被接管」（之后纯观战）
   function onTakenOver(msg) {
     if (msg.seat !== mySeat()) return;
-    _guestRequest = null;
-    _guestBusy = false;
-    guestTurnEnd();
-    sendStatus(null);
+    cancelGuestInput();
     delete _seatOwners[msg.seat]; // 本端也撤掉归属：不再期待该座位的请求
-    // 清掉客人手里没答完的决策 UI（弹窗 / 棋盘选择高亮）。用 cancelPendingSelect 而非
-    // resolveBoardSelect(null)——后者会把 null 传进 humanPickRole 等下游导致崩溃。
-    try { if (typeof root.cancelPendingSelect === "function") root.cancelPendingSelect(); } catch (e) {}
-    try { if (typeof hideModal === "function") hideModal(); } catch (e) {}
     // 横幅会被后续 state 广播覆盖，故用 toast 给一个持久通知
     try { if (typeof showToast === "function") showToast('<div class="t-title">🤖 你已被专家 AI 接管</div><div class="t-sub">' + esc(msg.reason || "超时/掉线") + " · 你现在是观战</div>", { kind: "role" }); } catch (e) {}
   }
@@ -521,6 +534,7 @@
   root.PRNetPlay = {
     setup, teardown, maybeRoute, handleMessage, onPresence,
     reclaim, refreshReclaimUI,
+    syncGuestState,
     isOnline: () => _online,
     role: () => _role,
     mySeat,

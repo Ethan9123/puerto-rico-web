@@ -5,6 +5,19 @@
   "use strict";
   let session = null;
 
+  function clearReconnect() {
+    try { sessionStorage.removeItem('prnet_room'); sessionStorage.removeItem('prnet_role'); } catch (e) {}
+    const url = new URL(location.href);
+    url.searchParams.delete('room');
+    history.replaceState(null, '', url);
+  }
+  function returnToLobby() {
+    clearReconnect();
+    if (session) session.close();
+    location.reload();
+  }
+  window.PRRoomLobby = {clearReconnect, returnToLobby};
+
   function el(tag, attrs, children) {
     const e = document.createElement(tag);
     if (attrs) for (const k in attrs) { if (k === "class") e.className = attrs[k]; else if (k === "html") e.innerHTML = attrs[k]; else e.setAttribute(k, attrs[k]); }
@@ -27,7 +40,7 @@
   }
 
   function showRoom(panel, code, role) {
-    const mode = PRNet.crossDevice() ? "跨设备 (Cloudflare)" : "本机多标签 (本地测试)";
+    const mode = PRNet.crossDevice() ? "跨设备联机" : "本机多标签 (本地测试)";
     panel.querySelector(".lobby-actions").classList.add("hidden");
     const room = panel.querySelector(".lobby-room");
     room.classList.remove("hidden");
@@ -289,7 +302,7 @@
     };
     const btnLeave = el("button", { class: "qs-btn lobby-btn", type: "button" }, ["离开房间"]);
     btnLeave.onclick = () => {
-      try { sessionStorage.removeItem("prnet_room"); sessionStorage.removeItem('prnet_role'); } catch (e) {} // 主动离开 → 不再自动重连
+      clearReconnect();
       if (typeof PRSpectate !== "undefined") { PRSpectate.stopHosting(); PRSpectate.stopSpectating(); }
       if (typeof PRNetPlay !== "undefined") PRNetPlay.teardown();
       if (session) { session.close(); session = null; } window.PR_SESSION = null;
@@ -306,7 +319,7 @@
       el("div", { class: "lobby-actions" }, [
         el("div", { class: "lobby-row" }, [btnCreate]),
         el("div", { class: "lobby-row" }, [codeInput, btnJoin]),
-        el("div", { class: "lobby-hint", html: PRNet.crossDevice() ? "联机服务已配置，创建或加入房间后连接。" : "离线模式：当前为<b>本机多标签</b>测试模式（同一浏览器开两个标签可联机）。" }),
+        el("div", { class: "lobby-hint", html: PRNet.crossDevice() ? "无需注册。创建房间后，把邀请链接发给朋友即可加入。" : "离线模式：当前为<b>本机多标签</b>测试模式（同一浏览器开两个标签可联机）。" }),
       ]),
       el("div", { class: "lobby-room hidden" }, [
         el("div", { class: "lobby-row" }, [el("span", null, ["房间码："]), el("b", { class: "lobby-code", style: "font-size:22px;letter-spacing:3px;color:#f3c969" }, ["----"])]),
@@ -325,7 +338,7 @@
           el('label', null, [randomSeats, ' 随机座位（含房主、朋友和机器人）']),
           readiness,
           el('div', {class: 'lobby-row'}, [btnHostStart]),
-          el('div', {class: 'lobby-hint'}, ['人数按真人和机器人合计，最多 5 人；机器人可在开局后由新朋友认领。'])
+          el('div', {class: 'lobby-hint'}, ['最多 5 人，机器人可由新朋友认领。对局期间请房主保持页面打开；刷新可恢复进度。'])
         ]),
         el("div", { class: "lobby-hint lobby-guest-wait hidden" }, ["⏳ 等待房主开始……开局后自动入座，轮到你时会提示操作。"]),
         el("div", { class: "lobby-row" }, [btnLeave]),

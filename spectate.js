@@ -78,7 +78,7 @@
   function stopHosting() { hostSession = null; if (timer) { clearTimeout(timer); timer = null; } }
   function onHostGameOver(title, body) {
     if (!hostSession) return;
-    try { sessionStorage.removeItem("prnet_room"); sessionStorage.removeItem("prnet_role"); } catch (e) {} // 结束的局不再自动重开
+    if (root.PRRoomLobby) root.PRRoomLobby.clearReconnect();
     if (timer) { clearTimeout(timer); timer = null; }
     const snap = snapshot();
     try { hostSession.send({ type: "gameover", snap, title: title || "", body: body || "" }); } catch (e) {}
@@ -141,20 +141,24 @@
     }
   }
 
-  let _lastSeq = 0, _staleDropped = 0;
+  let _lastSeq = 0, _staleDropped = 0, _queuedSnap = null;
   function applyState(snap) {
     if (!snap || typeof Game === "undefined") return;
+    if (_queuedSnap && _queuedSnap._seq > snap._seq) snap = _queuedSnap;
     // 帧号（P5-2）：比已收到的旧 / 相同 → 丢弃，棋盘不回退。没有帧号的（旧版房主）照旧接受。
     if (typeof snap._seq === "number") {
       if (snap._seq <= _lastSeq) { _staleDropped++; return; }
-      _lastSeq = snap._seq;
     }
-    // 远程出手进行中：客人正盯着自己的决策 UI，别被房主的 state 广播刷掉
-    if (typeof PRNetPlay !== "undefined" && PRNetPlay.guestBusy()) return;
     // 联机对局：首次拿到带座位归属的状态时，把客人接入远程出手层
     if (snap._online && snap._seatOwners && typeof PRNetPlay !== "undefined" && !PRNetPlay.isOnline() && root.PR_SESSION) {
       PRNetPlay.setup({ session: root.PR_SESSION, role: "guest", seatOwners: snap._seatOwners, myToken: root.PR_SESSION.token, myId: root.PR_SESSION.clientId, online: true });
     }
+    if (typeof PRNetPlay !== "undefined") {
+      PRNetPlay.syncGuestState(snap);
+      // 输入中保留最新状态；撤销座位或结算仍需立即终止旧输入。
+      if (PRNetPlay.guestBusy()) { _queuedSnap = snap; return; }
+    }
+    _queuedSnap = null;
     try {
       const g = Object.assign(Object.create(Game.prototype), snap);
       for (const p of (g.players || [])) {
@@ -188,14 +192,16 @@
       if (typeof render === "function") render();
       // 刷新「认领座位」栏：若我无座位且有被 AI 接管的座位，显示认领按钮
       if (typeof PRNetPlay !== "undefined" && PRNetPlay.refreshReclaimUI) PRNetPlay.refreshReclaimUI();
+      if (typeof snap._seq === 'number') _lastSeq = snap._seq;
     } catch (e) { console.warn("[spectate] applyState failed:", e); }
   }
 
   function applyGameOver(msg) {
     applyState(msg && msg.snap);
+    if (root.PRRoomLobby) root.PRRoomLobby.clearReconnect();
     if (msg && msg.body && typeof showModal === "function") {
       showModal(msg.title || "🎉 游戏结束", msg.body, [
-        { label: "返回大厅", fn: () => location.reload(), primary: true },
+        { label: "返回大厅", fn: () => root.PRRoomLobby ? root.PRRoomLobby.returnToLobby() : location.reload(), primary: true },
       ]);
     }
   }
@@ -207,11 +213,11 @@
   }
 
   function startSpectating(session, info) {
-    if (session !== guestSession) _lastSeq = 0;   // 换了房间 / 会话：帧号基准重置（不同房主的时钟不可比）
+    if (session !== guestSession) { _lastSeq = 0; _queuedSnap = null; _hostGone = false; _connLost = false; _lastBanner = ''; }
     guestSession = session;
     hostName = (info && info.hostName) || "";
   }
-  function stopSpectating() { guestSession = null; removeBanner(); }
+  function stopSpectating() { guestSession = null; _queuedSnap = null; removeBanner(); }
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
@@ -220,6 +226,7 @@
     //   守卫恒假 → 「先把随请求附带的最新状态套进来再开决策 UI」这一步从未执行：客人在旧棋盘上做决策，
     //   房主重连后横幅还卡在「房主正在重连…等待下一帧」（_guestBusy 又挡住了后续帧）。E2E ⑫ 抓出来的。
     applyState,
+    flushQueuedState: () => { if (_queuedSnap) applyState(_queuedSnap); },
     snapshot,
     startHosting, stopHosting, onHostRender, onHostGameOver, pushNow,
     startSpectating, stopSpectating, handleMessage,

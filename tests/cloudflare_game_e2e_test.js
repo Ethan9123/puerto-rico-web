@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const {findChrome} = require('./browser_runtime.js');
+const {findChrome, assertRoomSite} = require('./browser_runtime.js');
 let chromium;
 try { ({chromium} = require('playwright')); } catch { console.log('skipped: playwright 未安装'); process.exit(2); }
 const executablePath = findChrome(chromium);
@@ -31,7 +31,7 @@ async function until(fn, ms = 20000) {
   while (!await fn()) { if (Date.now() > end) throw new Error('condition timed out'); await new Promise(r => setTimeout(r, 100)); }
 }
 (async () => {
-  try { await fetch(base + '/', {signal: AbortSignal.timeout(2000)}); }
+  try { await assertRoomSite(base); }
   catch (e) { if (!process.env.ROOMS_TEST_BASE) { console.log('skipped: 本机房间服务未启动'); process.exit(2); } throw e; }
   const browser = await chromium.launch({executablePath});
   const contexts = [await browser.newContext(), await browser.newContext()];
@@ -125,6 +125,23 @@ async function until(fn, ms = 20000) {
     fs.mkdirSync(artifacts, {recursive: true});
     await guest.screenshot({path: path.join(artifacts, 'cloudflare-game-complete.png'), fullPage: true});
     console.log('CLOUDFLARE GAME E2E OK:', {actions, scores: await scores(host), reloadedGuest, reloadedHost, tookOver});
+    if (process.env.ROOM_TEST_FINISH === '1') {
+      for (const p of [guest, host]) {
+        await p.getByRole('button', {name: '返回大厅', exact: true}).click();
+        await p.getByRole('button', {name: '创建房间', exact: true}).waitFor({state: 'visible'});
+        assert.equal(new URL(p.url()).searchParams.has('room'), false);
+        assert.equal(await p.evaluate(() => sessionStorage.getItem('prnet_room')), null);
+        assert.equal(await p.locator('#game-screen').isVisible(), false);
+      }
+      await host.getByRole('button', {name: '创建房间', exact: true}).click();
+      await host.locator('.lobby-code').waitFor({state: 'visible'});
+      const nextCode = await host.locator('.lobby-code').innerText();
+      assert.notEqual(nextCode, code);
+      await guest.locator('.lobby-join-code').fill(nextCode);
+      await guest.getByRole('button', {name: '加入', exact: true}).click();
+      await until(() => host.evaluate(() => PR_SESSION.presence().length === 2));
+      console.log('GAME FINISH E2E OK: both players returned to lobby and joined a fresh room');
+    }
   } catch (e) {
     fs.mkdirSync(artifacts, {recursive: true});
     await host.screenshot({path: path.join(artifacts, 'cloudflare-game-failure.png'), fullPage: true}).catch(() => {});
