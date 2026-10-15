@@ -104,7 +104,12 @@ export class PuertoRoom {
         clean = {type: 'room-config', humans: clean.humans, bots: clean.bots, botLevel: clean.botLevel, randomSeats: clean.randomSeats};
       }
       if (member.meta.role === 'guest') { clean.token = member.meta.token; clean.name = member.meta.name; }
-      if (clean.type === 'state' || clean.type === 'gameover') this.data.latest = clean;
+      if (clean.type === 'state' || clean.type === 'gameover') {
+        const previous = this.data.latest;
+        // HTTP 重试可能晚于新帧到达；重连存档必须单调前进，终局不可被旧广播覆盖。
+        if (previous?.type === 'gameover' || (Number.isFinite(previous?.snap?._seq) && (!Number.isFinite(clean.snap?._seq) || clean.snap._seq <= previous.snap._seq))) return reply({ok: true});
+        this.data.latest = clean;
+      }
       if (clean.type === 'room-config') this.data.config = clean;
       if (clean.type === 'input-request') this.data.pending = clean;
       if ((clean.type === 'input-response' && clean.reqId === this.data.pending?.reqId && this.data.latest?.snap?._seatOwners?.[this.data.pending.seat] === member.meta.token) || clean.type === 'takeover' || clean.type === 'gameover') this.data.pending = null;

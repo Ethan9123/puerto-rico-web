@@ -13,4 +13,9 @@ function findChrome(chromium) {
   }
   return candidates.find(p => p && fs.existsSync(p));
 }
-module.exports = {findChrome};
+async function assertRoomSite(base) {
+  const res = await fetch(base, {signal: AbortSignal.timeout(15000)});
+  if (new URL(res.url).hostname.endsWith('.cloudflareaccess.com')) throw new Error('游戏被 Cloudflare Access 登录拦截，朋友无法直接访问');
+  if (!res.ok || !(await res.text()).includes('room-transport.js')) throw new Error('游戏页面未正常加载（HTTP ' + res.status + '）');
+}
+module.exports = {findChrome, assertRoomSite};
