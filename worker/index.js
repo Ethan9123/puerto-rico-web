@@ -13,7 +13,7 @@
 //
 // 绑定（见 wrangler.toml）：
 //   KV     PR_TRACES   存储每局样本（未配置时 /collect、/dump、/stats 返回 503，站点不受影响）
-//   Secret DUMP_TOKEN  保护 /dump、/stats（未设置则不保护，强烈建议设置）
+//   Secret DUMP_TOKEN protects /dump and /stats; requests are denied if it is missing.
 //
 // 输出的每一行都是 {f,a,v,vv,n}，与 tools/selfplay_dump.js 同构，可直接喂 train/load_data.py。
 
@@ -127,7 +127,7 @@ async function handleCollect(request, env) {
 }
 
 function checkToken(url, env) {
-  if (!env.DUMP_TOKEN) return true;  // 未设 token → 不保护（建议 wrangler secret put DUMP_TOKEN）
+  if (!env.DUMP_TOKEN) return false; // Missing configuration must never make exports public.
   return url.searchParams.get("token") === env.DUMP_TOKEN;
 }
 
