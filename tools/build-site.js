@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const out = path.join(root, '.site');
+// Stage from a clean output directory so stale files cannot remain public.
+fs.rmSync(out, {recursive: true, force: true});
 fs.mkdirSync(out, {recursive: true});
 for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
   const name = entry.name;
@@ -19,4 +21,6 @@ function copyDirectory(source, target) {
 for (const name of ['assets', 'nn_wasm']) {
   if (fs.existsSync(path.join(root, name))) copyDirectory(path.join(root, name), path.join(out, name));
 }
+// Wrangler reads ignore rules from its assets directory, not the repository root.
+fs.copyFileSync(path.join(root, '.assetsignore'), path.join(out, '.assetsignore'));
 console.log('Static site staged in .site');
