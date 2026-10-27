@@ -3,6 +3,8 @@
 # /collect、/dump、/stats 三个 API，其余路径回退到静态资源（env.ASSETS）。
 # 非网页文件由同目录的 .assetsignore 排除（含 worker/ 源码本身）。
 name = "puerto-rico-web"
+workers_dev = false
+preview_urls = false
 compatibility_date = "2026-06-16"
 main = "worker/index.js"
 

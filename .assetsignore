@@ -10,5 +10,18 @@ train
 *.py
 *.md
 worker
-sim_az.js
-mcts_value.json
+
+# Security: never publish local secrets or deployment metadata.
+**/.git
+**/.hg
+**/.svn
+**/.env*
+**/.dev.vars*
+**/.aws
+**/.docker
+**/.wrangler
+**/node_modules
+**/.DS_Store
+wrangler.jsonc
+wrangler.json
+wrangler.toml
