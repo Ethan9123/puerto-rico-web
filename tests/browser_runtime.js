@@ -3,7 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 function findChrome(chromium) {
-  const candidates = [process.env.CHROME_PATH, chromium.executablePath(),
+  const candidates = [process.env.CHROME_PATH, chromium.executablePath(), '/usr/bin/chromium',
     '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium/chrome-linux/chrome'];
   const roots = ['/opt/pw-browsers', path.join(os.homedir(), 'AppData/Local/ms-playwright'), path.join(os.homedir(), '.cache/ms-playwright')];
   for (const root of roots) if (fs.existsSync(root)) {
