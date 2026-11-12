@@ -62,7 +62,7 @@
 # 清单: 首次运行写 manifest.json；以后每次运行都重算全部字段并逐一比较，任一不同 → 打印哪几个字段、
 #   exit 2，不跑任何东西（换配置请换 TAG）。engineClean 为 false 时拒绝启动（exit 2），除非 ALLOW_DIRTY=1。
 #   没有 manifest.json 但目录里已有 c-* / merged.jsonl（清单被删过）→ exit 2（否则会把新配置写进清单、混跑两种配置）。
-#   运行中每次启动新分片前、以及每片结束时复查引擎 HEAD（清单记为干净时还复查工作树）；一旦漂移就停止派发，
+#   运行中每次启动新分片前、每片结束及合并发布前复查模型内容哈希和引擎 HEAD（清单记为干净时还复查工作树）；一旦漂移就停止派发，
 #   漂移后才结束的片一律作废（删 .done，不计 attempts——worker 会在运行中读盘：首个 L6 决策懒加载 NN、
 #   EVAL_RP_K 池 worker 构造时读 ai_worker.js/sim.js，所以"启动时已读进内存"不成立），等在跑的片结束后 exit 2。
 #
@@ -151,10 +151,10 @@ git_dirty() { # 输出非空 = 脏（git 出错也当脏）
 ENGINE_COMMIT=$(git_head) || ENGINE_COMMIT=""
 if [ -n "$ENGINE_COMMIT" ] && [ -z "$(git_dirty)" ]; then ENGINE_CLEAN=true; else ENGINE_CLEAN=false; fi
 
-CUR_MANIFEST=$(
+build_manifest() {
   RA_TAG="$TAG" RA_ROOT="$ENGINE_ROOT" RA_COMMIT="$ENGINE_COMMIT" RA_CLEAN="$ENGINE_CLEAN" RA_LO="$LO" RA_NN="$NN" \
   RA_SEED="$SEED" RA_GAMES="$GAMES" RA_G0="$G0" RA_CHUNK="$CHUNK" RA_KNOBS="$KNOBS_STR" RA_MODS="$MODS_STR" \
-  RA_CRN="$EVAL_CRN" RA_RPK="$EVAL_RP_K" node -e '
+  RA_CRN="${EVAL_CRN:-0}" RA_RPK="${EVAL_RP_K:-}" node -e '
     const fs = require("fs"), path = require("path"), crypto = require("crypto");
     const e = process.env, orNull = s => (s === undefined || s === "" ? null : s);
     // 与 tools/_sandbox.js 的 fetch shim 同一解析规则：存在的绝对路径原样用，否则相对引擎根
@@ -181,7 +181,9 @@ CUR_MANIFEST=$(
       lo: +e.RA_LO, nn: e.RA_NN, seed: +e.RA_SEED, games: +e.RA_GAMES, g0: +e.RA_G0, chunk: +e.RA_CHUNK,
       knobs: orNull(e.RA_KNOBS), mods: orNull(e.RA_MODS), crn: +e.RA_CRN, rpK: orNull(e.RA_RPK),
       nnSha256, knobFiles,
-    }, null, 2) + "\n");') || die 1 "生成清单失败"
+    }, null, 2) + "\n");'
+}
+CUR_MANIFEST=$(build_manifest) || die 1 "生成清单失败"
 
 # 与磁盘上的清单逐字段比较：一致 → 0；不一致 → 打印差异并返回 2；清单损坏 → 2
 manifest_diff() {
@@ -401,12 +403,20 @@ if [ -n "$EVAL_RP_K" ]; then export EVAL_RP_K; else unset EVAL_RP_K; fi
 
 DRIFT=""
 check_drift() {  # 引擎在运行中变了 → 设 DRIFT 并返回 0
-  local h d
+  local h d current
   h=$(git_head) || h=""
   if [ "$h" != "$ENGINE_COMMIT" ]; then DRIFT="引擎 HEAD ${ENGINE_COMMIT:-none} → ${h:-none}"; return 0; fi
   if [ "$ENGINE_CLEAN" = true ]; then
     d=$(git_dirty)
     if [ -n "$d" ]; then DRIFT="引擎工作树变脏: $(printf '%s' "$d" | head -3 | tr '\n' ' ')"; return 0; fi
+  fi
+  # git status cannot see ignored/external NN and knob files. Re-hash the
+  # exact same inputs and resolution rules used to register this arm.
+  if ! current=$(build_manifest); then
+    DRIFT="模型输入无法重新读取"; return 0
+  fi
+  if [ "$current" != "$CUR_MANIFEST" ]; then
+    DRIFT="模型输入内容已漂移（NN / L6_KNOBS 文件哈希）"; return 0
   fi
   return 1
 }
@@ -488,6 +498,8 @@ fi
 (( N_COMPLETE == ${#CHUNKS[@]} )) || exit 3
 
 # ---------- 合并 ----------
+# Also check when every chunk was already complete (no dispatch/finish check).
+if check_drift; then die 2 "$DRIFT — 拒绝合并分片"; fi
 tmp="$DIR/merged.jsonl.tmp.$$"; : > "$tmp" || die 1 "写 $tmp 失败"
 mtmp="$DIR/merged.meta.jsonl.tmp.$$"; : > "$mtmp" || die 1 "写 $mtmp 失败"
 nomsg=0
@@ -503,6 +515,7 @@ if (( rows != GAMES )); then
   echo "[run_arm] ERROR: 合并后 $rows 行 ≠ GAMES=$GAMES（分片缺行尾换行?），未写 merged.jsonl" >&2
   exit 3
 fi
+if check_drift; then die 2 "$DRIFT — 拒绝发布合并结果"; fi
 mv -f "$tmp" "$DIR/merged.jsonl" && mv -f "$mtmp" "$DIR/merged.meta.jsonl" || die 1 "写合并文件失败"
 (( nomsg )) && log "merged.meta.jsonl: $nomsg 片缺侧车，已跳过"
 log "→ $DIR/merged.jsonl"

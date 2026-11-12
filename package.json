@@ -1,4 +1,5 @@
 {
+  "name": "puerto-rico-web",
   "//": "网页原生 JS；Cloudflare 房间服务替代 Supabase。",
   "devDependencies": {
     "playwright": "^1.63.0",
