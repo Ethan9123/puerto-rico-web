@@ -389,7 +389,7 @@ class Game {
     };
   }
 
-  constructor(numPlayers, humanName, expansion, buccaneer) {
+  constructor(numPlayers, humanName, expansion, buccaneer, localSeat = 0) {
     this.numPlayers = numPlayers;
     // —— 5 个独立扩展模块开关（可任意组合）；旧字符串经 normalizeModules 映射为累积集合 ——
     const mods = Game.normalizeModules(expansion, buccaneer);
@@ -422,7 +422,7 @@ class Game {
     BLD_BY_ID[16].cost = this.balanceMode ? 7 : 8;
     this.players = [];
     for (let i = 0; i < numPlayers; i++) {
-      this.players.push(this.newPlayer(i, i === 0 ? humanName : `电脑P${i}`, i === 0));
+      this.players.push(this.newPlayer(i, i === localSeat ? humanName : `电脑P${i}`, i === localSeat));
     }
     this.governor = Math.floor(Math.random() * numPlayers);
     this.currentRoleIdx = -1;
@@ -1303,7 +1303,7 @@ function castColorMaybe() { return Math.random() < 0.22 ? ` ${castPick(CAST_COLO
 function isLocalHuman(p, i) {
   if (typeof PRNetPlay !== "undefined" && PRNetPlay.isOnline()) {
     const ms = PRNetPlay.mySeat();
-    return ms >= 0 ? i === ms : !p._remote;
+    return p.isHuman && (ms >= 0 ? i === ms : !p._remote);
   }
   return p.isHuman;
 }
@@ -1575,10 +1575,9 @@ function commentaryPostRole(me, pred, chosenRole) {
 }
 
 function startGame(netOpts) {
-  // 联机房主开局：netOpts = { online, seatOwners:{seat:clientId}, names:{seat:name} }
-  // v1 仅基础规则（扩展联机留到 Phase 3.1）；座位 0 = 房主本地，seatOwners 中的座位 = 远程客人，其余 = AI
+  // 联机房主开局：hostSeat 是本地座位，seatOwners 是远程座位，其余为机器人。
   const online = !!(netOpts && netOpts.online && netOpts.seatOwners);
-  const n = parseInt(document.getElementById("player-count").value);
+  const n = online && netOpts.numPlayers ? netOpts.numPlayers : parseInt(document.getElementById("player-count").value);
   const name = document.getElementById("player-name").value || "玩家";
   // 单人闯关没有 AI 对手，强制玩家为真人（忽略"全部 AI"勾选）
   const allAI = !online && (n >= 2) && !!document.getElementById("all-ai")?.checked;
@@ -1591,7 +1590,7 @@ function startGame(netOpts) {
     buccaneer:     !!document.getElementById("mod-buccaneer")?.checked,
     balance:       !!document.getElementById("mod-balance")?.checked,
   };
-  G = new Game(n, name, mods); // 第 4 参省略，海盗已在 mods 内
+  G = new Game(n, name, mods, undefined, online ? (netOpts.hostSeat ?? 0) : 0);
   G.expansionType = mods;
   let needsNN = false;
   // 读取每个 CPU 的独立难度
@@ -1610,7 +1609,11 @@ function startGame(netOpts) {
   if (online) {
     // 把被客人占据的座位改回人类（远程），其余保持 AI；座位 0 是房主本地人类
     G._online = true;
+    G._hostSeat = Number.isInteger(netOpts.hostSeat) ? netOpts.hostSeat : 0;
     G._seatOwners = netOpts.seatOwners;
+    G._seatTokens = Object.assign({}, netOpts.seatOwners);
+    G.players.forEach((p, i) => { p.isHuman = i === G._hostSeat; p._remote = null; p.name = p.isHuman ? name : `电脑P${i}`; });
+    delete G.players[G._hostSeat]._aiLevel;
     for (const s in netOpts.seatOwners) {
       const seat = +s, p = G.players[seat];
       if (!p) continue;
@@ -1621,15 +1624,18 @@ function startGame(netOpts) {
     // 人不满：空座位一律用【专业级(专家 L5)】AI 补齐（与掉线/挂机接管同档），并登记为
     // 「可认领」——后来的人进房间能直接坐下顶替这些 AI（复用重连认领那套）。
     G._takenOverSeats = G._takenOverSeats || {};
+    needsNN = false;
     let aiFill = 0;
     G.players.forEach((p, i) => {
-      if (p.isHuman || i === 0) return;     // 真人 / 房主本地座位跳过
-      p._aiLevel = 5;                        // 专业级
+      if (p.isHuman) return;
+      p._aiLevel = netOpts.botLevel || 5;
+      if (p._aiLevel === 6) needsNN = true;
       if (!p._dna) loadDNA(p, i);
       G._takenOverSeats[i] = "AI 补位";       // 进广播 → 客人可「认领座位」顶替
       aiFill++;
     });
-    if (aiFill > 0) G.logEvent(`🤖 人数不足，${aiFill} 个空位由专业级 AI 补位（有人进房可认领顶替）`, "role");
+    if (aiFill > 0) G.logEvent(`🤖 ${aiFill} 个机器人加入（L${netOpts.botLevel || 5}，有人进房可认领顶替）`, "role");
+    G.logEvent(`🪑 本局房主位于座位 ${G._hostSeat + 1}${netOpts.randomSeats ? '，座位已随机分配' : ''}`, "role");
   }
   window._allAIMode = !!allAI;
   window._liveCastOn = !!document.getElementById("live-cast")?.checked; // 人机对战实况解说开关
@@ -1836,11 +1842,11 @@ function prDeviceId() {
     let id = localStorage.getItem(DEVICE_KEY);
     if (!id || !/^[a-z0-9]{8,40}$/.test(id)) { id = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).slice(0, 24); localStorage.setItem(DEVICE_KEY, id); }
     return id;
-  } catch (e) { return "anon000000"; }
+  } catch (e) { return null; }
 }
 // 存档槽位。单机：原来的 SAVE_KEY / deviceId（路径完全不变）。
 // 联机【房主】：按房间码独立一槽——本地 key 带 :room:，KV id 用 "room"+房间码小写（8 位，
-// 恰好满足 worker 的 /^[a-z0-9]{8,40}$/ 校验，worker 无需改动）。不能与单机共用一槽，否则
+// 公共 ID 不授予读取权，云档还需本浏览器独立保存的 capability）。不能与单机共用一槽，否则
 // 一局联机会把你的单机进度顶掉、或在设置页冒出「继续上一局」把联机局当单机续。
 // 联机【客人】：G 是房主快照的只读副本（_spectator），不存。
 // 这是「房主刷新/关标签 = 整局死」的根：此前 saveGame 对联机一律早退，房主重开页面就什么都不剩。
@@ -1852,6 +1858,21 @@ function saveSlot() {
     return { key: SAVE_KEY + ":room:" + code, id: ("room" + String(code).toLowerCase()).replace(/[^a-z0-9]/g, "").slice(0, 40) };
   }
   return { key: SAVE_KEY, id: prDeviceId() };
+}
+// Cloud-save capability is separate from public device/room IDs and snapshots.
+// Never invent a shared fallback when storage or secure randomness is unavailable.
+function saveAuth(slot, create = false) {
+  if (!slot || !slot.id) return null;
+  try {
+    const key = "pr_save_auth_v2:" + slot.key;
+    let token = localStorage.getItem(key);
+    if (/^[a-f0-9]{64}$/.test(token || "")) return token;
+    if (!create || typeof crypto === "undefined" || !crypto.getRandomValues) return null;
+    token = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+    localStorage.setItem(key, token);
+    if (localStorage.getItem(key) !== token) return null;
+    return token;
+  } catch (e) { return null; }
 }
 function serializeGame() {
   if (!G || G.gameOver) return null;
@@ -1905,13 +1926,15 @@ function kvSync() {
     const slot = saveSlot(); if (!slot) return;
     const raw = localStorage.getItem(slot.key);
     if (!raw) return;
-    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, ts: Date.now(), snap: raw }) }).catch(() => {});
+    const token = saveAuth(slot, true); if (!token) return;
+    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, token, ts: Date.now(), snap: raw }) }).catch(() => {});
   } catch (e) {}
 }
 function kvDelete() {
   try {
     const slot = saveSlot(); if (!slot) return;
-    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, ts: Date.now(), snap: "" }) }).catch(() => {});
+    const token = saveAuth(slot); if (!token) return;
+    fetch("/game-save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: slot.id, token, ts: Date.now(), snap: "" }) }).catch(() => {});
   } catch (e) {}
 }
 function kvSyncBeacon() { // 离开页面时最后一次同步（fetch 不可靠，用 sendBeacon）
@@ -1919,25 +1942,30 @@ function kvSyncBeacon() { // 离开页面时最后一次同步（fetch 不可靠
     const slot = saveSlot(); if (!slot) return;
     const raw = localStorage.getItem(slot.key);
     if (!raw || !navigator.sendBeacon) return;
-    navigator.sendBeacon("/game-save", new Blob([JSON.stringify({ id: slot.id, ts: Date.now(), snap: raw })], { type: "application/json" }));
+    const token = saveAuth(slot, true); if (!token) return;
+    navigator.sendBeacon("/game-save", new Blob([JSON.stringify({ id: slot.id, token, ts: Date.now(), snap: raw })], { type: "application/json" }));
   } catch (e) {}
 }
-async function kvLoadId(id) {
+async function kvLoadId(id, token) {
+  if (!id || !/^[a-f0-9]{64}$/.test(token || "")) return null;
   try {
-    const r = await fetch("/game-load?id=" + encodeURIComponent(id));
+    const r = await fetch("/game-load?id=" + encodeURIComponent(id), { headers: { "X-Save-Token": token }, cache: "no-store" });
     if (!r.ok) return null;
     const d = await r.json();
     return d && d.snap ? d.snap : null;
   } catch (e) { return null; }
 }
-async function kvLoad() { return kvLoadId(prDeviceId()); }
+async function kvLoad() {
+  const slot = { key: SAVE_KEY, id: prDeviceId() };
+  return kvLoadId(slot.id, saveAuth(slot));
+}
 // 联机房主重连：取该房间最新的一份存档（本地 vs KV，按 _savedAt 新者为准）。供 lobby.js 的重连路径使用。
 async function getBestRoomSave(code) {
   if (!code) return null;
   const key = SAVE_KEY + ":room:" + code, id = ("room" + String(code).toLowerCase()).replace(/[^a-z0-9]/g, "").slice(0, 40);
   let local = null, localTs = 0;
   try { local = localStorage.getItem(key); if (local) localTs = JSON.parse(local)._savedAt || 0; } catch (e) { local = null; }
-  let remote = await kvLoadId(id), remoteTs = 0;
+  let remote = await kvLoadId(id, saveAuth({ key, id })), remoteTs = 0;
   try { if (remote) remoteTs = JSON.parse(remote)._savedAt || 0; } catch (e) { remote = null; }
   if (remote && remoteTs > localTs) { try { localStorage.setItem(key, remote); } catch (e) {} return remote; }
   return local;
@@ -7256,7 +7284,7 @@ async function endGame() {
     );
   }
   showModal(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body, [
-    { label: isSolo ? "再挑战一次" : "再玩一局", fn: () => location.reload(), primary: true },
+    { label: G._online ? "返回大厅" : isSolo ? "再挑战一次" : "再玩一局", fn: () => G._online && window.PRRoomLobby ? PRRoomLobby.returnToLobby() : location.reload(), primary: true },
   ]);
   // 联机观战：把终局画面 + 结算面板广播给客人（非房主时 no-op）
   if (typeof PRSpectate !== "undefined") PRSpectate.onHostGameOver(isSolo ? "🏝️ 单人闯关结算" : "🎉 游戏结束", body);

@@ -7,13 +7,13 @@
 //   POST /collect    接收一局训练样本 {ver,ts,n,humanSeat,turns,valueMode,scores,lines[]} → 存入 KV
 //   GET  /dump       取回聚合的训练 JSONL（需 ?token=；分页 ?cursor=&limit=；可 ?since=&download=1）
 //   GET  /stats      汇总统计（局数 / 样本数 / 按人数）
-//   POST /game-save  跨设备存档：{id,ts,snap} 写入 save:<id>（snap="" 则删除）；30 天过期
-//   GET  /game-load  取回某设备的存档：?id=<deviceId> → {ok,snap|null}
+//   POST /game-save  云端存档：{id,token,ts,snap} 写入 capability 隔离的 save:v2 槽（snap="" 则删除）；30 天过期
+//   GET  /game-load  取回存档：?id=<deviceId> + X-Save-Token → {ok,snap|null}
 //   其它             交给静态资源（env.ASSETS），站点照常工作
 //
 // 绑定（见 wrangler.toml）：
 //   KV     PR_TRACES   存储每局样本（未配置时 /collect、/dump、/stats 返回 503，站点不受影响）
-//   Secret DUMP_TOKEN  保护 /dump、/stats（未设置则不保护，强烈建议设置）
+//   Secret DUMP_TOKEN protects /dump and /stats; requests are denied if it is missing.
 //
 // 输出的每一行都是 {f,a,v,vv,n}，与 tools/selfplay_dump.js 同构，可直接喂 train/load_data.py。
 
@@ -28,24 +28,41 @@ const MAX_BODY = 1_000_000; // 1MB 请求体上限
 function cors(resp) {
   resp.headers.set("Access-Control-Allow-Origin", "*");
   resp.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  resp.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  resp.headers.set("Access-Control-Allow-Headers", "Content-Type,X-Save-Token");
   return resp;
 }
 function json(obj, status = 200) {
-  return cors(new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } }));
+  return cors(new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }));
 }
 
+export { PuertoRoom } from './rooms.js';
+const roomCreates = new Map();
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const p = url.pathname;
     if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
     try {
+      const room = p.match(/^\/rooms\/([ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4})\/(connect|poll|send|leave)$/);
+      if (room) {
+        if (!env.ROOMS) return json({error: '房间服务未启用'}, 503);
+        if (room[2] === 'connect' && request.method === 'POST') {
+          const ip = request.headers.get('CF-Connecting-IP');
+          if (ip) {
+            const now = Date.now();
+            if (roomCreates.size > 5000) for (const [k, v] of roomCreates) if (v.until < now) roomCreates.delete(k);
+            let bucket = roomCreates.get(ip);
+            if (!bucket || bucket.until < now) roomCreates.set(ip, (bucket = {until: now + 60000, count: 0}));
+            if (++bucket.count > 60) return json({error: '连接太频繁，请一分钟后重试'}, 429);
+          }
+        }
+        return env.ROOMS.get(env.ROOMS.idFromName(room[1])).fetch(request);
+      }
       if (p === "/collect" && request.method === "POST") return await handleCollect(request, env);
       if (p === "/dump" && request.method === "GET") return await handleDump(url, env);
       if (p === "/stats" && request.method === "GET") return await handleStats(url, env);
       if (p === "/game-save" && request.method === "POST") return await handleGameSave(request, env);
-      if (p === "/game-load" && request.method === "GET") return await handleGameLoad(url, env);
+      if (p === "/game-load" && request.method === "GET") return await handleGameLoad(request, url, env);
     } catch (e) {
       return json({ ok: false, error: String((e && e.message) || e) }, 500);
     }
@@ -110,7 +127,7 @@ async function handleCollect(request, env) {
 }
 
 function checkToken(url, env) {
-  if (!env.DUMP_TOKEN) return true;  // 未设 token → 不保护（建议 wrangler secret put DUMP_TOKEN）
+  if (!env.DUMP_TOKEN) return false; // Missing configuration must never make exports public.
   return url.searchParams.get("token") === env.DUMP_TOKEN;
 }
 
@@ -154,11 +171,20 @@ async function handleStats(url, env) {
   return json({ ok: true, games, samples, byPlayerCount: byN, firstTs: isFinite(minTs) ? minTs : null, lastTs: maxTs || null });
 }
 
-// ── 跨设备存档：每个 deviceId 一个槽（save:<id>），最后写入为准，30 天过期 ──────────────
+// ── 云端存档：每个 ID + capability 一个私有槽，最后写入为准，30 天过期 ──────────────
 const MAX_SAVE = 600_000; // 单份存档上限 ~600KB
 function validDeviceId(id) { return typeof id === "string" && /^[a-z0-9]{8,40}$/.test(id); }
 
-// POST /game-save  body {id, ts, snap}  —— snap 为空串则删除该槽（开新局/游戏结束时）
+// Public IDs (including room codes) are not credentials. A token selects its own
+// namespace, preventing first-writer takeover and concurrent registration races.
+function validSaveToken(token) { return typeof token === "string" && /^[a-f0-9]{64}$/.test(token); }
+async function privateSaveKey(id, token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+  return `save:v2:${id}:${hash}`;
+}
+
+// POST /game-save  body {id, token, ts, snap}  —— snap 为空串则删除该槽（开新局/游戏结束时）
 async function handleGameSave(request, env) {
   if (!env.PR_TRACES) return json({ ok: false, error: "kv disabled" }, 503);
   if (+(request.headers.get("content-length") || 0) > MAX_SAVE) return json({ ok: false, error: "too large" }, 413);
@@ -167,19 +193,23 @@ async function handleGameSave(request, env) {
   let body;
   try { body = JSON.parse(text); } catch (e) { return json({ ok: false, error: "bad json" }, 400); }
   if (!validDeviceId(body && body.id)) return json({ ok: false, error: "bad id" }, 400);
-  const key = `save:${body.id}`;
-  if (typeof body.snap !== "string" || body.snap.length === 0) { await env.PR_TRACES.delete(key); return json({ ok: true, cleared: true }); }
+  if (!validSaveToken(body.token)) return json({ ok: false, error: "unauthorized" }, 401);
+  const key = await privateSaveKey(body.id, body.token);
+  if (typeof body.snap !== "string") return json({ ok: false, error: "bad snapshot" }, 400);
+  if (body.snap.length === 0) { await env.PR_TRACES.delete(key); return json({ ok: true, cleared: true }); }
   if (body.snap.length > MAX_SAVE) return json({ ok: false, error: "snap too large" }, 413);
   const ts = Number.isFinite(+body.ts) && +body.ts > 0 ? Math.floor(+body.ts) : Date.now();
   await env.PR_TRACES.put(key, body.snap, { metadata: { ts }, expirationTtl: 60 * 60 * 24 * 30 }); // 30 天未续局自动清理
   return json({ ok: true });
 }
 
-// GET /game-load?id=<deviceId>  →  {ok, snap|null}
-async function handleGameLoad(url, env) {
+// GET /game-load?id=<deviceId> + X-Save-Token →  {ok, snap|null}
+async function handleGameLoad(request, url, env) {
   if (!env.PR_TRACES) return json({ ok: false, error: "kv disabled" }, 503);
   const id = url.searchParams.get("id") || "";
   if (!validDeviceId(id)) return json({ ok: false, error: "bad id" }, 400);
-  const snap = await env.PR_TRACES.get(`save:${id}`, "text");
+  const token = request.headers.get("X-Save-Token");
+  if (!validSaveToken(token)) return json({ ok: false, error: "unauthorized" }, 401);
+  const snap = await env.PR_TRACES.get(await privateSaveKey(id, token), "text");
   return json({ ok: true, snap: snap || null });
 }

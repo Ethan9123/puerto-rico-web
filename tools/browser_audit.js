@@ -88,11 +88,13 @@ if (!FROM && GAMES + (TEMPSAMPLE ? 1 : 0) === 0) { console.error('nothing to do:
 
 // ---------------------------------------------------------------- 环境（与 tests/online_e2e_test.js 同约定）
 const CHROME_CANDIDATES = [
+  process.env.CHROME_PATH,
+  '/usr/bin/chromium',
   '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
   '/opt/pw-browsers/chromium/chrome-linux/chrome',
 ];
 function findChrome() {
-  for (const c of CHROME_CANDIDATES) if (fs.existsSync(c)) return c;
+  for (const c of CHROME_CANDIDATES) if (c && fs.existsSync(c)) return c;
   const dir = '/opt/pw-browsers';
   if (fs.existsSync(dir)) {
     for (const d of fs.readdirSync(dir)) {

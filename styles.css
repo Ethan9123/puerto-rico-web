@@ -690,6 +690,14 @@ body.final-round::after {
 #lobby-panel .lobby-player { font-size: 14px; padding: 2px 0; color: #e6ddc4; }
 #lobby-panel .lobby-empty { font-size: 13px; color: #889; }
 #lobby-panel .lobby-join-code { font-size: 16px !important; padding: 4px 8px !important; margin: 0 !important; }
+#lobby-panel .lobby-bot { color: #a6c7df; }
+#lobby-panel .lobby-connection { color: #8cdbac; font-size: 13px; }
+#lobby-panel .room-warning, #lobby-panel .lobby-error { color: #ffbd85; }
+#lobby-panel .lobby-error { padding: 8px 10px; margin-bottom: 8px; background: rgba(145,64,25,.25); border-radius: 4px; font-size: 13px; }
+#lobby-panel button:disabled { cursor: not-allowed; opacity: .45; }
+#lobby-panel select:disabled { opacity: .5; }
+#lobby-panel .room-readiness { min-height: 20px; }
+#lobby-panel .lobby-host-start select, #lobby-panel .lobby-host-start button { min-height: 36px; }
 
 /* 联机对战 Phase 2：实时观战 */
 #lobby-panel .lobby-start-btn { background: #c0392b; color: #fff; font-weight: bold; }
@@ -774,7 +782,14 @@ body:has(#spectate-banner) #game-screen { padding-top: calc(var(--spectate-banne
 
 /* P4-2：联机 UI 的窄屏布局（此前 762 行样式表里没有一条联机相关的宽度媒体查询） */
 @media (max-width: 480px) {
+  #setup-screen h1 { font-size: 36px; }
+  .setup-box { width: 100%; max-width: 100%; padding: 16px; }
+  .setup-box select, .setup-box input { max-width: 100%; }
+  .setup-box .cpu-level-sel { min-width: 0; }
+  .module-select { min-width: 0; max-width: 100%; padding: 8px 10px; }
+  #toast-stack { max-width: calc(100vw - 32px); }
   #lobby-panel .lobby-row { flex-direction: column; align-items: stretch; }
+  #lobby-panel .lobby-host-start select, #lobby-panel .lobby-host-start button { min-height: 44px; }
   #lobby-panel .lobby-join-code { width: 100% !important; box-sizing: border-box; }
   #lobby-panel .lobby-btn { width: 100%; }
   #spectate-banner { font-size: 12px; padding: 6px 8px; letter-spacing: 0; }
